@@ -15,11 +15,8 @@ import (
 	"testing"
 
 	"github.com/gofrs/flock"
+	"go.yaml.in/yaml/v3"
 )
-
-type encodedCycle struct{ Next *encodedCycle }
-
-func (*encodedCycle) MarshalYAML() (any, error) { return "Handled by custom encoder", nil }
 
 type selfReturning int
 
@@ -88,7 +85,7 @@ func testCyclicMetadata(t *testing.T, path string) {
 	customMap["self"] = customMap
 	failed := failingMap{}
 	failed["self"] = failed
-	for _, value := range []any{cycle, slice, pointer, embedded, customMap, failed, selfReturning(3)} {
+	for _, value := range []any{cycle, slice, pointer, embedded, customMap, failed} {
 		doc, err := store.Create(Memories, map[string]any{"title": 3, "cyclic": value}, "Healthy body")
 		if err != nil {
 			t.Fatal(err)
@@ -105,17 +102,9 @@ func testCyclicMetadata(t *testing.T, path string) {
 	shared := map[string]any{"value": "Keep"}
 	slices := []any{"Keep", nil}
 	slices[1] = slices[:1]
-	custom := &encodedCycle{}
-	custom.Next = custom
-	type ignoredCycle struct {
-		Value string
-		Next  *ignoredCycle `yaml:"-"`
-	}
-	ignored := &ignoredCycle{Value: "Keep"}
-	ignored.Next = ignored
 	doc, err := store.Create(Topics, map[string]any{
-		"shared": []any{shared, shared}, "slices": slices, "custom": custom, "ignored": ignored,
-		"scalars": []scalarEncoder{3, 3},
+		"shared": []any{shared, shared}, "slices": slices,
+		"scalars": []any{scalarEncoder(3), selfReturning(3)},
 	}, "Still working")
 	if err != nil || len(doc.Diagnostics()) != 0 {
 		t.Fatalf("ordinary shared values were rejected: %v", err)
@@ -126,7 +115,7 @@ func testCyclicMetadata(t *testing.T, path string) {
 	}
 }
 
-func TestOmittedCyclesKeepHealthyMetadata(t *testing.T) {
+func TestGoConversionStaysOutsideCore(t *testing.T) {
 	optional := &omittedCycle{}
 	optional.Next = optional
 	custom := &countedEncoder{}
@@ -139,7 +128,15 @@ func TestOmittedCyclesKeepHealthyMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	doc, err := store.Create(Memories, map[string]any{"payload": value}, "Healthy body")
+	raw, err := store.Create(Memories, map[string]any{"payload": value, "fact": "Keep"}, "Healthy body")
+	if err != nil || len(raw.Diagnostics()) == 0 || optional.Calls != 0 || custom.Calls != 0 {
+		t.Fatalf("core invoked Go callbacks or hid an unsupported object: %v", err)
+	}
+	var converted yaml.Node
+	if err := converted.Encode(value); err != nil {
+		t.Fatal(err)
+	}
+	doc, err := store.Create(Memories, map[string]any{"payload": converted}, "Healthy body")
 	if err != nil || len(doc.Diagnostics()) != 0 {
 		t.Fatalf("YAML's omitted field disabled healthy metadata: %v, %v", err, doc.Diagnostics())
 	}
@@ -184,6 +181,9 @@ func testOrphanCollision(t *testing.T, path string) {
 	id := "m_000000000000"
 	name := filepath.Join("memories", id+".md")
 	temporary := temporaryName(name, []byte(sample))
+	if err := root.Mkdir(pendingName(name), 0700); err != nil {
+		t.Fatal(err)
+	}
 	if err := root.WriteFile(temporary, []byte(sample), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -216,6 +216,9 @@ func TestRemovedArtifactsClearOnlyObsoleteDiagnostics(t *testing.T) {
 	first := temporaryName("memories/m_000000000000.md", []byte(sample))
 	second := temporaryName("entities/e_000000000000.md", []byte(sample))
 	for _, name := range []string{first, second} {
+		if err := root.MkdirAll(filepath.Dir(name), 0700); err != nil {
+			t.Fatal(err)
+		}
 		if err := root.WriteFile(name, []byte("Partial data"), 0600); err != nil {
 			t.Fatal(err)
 		}
@@ -224,6 +227,9 @@ func TestRemovedArtifactsClearOnlyObsoleteDiagnostics(t *testing.T) {
 		t.Fatalf("damaged artifacts were not reported: %v, %v", err, store.Diagnostics())
 	}
 	if err := root.Remove(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.Remove(filepath.Dir(first)); err != nil {
 		t.Fatal(err)
 	}
 	if os.Geteuid() != 0 {
@@ -235,7 +241,7 @@ func TestRemovedArtifactsClearOnlyObsoleteDiagnostics(t *testing.T) {
 		if err := store.Recover(); err != nil {
 			t.Fatal(err)
 		}
-		if issues := strings.Join(store.Diagnostics(), "\n"); !strings.Contains(issues, second) || strings.Contains(issues, first) {
+		if issues := strings.Join(store.Diagnostics(), "\n"); !strings.Contains(issues, "e_000000000000") || strings.Contains(issues, "m_000000000000") {
 			t.Fatalf("failed scan hid retained damage or kept removed damage: %s", issues)
 		}
 		if err := root.Chmod("entities", 0700); err != nil {
@@ -246,10 +252,13 @@ func TestRemovedArtifactsClearOnlyObsoleteDiagnostics(t *testing.T) {
 		t.Fatal(err)
 	}
 	issues := store.Diagnostics()
-	if len(issues) != 1 || !strings.Contains(issues[0], second) {
+	if len(issues) != 1 || !strings.Contains(issues[0], "e_000000000000") {
 		t.Fatalf("removed artifact stayed reported, or retained damage was hidden: %v", issues)
 	}
 	if err := root.Remove(second); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.Remove(filepath.Dir(second)); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Recover(); err != nil || len(store.Diagnostics()) != 0 {

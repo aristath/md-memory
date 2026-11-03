@@ -71,7 +71,7 @@ func TestCorruptedReadyWriteIsNotPublished(t *testing.T) {
 	if _, err := root.Lstat(name); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatal("corrupted pending data was published")
 	}
-	if data, err := root.ReadFile(pendingName(name)); err != nil || !bytes.Equal(data, changed) {
+	if data, err := root.ReadFile(temporaryName(name, []byte(sample))); err != nil || !bytes.Equal(data, changed) {
 		t.Fatal("damaged pending data was discarded")
 	}
 	doc, err := store.Read("m_7k3m9x2q6v4c")
@@ -116,7 +116,7 @@ func TestCommittedContentWinsOverPendingWhenLockBreaks(t *testing.T) {
 	if len(doc.Diagnostics()) == 0 {
 		t.Fatal("pending recovery was not reported")
 	}
-	if data, err := root.ReadFile(pendingName(name)); err != nil || string(data) != sample {
+	if data, err := root.ReadFile(temporaryName(name, []byte(sample))); err != nil || string(data) != sample {
 		t.Fatal("conflicting pending work was lost")
 	}
 }
@@ -262,10 +262,7 @@ func TestInitializationRetriesUnsyncedParents(t *testing.T) {
 			if err := os.Chmod(parent, 0700); err != nil {
 				t.Fatal(err)
 			}
-			store, err := Open(path)
-			if err != nil {
-				t.Fatal(err)
-			}
+			store := unfinished
 			if err := unfinished.Recover(); err != nil || len(unfinished.Diagnostics()) != 0 {
 				t.Fatalf("repaired initialization left stale diagnostics: %v, %v", err, unfinished.Diagnostics())
 			}

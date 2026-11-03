@@ -1,254 +1,169 @@
 package memory
 
 import (
-	"encoding"
-	"errors"
 	"fmt"
 	"reflect"
-	"strings"
+	"sort"
 	"time"
 
 	"go.yaml.in/yaml/v3"
 )
 
-var errCyclicValue = errors.New("cyclic Go value cannot be encoded")
+const issueTag = "!md-memory/issue"
 
-// Encode containers while tracking the active path. Custom encoders run once,
-// and only fields that will actually be serialized enter the cycle check.
-func encodeValue(value any) (yaml.Node, error) {
+func issueValue(message string) *yaml.Node {
+	return &yaml.Node{Kind: yaml.ScalarNode, Tag: issueTag, Value: message}
+}
+
+// Normalize data, never arbitrary Go encoding callbacks. An unsupported leaf is
+// kept as a tagged diagnostic while its understandable neighbours survive.
+func encodeValue(value any) yaml.Node {
 	type reference struct {
 		typeOf  reflect.Type
 		pointer uintptr
 		length  int
-		inline  bool
 	}
 	active := map[reference]bool{}
-	var custom []any
-	var encode func(reflect.Value, bool) (yaml.Node, error)
-	encode = func(v reflect.Value, inline bool) (node yaml.Node, err error) {
+	var walk func(reflect.Value) *yaml.Node
+	leaf := func(value any) *yaml.Node {
+		var node yaml.Node
+		if err := node.Encode(value); err != nil {
+			return issueValue(err.Error())
+		}
+		return &node
+	}
+	walk = func(v reflect.Value) *yaml.Node {
 		if !v.IsValid() || (v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface) && v.IsNil() {
-			err = node.Encode(nil)
-			return
+			return leaf(nil)
 		}
 		if v.Kind() == reflect.Interface {
-			return encode(v.Elem(), inline)
+			return walk(v.Elem())
 		}
 		switch v.Kind() {
 		case reflect.Pointer, reflect.Map, reflect.Slice:
 			if !v.IsNil() {
-				key := reference{typeOf: v.Type(), pointer: uintptr(v.UnsafePointer()), inline: inline}
+				key := reference{typeOf: v.Type(), pointer: uintptr(v.UnsafePointer())}
 				if v.Kind() == reflect.Slice {
 					key.length = v.Len()
 				}
 				if active[key] {
-					return node, errCyclicValue
+					return issueValue("cyclic Go reference: " + v.Type().String())
 				}
 				active[key] = true
 				defer delete(active, key)
 			}
 		}
-		if !inline && v.CanInterface() {
+		if v.CanInterface() {
+			var source *yaml.Node
 			switch typed := v.Interface().(type) {
 			case yaml.Node:
-				if nodeCycle(&typed, map[*yaml.Node]bool{}) {
-					return node, errCyclicValue
-				}
-				node = typed
-				if node.Kind == yaml.DocumentNode && len(node.Content) == 1 {
-					node = *node.Content[0]
-				}
-				return
+				source = &typed
 			case *yaml.Node:
-				if nodeCycle(typed, map[*yaml.Node]bool{}) {
-					return node, errCyclicValue
+				source = typed
+			case time.Time, time.Duration, Relation, Metadata:
+				return leaf(typed)
+			}
+			if source != nil {
+				if source.Kind == 0 {
+					return leaf(nil)
 				}
-				node = *typed
-				if node.Kind == yaml.DocumentNode && len(node.Content) == 1 {
-					node = *node.Content[0]
+				if source.Kind == yaml.DocumentNode && len(source.Content) == 1 {
+					return walk(reflect.ValueOf(source.Content[0]))
 				}
-				return
-			case time.Time, *time.Time, time.Duration:
-				err = node.Encode(typed)
-				return
-			case yaml.Marshaler:
-				for _, previous := range custom {
-					if reflect.DeepEqual(previous, typed) {
-						return node, errCyclicValue
-					}
+				if source.Kind == yaml.MappingNode && len(source.Content)%2 != 0 {
+					return issueValue("incomplete YAML mapping retained as an issue")
 				}
-				custom = append(custom, typed)
-				defer func() { custom = custom[:len(custom)-1] }()
-				output, err := typed.MarshalYAML()
-				if err != nil {
-					return node, err
+				if source.Kind != yaml.ScalarNode && source.Kind != yaml.AliasNode && source.Kind != yaml.MappingNode && source.Kind != yaml.SequenceNode {
+					return issueValue(fmt.Sprintf("unrecognized YAML node %d: %q", source.Kind, source.Value))
 				}
-				return encode(reflect.ValueOf(output), false)
-			case encoding.TextMarshaler:
-				err = node.Encode(typed)
-				return
+				copy := *source
+				copy.Content = nil
+				copy.Alias = nil
+				for _, child := range source.Content {
+					copy.Content = append(copy.Content, walk(reflect.ValueOf(child)))
+				}
+				return &copy
 			}
 		}
 		switch v.Kind() {
 		case reflect.Pointer:
-			return encode(v.Elem(), inline)
+			return walk(v.Elem())
 		case reflect.Map:
-			node.Kind, node.Tag = yaml.MappingNode, "!!map"
-			type pair struct{ key, value reflect.Value }
+			type pair struct{ key, value *yaml.Node }
 			entries := make([]pair, 0, v.Len())
 			iterator := v.MapRange()
 			for iterator.Next() {
-				entries = append(entries, pair{iterator.Key(), iterator.Value()})
+				entries = append(entries, pair{walk(iterator.Key()), walk(iterator.Value())})
 			}
-			if v.Type().Key().Kind() == reflect.String && len(entries) > 1 {
-				// Let YAML order string keys without invoking custom encoders or
-				// inspecting possibly cyclic values. Integer ranks retain identity.
-				ranks := make(map[string]int, len(entries))
-				for i, entry := range entries {
-					ranks[entry.key.String()] = i
+			sort.SliceStable(entries, func(i, j int) bool {
+				a, b := entries[i].key, entries[j].key
+				if a.Value != b.Value {
+					return a.Value < b.Value
 				}
-				var ordered yaml.Node
-				if err := ordered.Encode(ranks); err != nil {
-					return node, err
-				}
-				sorted := make([]pair, 0, len(entries))
-				for i := 1; i < len(ordered.Content); i += 2 {
-					var index int
-					if err := ordered.Content[i].Decode(&index); err != nil {
-						return node, err
-					}
-					sorted = append(sorted, entries[index])
-				}
-				entries = sorted
-			}
+				return a.Tag < b.Tag
+			})
+			node := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
 			for _, entry := range entries {
-				for _, item := range []reflect.Value{entry.key, entry.value} {
-					child, err := encode(item, false)
-					if err != nil {
-						return node, err
-					}
-					node.Content = append(node.Content, &child)
-				}
+				node.Content = append(node.Content, entry.key, entry.value)
 			}
+			return node
 		case reflect.Slice, reflect.Array:
-			node.Kind, node.Tag = yaml.SequenceNode, "!!seq"
+			node := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
 			for i := 0; i < v.Len(); i++ {
-				child, err := encode(v.Index(i), false)
-				if err != nil {
-					return node, err
-				}
-				node.Content = append(node.Content, &child)
+				node.Content = append(node.Content, walk(v.Index(i)))
 			}
-		case reflect.Struct:
-			node.Kind, node.Tag = yaml.MappingNode, "!!map"
-			for i := 0; i < v.NumField(); i++ {
-				field := v.Type().Field(i)
-				if field.PkgPath != "" && !field.Anonymous {
-					continue
-				}
-				tag := field.Tag.Get("yaml")
-				if tag == "" && !strings.Contains(string(field.Tag), ":") {
-					tag = string(field.Tag)
-				}
-				if tag == "-" {
-					continue
-				}
-				parts := strings.Split(tag, ",")
-				options := "," + strings.Join(parts[1:], ",") + ","
-				flatten := strings.Contains(options, ",inline,")
-				item := v.Field(i)
-				if !flatten && strings.Contains(options, ",omitempty,") && emptyYAMLValue(item) {
-					continue
-				}
-				if flatten && item.Kind() == reflect.Pointer && item.IsNil() {
-					continue
-				}
-				child, err := encode(item, flatten)
-				if err != nil {
-					return node, err
-				}
-				if flatten {
-					if child.Kind != yaml.MappingNode {
-						return node, fmt.Errorf("inline field %s is not a mapping", field.Name)
-					}
-					node.Content = append(node.Content, child.Content...)
-					continue
-				}
-				if strings.Contains(options, ",flow,") {
-					child.Style |= yaml.FlowStyle
-				}
-				name := parts[0]
-				if name == "" {
-					name = strings.ToLower(field.Name)
-				}
-				node.Content = append(node.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: name}, &child)
-			}
+			return node
+		case reflect.String:
+			return leaf(v.String())
+		case reflect.Bool:
+			return leaf(v.Bool())
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			return leaf(v.Int())
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+			return leaf(v.Uint())
+		case reflect.Float32, reflect.Float64:
+			return leaf(v.Float())
 		default:
-			err = node.Encode(v.Interface())
-		}
-		return
-	}
-	node, err := encode(reflect.ValueOf(value), false)
-	if err != nil {
-		return node, err
-	}
-	// Resolve anchors once for the complete value, then retain an independent
-	// tree so later caller edits cannot mutate the encoded document.
-	data, err := yaml.Marshal(&node)
-	if err != nil {
-		return node, err
-	}
-	var result yaml.Node
-	err = yaml.Unmarshal(data, &result)
-	if result.Kind == yaml.DocumentNode && len(result.Content) == 1 {
-		result = *result.Content[0]
-	}
-	return result, err
-}
-
-// Match YAML's omitempty behavior, including custom IsZero methods. Pointers
-// are not followed, so checking whether a field is empty cannot recurse in a cycle.
-func emptyYAMLValue(v reflect.Value) bool {
-	if (v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface) && v.IsNil() {
-		return true
-	}
-	if v.CanInterface() {
-		if zero, ok := v.Interface().(yaml.IsZeroer); ok {
-			return zero.IsZero()
+			return issueValue("unsupported Go value: " + v.Type().String())
 		}
 	}
-	switch v.Kind() {
-	case reflect.String, reflect.Map, reflect.Slice:
-		return v.Len() == 0
-	case reflect.Struct:
-		for i := 0; i < v.NumField(); i++ {
-			if v.Type().Field(i).PkgPath == "" && !emptyYAMLValue(v.Field(i)) {
-				return false
+	node := walk(reflect.ValueOf(value))
+	anchors := map[string]*yaml.Node{}
+	var bind func(*yaml.Node)
+	bind = func(node *yaml.Node) {
+		if node.Anchor != "" {
+			anchors[node.Anchor] = node
+		}
+		if node.Kind == yaml.AliasNode {
+			if target := anchors[node.Value]; target != nil {
+				node.Alias = target
+			} else {
+				*node = *issueValue("unresolved YAML alias: " + node.Value)
 			}
 		}
-		return true
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
-		reflect.Float32, reflect.Float64, reflect.Bool:
-		return v.IsZero()
-	default:
-		return false
-	}
-}
-
-// Alias pointers may be recursive; Content must remain a tree for YAML emission.
-func nodeCycle(node *yaml.Node, active map[*yaml.Node]bool) bool {
-	if node == nil {
-		return false
-	}
-	if active[node] {
-		return true
-	}
-	active[node] = true
-	defer delete(active, node)
-	for _, child := range node.Content {
-		if nodeCycle(child, active) {
-			return true
+		for _, child := range node.Content {
+			bind(child)
 		}
 	}
-	return false
+	bind(node)
+	return *node
+}
+
+func valueIssues(node *yaml.Node, path string) []string {
+	var issues []string
+	if node.Tag == issueTag {
+		issues = append(issues, path+": "+node.Value)
+	}
+	for i, child := range node.Content {
+		name := fmt.Sprintf("%s[%d]", path, i)
+		if node.Kind == yaml.MappingNode {
+			if i%2 == 0 {
+				name = path + "[key]"
+			} else {
+				name = path + "." + node.Content[i-1].Value
+			}
+		}
+		issues = append(issues, valueIssues(child, name)...)
+	}
+	return issues
 }

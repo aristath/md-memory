@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -105,10 +106,15 @@ func TestStoreCreatesAndReadsAllDestinations(t *testing.T) {
 			t.Fatal("creation wrote an ID into YAML metadata")
 		}
 		actual = values["custom"]
-		got, _ := yaml.Marshal(&actual)
-		want, _ := yaml.Marshal(&expected)
-		if !bytes.Equal(got, want) {
-			t.Fatalf("custom metadata changed: %s", got)
+		var got, want any
+		if err := actual.Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		if err := expected.Decode(&want); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("custom metadata changed: %v", got)
 		}
 	}
 	if fields["id"] != "caller-owned-id" || fields["created_at"] != "invalid caller timestamp" {
@@ -240,7 +246,7 @@ func TestPublicationNeverOverwritesExistingFiles(t *testing.T) {
 	if string(data) != "Existing contents" {
 		t.Fatal("existing contents changed")
 	}
-	if data, err := root.ReadFile(pendingName(name)); err != nil || string(data) != sample {
+	if data, err := root.ReadFile(temporaryName(name, []byte(sample))); err != nil || string(data) != sample {
 		t.Fatal("recoverable pending data was discarded")
 	}
 

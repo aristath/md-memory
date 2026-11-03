@@ -181,6 +181,7 @@ func (d *Document) Metadata() Metadata {
 
 func (d *Document) Diagnostics() []string {
 	_, warnings := d.metadata()
+	warnings = append(warnings, valueIssues(&d.Frontmatter, "metadata")...)
 	if field(&d.Frontmatter, "unparsed_frontmatter") != nil {
 		warnings = append(warnings, "Original unparsed frontmatter is retained")
 	}
@@ -189,16 +190,13 @@ func (d *Document) Diagnostics() []string {
 
 // Set edits one field, leaving other fields and their original representations intact.
 func (d *Document) Set(name string, value any) (err error) {
-	// The YAML library panics for unsupported Go values. Keep that failure local.
+	// Keep unexpected encoding failures local to this field.
 	defer func() {
 		if failure := recover(); failure != nil {
 			err = fmt.Errorf("encode %s: %v", name, failure)
 		}
 	}()
-	node, err := encodeValue(value)
-	if err != nil {
-		return fmt.Errorf("encode %s: %w", name, err)
-	}
+	node := encodeValue(value)
 	if previous := field(&d.Frontmatter, name); previous != nil {
 		preserveAliases(&d.Frontmatter, previous)
 		node.Anchor, node.HeadComment = previous.Anchor, previous.HeadComment

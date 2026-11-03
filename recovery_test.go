@@ -225,6 +225,9 @@ func TestIncompleteAndConflictingWritesStayIsolated(t *testing.T) {
 	}
 	defer root.Close()
 	incomplete := temporaryName(filepath.Join("memories", "m_000000000000.md"), []byte(sample))
+	if err := root.MkdirAll(filepath.Dir(incomplete), 0700); err != nil {
+		t.Fatal(err)
+	}
 	if err := root.WriteFile(incomplete, []byte("Incomplete original"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -238,16 +241,14 @@ func TestIncompleteAndConflictingWritesStayIsolated(t *testing.T) {
 	if err := store.Recover(); err != nil {
 		t.Fatal(err)
 	}
-	for name, want := range map[string]string{incomplete: "Incomplete original", name: "Different original record", pendingName(name): sample} {
+	for name, want := range map[string]string{incomplete: "Incomplete original", name: "Different original record", temporaryName(name, []byte(sample)): sample} {
 		data, err := root.ReadFile(name)
 		if err != nil || string(data) != want {
 			t.Fatalf("discarded unresolved work %s: %v", name, err)
 		}
 	}
-	if _, err := store.Read("m_000000000000"); err == nil {
-		t.Fatal("incomplete staging was promoted")
-	} else if errors.Is(err, fs.ErrNotExist) {
-		t.Fatal("unfinished retained work was reported as an absent record")
+	if doc, err := store.Read("m_000000000000"); err != nil || !doc.Pending || doc.Body != "Incomplete original" || len(doc.Diagnostics()) == 0 {
+		t.Fatalf("incomplete bytes were hidden or claimed complete: %v", err)
 	}
 	if _, err := store.Create(Topics, nil, "Healthy"); err != nil {
 		t.Fatal(err)
@@ -272,11 +273,8 @@ func TestPublicationPreservesUnrelatedStagingData(t *testing.T) {
 	if ready, err := stage(root, name, []byte(sample)); !ready || err != nil {
 		t.Fatal(err)
 	}
-	// A separate orphan must never be mistaken for this write's temporary file.
-	temporary := temporaryName(name, []byte(sample))
-	if err := root.Remove(temporary); err != nil {
-		t.Fatal(err)
-	}
+	// Files unrelated to the staged record must never be deleted by cleanup.
+	temporary := filepath.Join(pendingName(name), "unrelated.keep")
 	if err := root.WriteFile(temporary, []byte("Unrelated retained data"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +286,7 @@ func TestPublicationPreservesUnrelatedStagingData(t *testing.T) {
 	}
 }
 
-func TestCompleteTemporaryFileRecoversWithoutReadyMarker(t *testing.T) {
+func TestStagedFileRecoversBeforePublication(t *testing.T) {
 	for _, trigger := range []string{"read", "open"} {
 		t.Run(trigger, func(t *testing.T) {
 			path := t.TempDir()
@@ -297,7 +295,10 @@ func TestCompleteTemporaryFileRecoversWithoutReadyMarker(t *testing.T) {
 				t.Fatal(err)
 			}
 			name := filepath.Join("memories", "m_7k3m9x2q6v4c.md")
-			// The process finished writing but never created the ready marker.
+			// The ID was claimed and writing finished before the process could sync or publish.
+			if err := os.Mkdir(filepath.Join(path, pendingName(name)), 0700); err != nil {
+				t.Fatal(err)
+			}
 			if err := os.WriteFile(filepath.Join(path, temporaryName(name, []byte(sample))), []byte(sample), 0600); err != nil {
 				t.Fatal(err)
 			}

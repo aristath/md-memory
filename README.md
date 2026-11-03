@@ -57,18 +57,19 @@ the entire original is retained as
 the body. Reads do not silently rewrite original files.
 
 Standalone parsed documents have no ID; the store derives it from the filename.
-Self-referencing Go maps, slices, or pointers cannot be encoded by the YAML Go
-encoder. `Set` reports that field without changing the document; `Create` saves a
-typed placeholder with a diagnostic and continues saving the other fields and body.
-Ordinary shared values, ignored struct fields, and YAML aliases remain supported.
-Custom YAML encoders run once, and their output goes through the same cycle
-handling. Embedded fields and `omitempty`/`IsZero` are handled during encoding,
-so omitted cycles do not replace otherwise usable metadata. Other unencodable
-Go fields also use a typed placeholder and diagnostic rather than unsafe formatting.
-YAML nodes inside a list, map, or struct share the field's anchor scope. Encoding
-copies the complete value, including aliases and comments, so later caller edits
-cannot change the document. Repeated custom-encoder values are checked along the
-active encoding path as well as ordinary map, slice, and pointer cycles.
+Metadata inputs are data: scalars, maps, lists, and raw YAML nodes. Pointers to
+these values, named scalar types, `time.Time`, `time.Duration`, `Relation`, and
+`Metadata` are supported. Go struct tags and custom encoding callbacks belong
+outside the engine; callers can convert such values to a YAML node first.
+
+An unsupported value or cyclic reference becomes a `!md-memory/issue` scalar at
+that location. Healthy siblings and the body remain usable. The issue is saved
+with the record, so `Diagnostics()` still reports it, with its metadata path,
+after reopening. Ordinary shared values and YAML aliases remain supported.
+New Go maps use lexical key ordering. Parsed YAML retains its existing ordering.
+YAML nodes inside a list or map share the field's anchor scope. Encoding copies
+the supplied nodes, including aliases and comments, so later caller edits cannot
+change the document.
 
 ## Store
 
@@ -101,27 +102,29 @@ filename if the pending name disappears during publication.
 
 During initialization, the engine syncs the store's ancestors before creating
 `.lock`. If syncing fails, existing content stays readable and writes are blocked;
-reopening retries initialization. Once initialized, a store does not require
-opening or syncing all its ancestors on later calls.
+`Recover()` or `Create()` on the same handle retries initialization once the
+blocker clears. Once initialized, a store does not require opening or syncing all
+its ancestors on later calls. An initialized handle never replaces a missing
+coordination lock.
 The cache may be rebuilt; blocked record directories retain their contents, and
 errors affect operations on that directory only.
 
 ## Durable writes and recovery
 
-A new write first goes to a hidden staging file whose name includes the expected
-SHA-256 checksum. Recovery verifies completeness before publishing anything. A
-complete write is synced, linked to a `.pending` name, and the directory is synced.
-The final `<id>.md` name is then published without replacing existing files and synced.
-Publication checks the pending bytes against the expected checksum recorded in
-the staging filename. This evidence is retained until removal of the pending
-marker is durable; a damaged pending copy remains readable with diagnostics.
+A new write exclusively creates a hidden `.ID.md.pending/` directory to reserve
+its ID. This requires no scan of other records. Inside it, a file named
+`<sha256>.tmp` holds the data and records its expected checksum. The file, staging
+directory, and destination directory are synced before publication. Recovery
+verifies the checksum, then hard-links the data to the final `<id>.md` name
+without replacing existing files. The final file and destination directory are
+synced before staging cleanup begins.
 
 A failure never deletes the staged data. Complete writes recover automatically on
-open, read, or explicit recovery, including interruption before the `.pending`
-marker. Incomplete or conflicting data is retained and reported. Recovery never
-promotes an unverified partial file or overwrites a conflicting record.
-IDs held by unfinished staging files are reserved for their original records,
-even before a `.pending` marker exists.
+open, read, or explicit recovery. Empty reservations, ambiguous candidates,
+incomplete data, and conflicting data are retained and reported. Recovery never
+promotes an unverified partial file or overwrites a conflicting record. Readable
+partial staging data remains available with `Pending=true` and diagnostics.
+An unfinished staging directory keeps its ID reserved for its original record.
 
 `Document.Pending` means the record is retained in staging. A successful creation
 with `Pending=true` has durably stored the complete record; it remains readable

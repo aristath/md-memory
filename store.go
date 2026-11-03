@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -41,8 +42,10 @@ func (d Destination) prefix() (string, error) {
 
 // Store holds no open files between calls. Diagnostics is safe across goroutines.
 type Store struct {
-	path   string
-	issues sync.Map
+	path      string
+	issues    sync.Map
+	initMu    sync.Mutex
+	needsInit bool
 }
 
 func (s *Store) note(path string, err error) {
@@ -85,28 +88,39 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	s := &Store{path: path}
-	// Creating .lock completes initialization. Until it exists, retries must
-	// sync every ancestor, including directories left by an interrupted Open.
-	if _, err := root.Lstat(".lock"); errors.Is(err, fs.ErrNotExist) {
-		if err := syncParents(path); err != nil {
-			s.note("initialization", err)
-			s.note("close root", root.Close())
-			return s, nil // Existing content remains readable; writes lack a lock.
-		}
-	}
-	lock, err := root.OpenFile(".lock", os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
-	if err == nil {
-		err = lock.Close()
-	} else if errors.Is(err, fs.ErrExist) {
-		err = regularFile(root, ".lock")
-	}
-	err = errors.Join(err, root.Close())
-	if err != nil {
-		s.note("write coordination", err)
-		return s, nil
-	}
+	_, err = root.Lstat(".lock")
+	s.needsInit = errors.Is(err, fs.ErrNotExist)
+	s.note("close root", root.Close())
 	_ = s.Recover()
 	return s, nil
+}
+
+// Only an initialization known to be unfinished may create the lock. A missing
+// lock on an already initialized handle must not replace another writer's lock.
+func (s *Store) initialize(root *os.Root) (err error) {
+	s.initMu.Lock()
+	defer s.initMu.Unlock()
+	if !s.needsInit {
+		return regularFile(root, ".lock")
+	}
+	defer func() { s.note("initialization", err) }()
+	if _, err = root.Lstat(".lock"); errors.Is(err, fs.ErrNotExist) {
+		if err = syncParents(s.path); err != nil {
+			return err
+		}
+		var file *os.File
+		file, err = root.OpenFile(".lock", os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
+		if err == nil {
+			err = file.Close()
+		}
+	}
+	if err == nil || errors.Is(err, fs.ErrExist) {
+		err = regularFile(root, ".lock")
+	}
+	if err == nil {
+		s.needsInit = false
+	}
+	return err
 }
 
 // An initialized store does not need its ancestors reopened on later calls.
@@ -182,12 +196,7 @@ func (s *Store) Create(destination Destination, fields map[string]any, body stri
 			continue
 		}
 		if err := d.Set(name, value); err != nil {
-			d.warnings = append(d.warnings, err.Error())
-			text := fmt.Sprintf("<unencodable %T>", value)
-			if errors.Is(err, errCyclicValue) {
-				text = fmt.Sprintf("<cyclic %T>", value)
-			}
-			_ = d.Set(name, text)
+			_ = d.Set(name, issueValue(err.Error()))
 		}
 	}
 	if field(&d.Frontmatter, "title") == nil {
@@ -203,32 +212,13 @@ func (s *Store) Create(destination Destination, fields map[string]any, body stri
 		if err := syncPath(root, "."); err != nil {
 			return err
 		}
-		entries, err := fs.ReadDir(root.FS(), string(destination))
-		if err != nil {
-			return err
-		}
-		staged := map[string]bool{}
-		for _, entry := range entries {
-			if strings.HasPrefix(entry.Name(), ".") && strings.HasSuffix(entry.Name(), ".tmp") {
-				id, _, _ := strings.Cut(strings.TrimPrefix(entry.Name(), "."), ".md.")
-				staged[id] = true
-			}
-		}
 		for {
 			id, err := NewID(prefix)
 			if err != nil {
 				return err
 			}
-			if staged[id] {
-				continue
-			}
 			name := filepath.Join(string(destination), id+".md")
 			if _, err := root.Lstat(name); err == nil {
-				continue
-			} else if !errors.Is(err, fs.ErrNotExist) {
-				return err
-			}
-			if _, err := root.Lstat(pendingName(name)); err == nil {
 				continue
 			} else if !errors.Is(err, fs.ErrNotExist) {
 				return err
@@ -238,10 +228,10 @@ func (s *Store) Create(destination Destination, fields map[string]any, body stri
 			if err != nil {
 				return err
 			}
-			ready, err := stage(root, name, data)
-			d.Pending = ready
+			retained, err := stage(root, name, data)
+			d.Pending = retained
 			if err != nil {
-				if !ready && errors.Is(err, fs.ErrExist) {
+				if !retained && errors.Is(err, fs.ErrExist) {
 					continue
 				}
 				return err
@@ -265,6 +255,9 @@ func (s *Store) Read(id string) (*Document, error) {
 	if !ValidID(id) {
 		return nil, fmt.Errorf("invalid record ID %q", id)
 	}
+	if s == nil {
+		return nil, errors.New("store is nil")
+	}
 	var destination Destination
 	for _, candidate := range destinations {
 		prefix, _ := candidate.prefix()
@@ -274,80 +267,76 @@ func (s *Store) Read(id string) (*Document, error) {
 		}
 	}
 	name := filepath.Join(string(destination), id+".md")
-	// Published files are complete. Reading one needs no write coordination.
-	if s != nil {
-		if root, err := os.OpenRoot(s.path); err == nil {
-			data, readErr := readFile(root, name)
-			pending := regularFile(root, pendingName(name)) == nil
-			_ = root.Close()
-			if readErr == nil {
-				d := Parse(data)
-				d.ID = id
-				if pending {
-					d.warnings = append(d.warnings, "Pending work is retained for recovery; committed content returned")
-				}
-				return d, nil
-			}
-		}
-	}
-	var d *Document
-	err := s.locked(false, func(root *os.Root) error {
-		pending := false
-		var recoveryErr error
-		var staging []string
-		if err := regularFile(root, name); err != nil {
-			// Only missing/blocked records need a directory scan for pre-publication writes.
-			matches, err := fs.Glob(root.FS(), filepath.Join(string(destination), "."+id+".md.*.tmp"))
-			staging = matches
-			s.note("staging "+id, err)
-			for _, path := range matches {
-				s.recoverFile(root, string(destination), filepath.Base(path))
-			}
-		}
-		if err := regularFile(root, pendingName(name)); err == nil {
-			published, err := s.complete(root, name)
-			recoveryErr = err
-			pending = !published
-			s.note(name, err)
-		}
-		data, err := readFile(root, name)
-		if err != nil {
-			data, err = readFile(root, pendingName(name))
-			if err != nil {
-				if len(staging) > 0 {
-					return fmt.Errorf("unfinished write for %s is retained; see store diagnostics", id)
-				}
-				return err
-			}
-			pending = true
-		}
-		d = Parse(data)
-		d.ID, d.Pending = id, pending
-		if recoveryErr != nil {
-			d.warnings = append(d.warnings, recoveryErr.Error())
-		}
-		return nil
-	})
+	root, err := os.OpenRoot(s.path)
 	if err != nil {
-		// Recovery may be busy or blocked. Recheck committed content first in
-		// case the writer just published it, then return readable pending data.
-		if s != nil {
-			if root, openErr := os.OpenRoot(s.path); openErr == nil {
-				defer root.Close()
-				// Publication can remove .pending after the first committed check.
-				for _, candidate := range []string{name, pendingName(name), name} {
-					if data, readErr := readFile(root, candidate); readErr == nil {
-						d = Parse(data)
-						d.ID, d.Pending = id, candidate != name
-						d.warnings = append(d.warnings, err.Error())
-						return d, nil
-					}
+		return nil, err
+	}
+	defer func() { s.note("close root", root.Close()) }()
+	doc, readErr := readCopy(root, id, name)
+	if doc != nil && !doc.Pending {
+		return doc, nil
+	}
+	if _, err := root.Lstat(pendingName(name)); errors.Is(err, fs.ErrNotExist) {
+		return doc, readErr
+	}
+	recoveryErr := s.locked(false, func(root *os.Root) error {
+		_, err := s.complete(root, name)
+		s.note(name, err)
+		return err
+	})
+	if latest, err := readCopy(root, id, name); err == nil {
+		doc, readErr = latest, nil
+	} else if doc != nil {
+		doc.warnings = append(doc.warnings, "Readable snapshot retained: "+err.Error())
+	} else {
+		readErr = err
+	}
+	if doc == nil {
+		return nil, fmt.Errorf("read %s: %w", name, errors.Join(readErr, recoveryErr))
+	}
+	if recoveryErr != nil && doc.Pending && !slices.Contains(doc.warnings, recoveryErr.Error()) {
+		doc.warnings = append(doc.warnings, recoveryErr.Error())
+	}
+	return doc, nil
+}
+
+// One policy for every read: committed content wins; staged bytes stay useful
+// even when incomplete. Recheck the committed name after concurrent cleanup.
+func readCopy(root *os.Root, id, name string) (*Document, error) {
+	data, err := readFile(root, name)
+	pending := false
+	var warning string
+	if err != nil {
+		committedErr := err
+		var temporary string
+		data, temporary, err = stagedData(root, name)
+		if err == nil {
+			pending = true
+			if temporary != temporaryName(name, data) {
+				warning = errUnverifiedPending.Error()
+			}
+		} else {
+			stagedErr := err
+			data, err = readFile(root, name)
+			if err != nil {
+				if errors.Is(stagedErr, fs.ErrNotExist) {
+					return nil, committedErr
 				}
+				return nil, stagedErr
 			}
 		}
-		return d, fmt.Errorf("read %s: %w", name, err)
 	}
-	return d, nil
+	doc := Parse(data)
+	doc.ID, doc.Pending = id, pending
+	if warning != "" {
+		doc.warnings = append(doc.warnings, warning)
+	}
+	if !pending {
+		if _, err := root.Lstat(pendingName(name)); err == nil {
+			doc.warnings = append(doc.warnings, "Pending work is retained for recovery; committed content returned")
+		}
+	}
+	return doc, nil
 }
 
 func (s *Store) locked(wait bool, operation func(*os.Root) error) error {
@@ -359,7 +348,7 @@ func (s *Store) locked(wait bool, operation func(*os.Root) error) error {
 		return err
 	}
 	defer func() { s.note("close root", root.Close()) }()
-	if err := regularFile(root, ".lock"); err != nil {
+	if err := s.initialize(root); err != nil {
 		return err
 	}
 	lock := flock.New(filepath.Join(s.path, ".lock"))
@@ -379,6 +368,7 @@ func (s *Store) locked(wait bool, operation func(*os.Root) error) error {
 	}
 	s.note("initialization", nil)
 	s.note("write coordination", nil)
+	s.note("recovery", nil)
 	return operation(root)
 }
 
