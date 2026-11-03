@@ -6,12 +6,14 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/gofrs/flock"
 )
 
-// Destination selects a record directory within a store.
 type Destination string
 
 const (
@@ -37,15 +39,32 @@ func (d Destination) prefix() (string, error) {
 	return "", fmt.Errorf("unknown destination %q", d)
 }
 
-// Store provides coordinated filesystem access. It holds no open files between
-// calls and can be shared between goroutines. Separate processes use the same lock.
+// Store holds no open files between calls. Diagnostics is safe across goroutines.
 type Store struct {
-	path string
+	path   string
+	issues sync.Map
 }
 
-// Open initializes missing directories and opens an existing store without
-// rewriting records. The persistent .lock file coordinates engine processes;
-// unlike .index, it must not be removed while the store is in use.
+func (s *Store) note(path string, err error) {
+	if err == nil {
+		s.issues.Delete(path)
+	} else {
+		s.issues.Store(path, err.Error())
+	}
+}
+
+func (s *Store) Diagnostics() []string {
+	var messages []string
+	s.issues.Range(func(path, issue any) bool {
+		messages = append(messages, fmt.Sprintf("%s: %s", path, issue))
+		return true
+	})
+	sort.Strings(messages)
+	return messages
+}
+
+// Open opens the root and lock. Problems in individual directories are reported
+// through Diagnostics rather than disabling healthy parts of the store.
 func Open(path string) (*Store, error) {
 	if path == "" {
 		return nil, errors.New("store path must not be empty")
@@ -54,7 +73,7 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(path, 0700); err != nil {
+	if err := makeRoot(path); err != nil {
 		return nil, err
 	}
 	path, err = filepath.EvalSymlinks(path)
@@ -65,116 +84,162 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Exclusive creation avoids following a pre-existing symlink or special file.
+	s := &Store{path: path}
 	lock, err := root.OpenFile(".lock", os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
 	if err == nil {
-		err = errors.Join(lock.Sync(), lock.Close())
+		err = lock.Close()
 	} else if errors.Is(err, fs.ErrExist) {
 		err = regularFile(root, ".lock")
 	}
 	err = errors.Join(err, root.Close())
 	if err != nil {
-		return nil, err
+		s.note("write coordination", err)
+		return s, nil
 	}
-	store := &Store{path: path}
-	err = store.locked(false, func(root *os.Root) error {
-		for _, directory := range append([]Destination{".index"}, destinations...) {
-			if err := root.MkdirAll(string(directory), 0700); err != nil {
-				return err
-			}
-			info, err := root.Lstat(string(directory))
-			if err != nil {
-				return err
-			}
-			if !info.IsDir() {
-				return fmt.Errorf("%s must be a directory", directory)
-			}
-			if err := syncDirectory(root, string(directory)); err != nil {
-				return err
-			}
-		}
-		return syncDirectory(root, ".")
-	})
-	if err != nil {
-		return nil, err
+	if err := s.Recover(); err != nil {
+		s.note("recovery", err)
 	}
-	// MkdirAll may have created several ancestors. Sync each parent so a newly
-	// initialized nested store does not depend on unsynced directory entries.
-	for parent := filepath.Dir(path); ; parent = filepath.Dir(parent) {
-		directory, err := os.Open(parent)
-		if err != nil {
-			return nil, err
-		}
-		if err := errors.Join(directory.Sync(), directory.Close()); err != nil {
-			return nil, err
-		}
-		if parent == filepath.Dir(parent) {
-			break
-		}
-	}
-	return store, nil
+	return s, nil
 }
 
-// Create saves a new record in an explicit destination. The engine overrides
-// supplied timestamps and ignores a supplied id field. The generated ID is only
-// stored in the filename and returned as Document.ID. Other metadata is preserved.
-// A non-nil document alongside an error means publication succeeded but final
-// syncing, staging cleanup, or lock cleanup failed; its ID identifies that record.
+// Only newly created root directories need their parent entries synced.
+// Existing stores do not require read access to every ancestor directory.
+func makeRoot(path string) error {
+	if info, err := os.Stat(path); err == nil {
+		if info.IsDir() {
+			return nil
+		}
+		return fmt.Errorf("%s is not a directory", path)
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if err := makeRoot(filepath.Dir(path)); err != nil {
+		return err
+	}
+	if err := os.Mkdir(path, 0700); err != nil && !errors.Is(err, fs.ErrExist) {
+		return err
+	}
+	parent, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	return errors.Join(parent.Sync(), parent.Close())
+}
+
+func ensureDirectory(root *os.Root, name string) error {
+	info, err := root.Lstat(name)
+	if err == nil {
+		if info.IsDir() {
+			return nil
+		}
+		return fmt.Errorf("%s is not a directory", name)
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if err := root.Mkdir(name, 0700); err != nil {
+		return err
+	}
+	return syncDirectory(root, ".")
+}
+
+// Recover resumes completed pending writes. A bad directory or pending record
+// remains isolated and is reported through Diagnostics; other recovery continues.
+func (s *Store) Recover() error {
+	return s.locked(func(root *os.Root) error {
+		// The cache is disposable, unlike the record directories.
+		if info, err := root.Lstat(".index"); err == nil && !info.IsDir() {
+			s.note(".index", root.Remove(".index"))
+		}
+		s.note(".index", ensureDirectory(root, ".index"))
+		for _, destination := range destinations {
+			name := string(destination)
+			err := ensureDirectory(root, name)
+			s.note(name, err)
+			if err == nil {
+				s.recoverDirectory(root, name)
+			}
+		}
+		return nil
+	})
+}
+
+// Create assigns the filename ID and UTC timestamps. Metadata problems are
+// diagnostics, not reasons to discard the body. Pending=true means the complete
+// record is durably staged and readable, while final publication will be retried.
 func (s *Store) Create(destination Destination, fields map[string]any, body string) (*Document, error) {
+	destination = Destination(strings.ToLower(strings.TrimSpace(string(destination))))
 	prefix, err := destination.prefix()
 	if err != nil {
 		return nil, err
 	}
-	metadataFields := make(map[string]any, len(fields))
+	d := &Document{Body: body}
 	for name, value := range fields {
-		if name != "id" {
-			metadataFields[name] = value
+		if name == "id" || name == "created_at" || name == "updated_at" {
+			continue
+		}
+		if err := d.Set(name, value); err != nil {
+			d.warnings = append(d.warnings, err.Error())
+			_ = d.Set(name, fmt.Sprint(value))
 		}
 	}
-	document := &Document{Body: body}
-	if err := document.Frontmatter.Encode(metadataFields); err != nil {
-		return nil, fmt.Errorf("metadata: %w", err)
+	if field(&d.Frontmatter, "title") == nil {
+		_ = d.Set("title", "")
 	}
-	if _, exists := fields["title"]; !exists {
-		if err := document.Set("title", ""); err != nil {
-			return nil, err
+	now := time.Now().UTC()
+	_ = d.Set("created_at", now)
+	_ = d.Set("updated_at", now)
+	err = s.locked(func(root *os.Root) error {
+		if err := ensureDirectory(root, string(destination)); err != nil {
+			return err
 		}
-	}
-	var saved *Document
-	err = s.locked(false, func(root *os.Root) error {
-		now := time.Now().UTC()
-		for _, name := range []string{"created_at", "updated_at"} {
-			if err := document.Set(name, now); err != nil {
-				return err
-			}
+		if err := syncDirectory(root, "."); err != nil {
+			return err
 		}
 		for {
 			id, err := NewID(prefix)
 			if err != nil {
 				return err
 			}
-			document.ID = id
-			data, err := document.Marshal()
+			name := filepath.Join(string(destination), id+".md")
+			if _, err := root.Lstat(name); err == nil {
+				continue
+			} else if !errors.Is(err, fs.ErrNotExist) {
+				return err
+			}
+			if _, err := root.Lstat(pendingName(name)); err == nil {
+				continue
+			} else if !errors.Is(err, fs.ErrNotExist) {
+				return err
+			}
+			d.ID = id
+			data, err := d.Marshal()
 			if err != nil {
 				return err
 			}
-			published, err := publish(root, filepath.Join(string(destination), id+".md"), data)
-			if published {
-				saved = document
+			ready, err := stage(root, name, data)
+			d.Pending = ready
+			if err != nil {
+				if !ready && errors.Is(err, fs.ErrExist) {
+					continue
+				}
 				return err
 			}
-			if !errors.Is(err, fs.ErrExist) {
-				return err
+			published, err := s.complete(root, name)
+			d.Pending = !published
+			s.note(name, err)
+			if err != nil {
+				d.warnings = append(d.warnings, err.Error())
 			}
-			// A collision (including an interrupted staging file) gets a fresh ID.
+			if errors.Is(err, fs.ErrExist) {
+				return err
+			} // A conflicting record must remain untouched.
+			return nil // The synced pending record remains readable even if publication is blocked.
 		}
 	})
-	return saved, err
+	return d, err
 }
 
-// Read resolves a prefixed ID directly to its directory and derives Document.ID
-// from the filename. Errors retain the affected path; files are never repaired
-// or rewritten implicitly by this operation.
 func (s *Store) Read(id string) (*Document, error) {
 	if !ValidID(id) {
 		return nil, fmt.Errorf("invalid record ID %q", id)
@@ -188,29 +253,73 @@ func (s *Store) Read(id string) (*Document, error) {
 		}
 	}
 	name := filepath.Join(string(destination), id+".md")
-	var document *Document
-	err := s.locked(true, func(root *os.Root) error {
+	// Published files are complete. Reading one needs no write coordination.
+	if s != nil {
+		if root, err := os.OpenRoot(s.path); err == nil {
+			data, readErr := readFile(root, name)
+			pending := regularFile(root, pendingName(name)) == nil
+			_ = root.Close()
+			if readErr == nil && !pending {
+				d := Parse(data)
+				d.ID = id
+				return d, nil
+			}
+		}
+	}
+	var d *Document
+	err := s.locked(func(root *os.Root) error {
+		pending := false
+		var staging []string
 		if err := regularFile(root, name); err != nil {
-			return err
+			// Only missing/blocked records need a directory scan for pre-publication writes.
+			matches, err := fs.Glob(root.FS(), filepath.Join(string(destination), "."+id+".md.*.tmp"))
+			staging = matches
+			s.note("staging "+id, err)
+			for _, path := range matches {
+				s.recoverFile(root, string(destination), filepath.Base(path))
+			}
 		}
-		data, err := root.ReadFile(name)
+		if err := regularFile(root, pendingName(name)); err == nil {
+			published, err := s.complete(root, name)
+			pending = !published
+			s.note(name, err)
+		}
+		data, err := readFile(root, name)
 		if err != nil {
-			return err
+			data, err = readFile(root, pendingName(name))
+			if err != nil {
+				if len(staging) > 0 {
+					return fmt.Errorf("unfinished write for %s is retained; see store diagnostics", id)
+				}
+				return err
+			}
+			pending = true
 		}
-		document, err = Parse(data)
-		if err != nil {
-			return err
-		}
-		document.ID = id
+		d = Parse(data)
+		d.ID, d.Pending = id, pending
 		return nil
 	})
 	if err != nil {
-		return document, fmt.Errorf("read %s: %w", name, err)
+		// A coordination failure may block recovery, but a complete pending copy
+		// is still useful and safe to read without changing any files.
+		if s != nil {
+			if root, openErr := os.OpenRoot(s.path); openErr == nil {
+				data, readErr := readFile(root, pendingName(name))
+				_ = root.Close()
+				if readErr == nil {
+					d = Parse(data)
+					d.ID, d.Pending = id, true
+					d.warnings = append(d.warnings, err.Error())
+					return d, nil
+				}
+			}
+		}
+		return d, fmt.Errorf("read %s: %w", name, err)
 	}
-	return document, nil
+	return d, nil
 }
 
-func (s *Store) locked(shared bool, operation func(*os.Root) error) (err error) {
+func (s *Store) locked(operation func(*os.Root) error) error {
 	if s == nil {
 		return errors.New("store is nil")
 	}
@@ -218,18 +327,13 @@ func (s *Store) locked(shared bool, operation func(*os.Root) error) (err error) 
 	if err != nil {
 		return err
 	}
-	defer func() { err = errors.Join(err, root.Close()) }()
+	defer func() { s.note("close root", root.Close()) }()
 	if err := regularFile(root, ".lock"); err != nil {
 		return err
 	}
 	lock := flock.New(filepath.Join(s.path, ".lock"))
-	defer func() { err = errors.Join(err, lock.Close()) }()
-	if shared {
-		err = lock.RLock()
-	} else {
-		err = lock.Lock()
-	}
-	if err != nil {
+	defer func() { s.note("close lock", lock.Close()) }()
+	if err := lock.Lock(); err != nil {
 		return err
 	}
 	return operation(root)
@@ -241,9 +345,16 @@ func regularFile(root *os.Root, name string) error {
 		return err
 	}
 	if !info.Mode().IsRegular() {
-		return fmt.Errorf("%s must be a regular file", name)
+		return fmt.Errorf("%s is not a regular file", name)
 	}
 	return nil
+}
+
+func readFile(root *os.Root, name string) ([]byte, error) {
+	if err := regularFile(root, name); err != nil {
+		return nil, err
+	}
+	return root.ReadFile(name)
 }
 
 func syncDirectory(root *os.Root, name string) error {
@@ -251,35 +362,9 @@ func syncDirectory(root *os.Root, name string) error {
 	if err != nil {
 		return err
 	}
-	return errors.Join(directory.Sync(), directory.Close())
-}
-
-// publish exposes only a complete, synced record and never replaces an existing
-// name. A hard link provides atomic no-replace publication on the same filesystem.
-func publish(root *os.Root, name string, data []byte) (published bool, err error) {
-	temporary := filepath.Join(filepath.Dir(name), "."+filepath.Base(name)+".tmp")
-	file, err := root.OpenFile(temporary, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	err = directory.Sync()
 	if err != nil {
-		return false, err
+		err = directory.Sync()
 	}
-	defer func() {
-		if !published {
-			err = errors.Join(err, root.Remove(temporary))
-		}
-	}()
-	_, writeErr := file.Write(data)
-	var syncErr error
-	if writeErr == nil {
-		syncErr = file.Sync()
-	}
-	if err := errors.Join(writeErr, syncErr, file.Close()); err != nil {
-		return false, err
-	}
-	if err := root.Link(temporary, name); err != nil {
-		return false, err
-	}
-	published = true
-	removeErr := root.Remove(temporary)
-	syncErr = syncDirectory(root, filepath.Dir(name))
-	return true, errors.Join(removeErr, syncErr)
+	return errors.Join(err, directory.Close())
 }

@@ -32,10 +32,7 @@ Literal text with --- inside it.
 `
 
 func TestRoundTripPreservesAdditionalMetadataAndBody(t *testing.T) {
-	doc, err := Parse([]byte(sample))
-	if err != nil {
-		t.Fatal(err)
-	}
+	doc := Parse([]byte(sample))
 	before := doc.Body
 	if err := doc.Set("title", "Renamed"); err != nil {
 		t.Fatal(err)
@@ -44,11 +41,8 @@ func TestRoundTripPreservesAdditionalMetadataAndBody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reparsed, err := Parse(encoded)
-	if err != nil {
-		t.Fatal(err)
-	}
-	metadata, _ := reparsed.Metadata()
+	reparsed := Parse(encoded)
+	metadata := reparsed.Metadata()
 	if metadata.Title != "Renamed" || len(metadata.Relations) != 2 || reparsed.Body != before {
 		t.Fatalf("record changed unexpectedly: %+v", metadata)
 	}
@@ -62,28 +56,22 @@ func TestRoundTripPreservesAdditionalMetadataAndBody(t *testing.T) {
 func TestCRLFAndBodyWithoutFinalNewline(t *testing.T) {
 	input := strings.ReplaceAll(sample, "\n", "\r\n")
 	input = strings.TrimSuffix(input, "\r\n")
-	doc, err := Parse(append([]byte{0xef, 0xbb, 0xbf}, []byte(input)...))
-	if err != nil {
-		t.Fatal(err)
-	}
+	doc := Parse(append([]byte{0xef, 0xbb, 0xbf}, []byte(input)...))
 	want := doc.Body
 	encoded, err := doc.Marshal()
 	if err != nil {
 		t.Fatal(err)
 	}
-	reparsed, err := Parse(encoded)
-	if err != nil || reparsed.Body != want {
-		t.Fatalf("body changed during round trip: %v", err)
+	reparsed := Parse(encoded)
+	if reparsed.Body != want {
+		t.Fatal("body changed during round trip")
 	}
 }
 
 func TestEditingAnchoredFieldPreservesReferences(t *testing.T) {
 	input := strings.Replace(sample, "title: Example", "title: &label Example # Keep this comment", 1)
 	input = strings.Replace(input, "custom:\n", "custom:\n  label: *label\n", 1)
-	doc, err := Parse([]byte(input))
-	if err != nil {
-		t.Fatal(err)
-	}
+	doc := Parse([]byte(input))
 	if err := doc.Set("title", "Renamed"); err != nil {
 		t.Fatal(err)
 	}
@@ -91,10 +79,7 @@ func TestEditingAnchoredFieldPreservesReferences(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reparsed, err := Parse(encoded)
-	if err != nil {
-		t.Fatal(err)
-	}
+	reparsed := Parse(encoded)
 	var fields struct {
 		Custom struct{ Label string }
 	}
@@ -106,12 +91,12 @@ func TestEditingAnchoredFieldPreservesReferences(t *testing.T) {
 	}
 }
 
-func TestRejectsMalformedDocumentsWithoutChangingInput(t *testing.T) {
+func TestMalformedDocumentsStayUsable(t *testing.T) {
 	for name, input := range map[string]string{
 		"no header":       "# Plain Markdown",
 		"unclosed header": "---\ntitle: Example\n",
-		"invalid YAML":    "---\na: [\n---\n",
-		"non-mapping":     "---\n- value\n---\n",
+		"invalid YAML":    "---\na: [\n---\nOriginal body",
+		"non-mapping":     "---\n- value\n---\nOriginal body",
 		"duplicate title": strings.Replace(sample, "title: Example", "title: Example\ntitle: Duplicate", 1),
 		"missing time":    strings.Replace(sample, "created_at: 2026-11-03T10:00:00Z\n", "", 1),
 		"invalid target":  strings.Replace(sample, "m_b8r5n2w9d4hx", "missing", 1),
@@ -119,17 +104,37 @@ func TestRejectsMalformedDocumentsWithoutChangingInput(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			data := []byte(input)
-			if _, err := Parse(data); err == nil {
-				t.Fatal("expected a parse error")
+			doc := Parse(data)
+			if len(doc.Diagnostics()) == 0 {
+				t.Fatal("damaged data had no diagnostics")
 			}
 			if string(data) != input {
 				t.Fatal("parser changed its input")
+			}
+			encoded, err := doc.Marshal()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if Parse(encoded).Body != doc.Body {
+				t.Fatal("body did not survive serialization")
+			}
+			if strings.Contains(name, "header") && doc.Body != input {
+				t.Fatal("original source was not retained")
+			}
+			if name == "invalid YAML" || name == "non-mapping" {
+				var raw string
+				if err := field(&doc.Frontmatter, "unparsed_frontmatter").Decode(&raw); err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(input, raw) || doc.Body != "Original body" {
+					t.Fatal("unparsed data was lost")
+				}
 			}
 		})
 	}
 }
 
-func TestNewDocumentAndValidationBeforeMarshal(t *testing.T) {
+func TestNewDocumentKeepsDamagedMetadata(t *testing.T) {
 	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.FixedZone("example", 7200))
 	doc, err := NewDocument(Metadata{Title: "Example", CreatedAt: now, UpdatedAt: now}, "Body")
 	if err != nil {
@@ -142,16 +147,16 @@ func TestNewDocumentAndValidationBeforeMarshal(t *testing.T) {
 	if err := doc.Set("created_at", "invalid"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := doc.Marshal(); err == nil {
-		t.Fatal("invalid document was serialized")
+	if _, err := doc.Marshal(); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Diagnostics()) == 0 {
+		t.Fatal("invalid timestamp was not reported")
 	}
 }
 
 func TestDocumentIDIsNotSerializedOrInferredFromContent(t *testing.T) {
-	doc, err := Parse([]byte(sample))
-	if err != nil {
-		t.Fatal(err)
-	}
+	doc := Parse([]byte(sample))
 	if doc.ID != "" {
 		t.Fatalf("standalone parsing invented an ID: %q", doc.ID)
 	}
@@ -160,10 +165,7 @@ func TestDocumentIDIsNotSerializedOrInferredFromContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reparsed, err := Parse(encoded)
-	if err != nil {
-		t.Fatal(err)
-	}
+	reparsed := Parse(encoded)
 	var fields map[string]any
 	if err := reparsed.Frontmatter.Decode(&fields); err != nil {
 		t.Fatal(err)

@@ -70,10 +70,7 @@ func TestStoreCreatesAndReadsAllDestinations(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		metadata, err := doc.Metadata()
-		if err != nil {
-			t.Fatal(err)
-		}
+		metadata := doc.Metadata()
 		prefix, _ := destination.prefix()
 		if !strings.HasPrefix(doc.ID, prefix) || !ValidID(doc.ID) {
 			t.Fatalf("wrong ID for %s: %q", destination, doc.ID)
@@ -184,12 +181,9 @@ func TestStoreRejectsInvalidInputAndIsolatesDamagedRecords(t *testing.T) {
 			t.Fatalf("accepted destination %q", destination)
 		}
 	}
-	if _, err := store.Create(Memories, map[string]any{"relations": []Relation{{Type: "after", Target: "bad-id"}}}, "Body"); err == nil {
-		t.Fatal("accepted invalid relation target")
-	}
-	entries, err := os.ReadDir(filepath.Join(path, "memories"))
-	if err != nil || len(entries) != 0 {
-		t.Fatalf("invalid creation left files behind: %v", err)
+	damaged, err := store.Create(Memories, map[string]any{"relations": []Relation{{Type: "after", Target: "bad-id"}}}, "Body")
+	if err != nil || damaged.Body != "Body" || len(damaged.Diagnostics()) == 0 {
+		t.Fatalf("bad link blocked creation: %v", err)
 	}
 	for _, id := range []string{"../outside", "7k3m9x2q6v4c", "x_7k3m9x2q6v4c"} {
 		if _, err := store.Read(id); err == nil {
@@ -204,8 +198,8 @@ func TestStoreRejectsInvalidInputAndIsolatesDamagedRecords(t *testing.T) {
 		if err := os.WriteFile(name, []byte(content), 0600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := store.Read("m_7k3m9x2q6v4c"); err == nil || !strings.Contains(err.Error(), "m_7k3m9x2q6v4c.md") {
-			t.Fatalf("damaged record was not identified: %v", err)
+		if doc, err := store.Read("m_7k3m9x2q6v4c"); err != nil || len(doc.Diagnostics()) == 0 {
+			t.Fatalf("damaged record was not readable with diagnostics: %v", err)
 		}
 		data, _ := os.ReadFile(name)
 		if string(data) != content {
@@ -235,17 +229,21 @@ func TestPublicationNeverOverwritesExistingFiles(t *testing.T) {
 	if err := root.WriteFile(name, []byte("Existing contents"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if published, err := publish(root, name, []byte(sample)); published || !errors.Is(err, fs.ErrExist) {
-		t.Fatalf("publication overwrote an existing name: %v, %v", published, err)
+	if ready, err := stage(root, name, []byte(sample)); !ready || err != nil {
+		t.Fatal(err)
+	}
+	store := &Store{path: path}
+	if published, err := store.complete(root, name); published || !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("overwrote existing file: %v", err)
 	}
 	data, _ := root.ReadFile(name)
 	if string(data) != "Existing contents" {
-		t.Fatal("existing contents were changed")
+		t.Fatal("existing contents changed")
 	}
-	entries, _ := fs.ReadDir(root.FS(), "memories")
-	if len(entries) != 1 {
-		t.Fatalf("failed publication left staging files: %v", entries)
+	if data, err := root.ReadFile(pendingName(name)); err != nil || string(data) != sample {
+		t.Fatal("recoverable pending data was discarded")
 	}
+
 }
 
 func TestStoreRejectsSymlinksOutsideRoot(t *testing.T) {
@@ -283,8 +281,21 @@ func TestStoreInitializationRejectsNonDirectoryAndExternalLinks(t *testing.T) {
 			if err := os.Symlink(outside, filepath.Join(path, name)); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := Open(path); err == nil {
-				t.Fatal("opened a store with an external link")
+			store, err := Open(path)
+			if name == ".lock" {
+				if err != nil || len(store.Diagnostics()) == 0 {
+					t.Fatalf("coordination problem was not isolated: %v", err)
+				}
+				if _, err := store.Create(Topics, nil, "Blocked write"); err == nil {
+					t.Fatal("wrote through an unsafe lock")
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := store.Create(Topics, nil, "Healthy"); err != nil {
+					t.Fatal(err)
+				}
 			}
 			entries, _ := os.ReadDir(outside)
 			if len(entries) != 0 {
@@ -297,8 +308,12 @@ func TestStoreInitializationRejectsNonDirectoryAndExternalLinks(t *testing.T) {
 	if err := os.WriteFile(name, []byte("Existing file"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Open(path); err == nil {
-		t.Fatal("opened a store with a file in place of a directory")
+	store, err := Open(path)
+	if err != nil || len(store.Diagnostics()) == 0 {
+		t.Fatalf("one bad directory disabled the store: %v", err)
+	}
+	if _, err := store.Create(Topics, nil, "Healthy"); err != nil {
+		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(name)
 	if string(data) != "Existing file" {
@@ -359,8 +374,8 @@ func TestStoreConcurrentProcessesPublishCompleteRecords(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if _, err := Parse(data); err != nil {
-						t.Fatalf("observed partially published record: %v", err)
+					if doc := Parse(data); len(doc.Body) != 128*1024 {
+						t.Fatal("observed partially published record")
 					}
 				}
 			}
@@ -392,6 +407,10 @@ func TestStoreLockIsReleasedWhenWriterProcessDies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	existing, err := store.Create(Topics, nil, "Already committed")
+	if err != nil {
+		t.Fatal(err)
+	}
 	command := helperProcess(t, "hold-lock", path)
 	stdout, err := command.StdoutPipe()
 	if err != nil {
@@ -408,6 +427,16 @@ func TestStoreLockIsReleasedWhenWriterProcessDies(t *testing.T) {
 	defer command.Process.Kill()
 	if line, err := bufio.NewReader(stdout).ReadString('\n'); err != nil || line != "locked\n" {
 		t.Fatalf("writer did not acquire the lock: %q, %v", line, err)
+	}
+	readDone := make(chan error, 1)
+	go func() { _, err := store.Read(existing.ID); readDone <- err }()
+	select {
+	case err := <-readDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("a writer blocked an unrelated committed read")
 	}
 	done := make(chan error, 1)
 	go func() {
@@ -437,6 +466,21 @@ func TestStoreLockIsReleasedWhenWriterProcessDies(t *testing.T) {
 func TestStoreProcess(t *testing.T) {
 	role, path := os.Getenv("MD_MEMORY_TEST_ROLE"), os.Getenv("MD_MEMORY_TEST_PATH")
 	if role == "" {
+		return
+	}
+	if role == "staged-crash" {
+		store := &Store{path: path}
+		err := store.locked(func(root *os.Root) error {
+			if _, err := stage(root, filepath.Join("memories", "m_7k3m9x2q6v4c.md"), []byte(sample)); err != nil {
+				return err
+			}
+			fmt.Println("staged")
+			_, _ = io.Copy(io.Discard, os.Stdin)
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
 		return
 	}
 	if role == "hold-lock" {

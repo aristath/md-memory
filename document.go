@@ -1,9 +1,8 @@
-// Package memory implements the Markdown record format for md-memory.
+// Package memory stores connected Markdown records.
 package memory
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -11,13 +10,11 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-// Relation is an outgoing connection. Type names have no built-in semantics.
 type Relation struct {
 	Type   string `yaml:"type"`
 	Target string `yaml:"target"`
 }
 
-// Metadata is a view of the core fields. Additional fields remain in Frontmatter.
 type Metadata struct {
 	Title     string     `yaml:"title"`
 	CreatedAt time.Time  `yaml:"created_at"`
@@ -25,53 +22,58 @@ type Metadata struct {
 	Relations []Relation `yaml:"relations,omitempty"`
 }
 
-// Document retains the YAML syntax tree and the exact Markdown body.
-// Keeping the tree avoids discarding metadata, tags, aliases, and comments.
+// Document keeps the complete YAML tree and Markdown body, including damaged
+// fields. Diagnostics reports problems without making the record unavailable.
 type Document struct {
-	// ID is assigned by the store from the filename, without the .md extension.
-	// Standalone parsing does not assign an ID, and Marshal does not serialize it.
 	ID          string `yaml:"-"`
+	Pending     bool   `yaml:"-"`
 	Frontmatter yaml.Node
 	Body        string
+	warnings    []string
 }
 
-// NewDocument creates a document from core metadata. Further fields can be set
-// through Set or by editing the YAML tree.
 func NewDocument(metadata Metadata, body string) (*Document, error) {
 	metadata.CreatedAt = metadata.CreatedAt.UTC()
 	metadata.UpdatedAt = metadata.UpdatedAt.UTC()
 	d := &Document{Body: body}
-	if err := d.Frontmatter.Encode(metadata); err != nil {
-		return nil, err
-	}
-	if _, err := d.Metadata(); err != nil {
-		return nil, err
-	}
-	return d, nil
+	err := d.Frontmatter.Encode(metadata)
+	return d, err
 }
 
-// Parse reads a YAML-frontmatter Markdown document without changing its source.
-func Parse(data []byte) (*Document, error) {
-	data = bytes.TrimPrefix(data, []byte{0xef, 0xbb, 0xbf})
-	line, rest, _ := bytes.Cut(data, []byte("\n"))
+// Parse always retains the content. Unreadable YAML is kept verbatim in an
+// unparsed_frontmatter field; when boundaries are unknown, the full source is body.
+func Parse(data []byte) *Document {
+	d := &Document{Frontmatter: yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}, Body: string(data)}
+	content := bytes.TrimPrefix(data, []byte{0xef, 0xbb, 0xbf})
+	line, rest, _ := bytes.Cut(content, []byte("\n"))
 	if !delimiter(line) {
-		return nil, errors.New("missing opening YAML frontmatter delimiter")
+		d.warnings = append(d.warnings, "No frontmatter; original content retained as body")
+		return d
 	}
 	var header bytes.Buffer
 	for len(rest) > 0 {
 		line, remaining, newline := bytes.Cut(rest, []byte("\n"))
 		if delimiter(line) {
-			d := &Document{Body: string(remaining)}
-			if err := yaml.Unmarshal(header.Bytes(), &d.Frontmatter); err != nil {
-				return nil, fmt.Errorf("frontmatter: %w", err)
+			d.Body = string(remaining)
+			var node yaml.Node
+			err := yaml.Unmarshal(header.Bytes(), &node)
+			if node.Kind == yaml.DocumentNode && len(node.Content) == 1 {
+				node = *node.Content[0]
 			}
-			if d.Frontmatter.Kind == yaml.DocumentNode && len(d.Frontmatter.Content) == 1 {
-				d.Frontmatter = *d.Frontmatter.Content[0]
+			if err == nil && node.Kind == 0 {
+				return d // Empty frontmatter is an empty mapping.
 			}
-			if _, err := d.Metadata(); err != nil {
-				return nil, err
+			if err == nil && node.Kind == yaml.MappingNode {
+				d.Frontmatter = node
+			} else {
+				_ = d.Set("unparsed_frontmatter", header.String())
+				message := "Frontmatter is not a mapping; original retained"
+				if err != nil {
+					message = "Original frontmatter retained: " + err.Error()
+				}
+				d.warnings = append(d.warnings, message)
 			}
-			return d, nil
+			return d
 		}
 		header.Write(line)
 		if newline {
@@ -79,65 +81,122 @@ func Parse(data []byte) (*Document, error) {
 		}
 		rest = remaining
 	}
-	return nil, errors.New("missing closing YAML frontmatter delimiter")
+	d.warnings = append(d.warnings, "Unclosed frontmatter; entire original retained as body")
+	return d
 }
 
 func delimiter(line []byte) bool {
-	return bytes.Equal(bytes.TrimSpace(line), []byte("---"))
+	return bytes.Equal(bytes.TrimRight(line, " \t\r"), []byte("---"))
 }
 
-// Metadata reads and validates core fields without removing additional fields.
-func (d *Document) Metadata() (Metadata, error) {
-	var metadata Metadata
-	if d == nil || d.Frontmatter.Kind != yaml.MappingNode {
-		return metadata, errors.New("frontmatter must be a YAML mapping")
-	}
-	if err := d.Frontmatter.Decode(&metadata); err != nil {
-		return metadata, fmt.Errorf("frontmatter: %w", err)
-	}
-	if metadata.CreatedAt.IsZero() || metadata.UpdatedAt.IsZero() {
-		return metadata, errors.New("created_at and updated_at must be timestamps")
-	}
-	for i, relation := range metadata.Relations {
-		if strings.TrimSpace(relation.Type) == "" || !ValidID(relation.Target) {
-			return metadata, fmt.Errorf("relation %d requires a type and a valid target ID", i)
+func field(node *yaml.Node, name string) *yaml.Node {
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == name {
+			return node.Content[i+1]
 		}
 	}
-	return metadata, nil
+	return nil
 }
 
-// Set replaces one top-level field, preserving other fields and their order.
-// Core-field validity is checked by Metadata and Marshal.
-func (d *Document) Set(name string, value any) error {
-	if d == nil || d.Frontmatter.Kind != yaml.MappingNode {
-		return errors.New("frontmatter must be a YAML mapping")
+func (d *Document) metadata() (m Metadata, warnings []string) {
+	decode := func(name string, value any) {
+		if node := field(&d.Frontmatter, name); node != nil {
+			err := node.Decode(value)
+			if timestamp, ok := value.(*time.Time); ok && err != nil {
+				for _, layout := range []string{time.RFC3339Nano, time.DateTime, time.DateOnly} {
+					if parsed, parseErr := time.Parse(layout, node.Value); parseErr == nil {
+						*timestamp, err = parsed.UTC(), nil
+						break
+					}
+				}
+			}
+			if err != nil {
+				warnings = append(warnings, fmt.Sprintf("%s: %v", name, err))
+			}
+		}
 	}
+	decode("title", &m.Title)
+	decode("created_at", &m.CreatedAt)
+	decode("updated_at", &m.UpdatedAt)
+	if m.CreatedAt.IsZero() {
+		warnings = append(warnings, "created_at is unknown")
+	}
+	if m.UpdatedAt.IsZero() {
+		warnings = append(warnings, "updated_at is unknown")
+	}
+	seen := map[string]bool{}
+	for i := 0; i+1 < len(d.Frontmatter.Content); i += 2 {
+		name := d.Frontmatter.Content[i].Value
+		if seen[name] {
+			warnings = append(warnings, "Duplicate field "+name+" retained; the metadata view uses its first value")
+		}
+		seen[name] = true
+	}
+	if node := field(&d.Frontmatter, "relations"); node != nil {
+		if node.Kind == yaml.AliasNode {
+			node = node.Alias
+		}
+		nodes := node.Content
+		if node.Kind != yaml.SequenceNode {
+			nodes = []*yaml.Node{node}
+		}
+		for i, entry := range nodes {
+			var relation Relation
+			if err := entry.Decode(&relation); err != nil {
+				warnings = append(warnings, fmt.Sprintf("relation %d: %v", i, err))
+			}
+			relation.Type = strings.TrimSpace(relation.Type)
+			relation.Target = strings.TrimSpace(relation.Target)
+			if relation.Type == "" || !ValidID(relation.Target) {
+				warnings = append(warnings, fmt.Sprintf("relation %d is unresolved", i))
+			}
+			if relation.Type != "" || relation.Target != "" {
+				m.Relations = append(m.Relations, relation)
+			}
+		}
+	}
+	return m, warnings
+}
+
+// Metadata reads independent fields; one broken value cannot hide the others.
+func (d *Document) Metadata() Metadata {
+	metadata, _ := d.metadata()
+	return metadata
+}
+
+func (d *Document) Diagnostics() []string {
+	_, warnings := d.metadata()
+	if field(&d.Frontmatter, "unparsed_frontmatter") != nil {
+		warnings = append(warnings, "Original unparsed frontmatter is retained")
+	}
+	return append(append([]string{}, d.warnings...), warnings...)
+}
+
+// Set edits one field, leaving other fields and their original representations intact.
+func (d *Document) Set(name string, value any) (err error) {
+	// The YAML library panics for unsupported Go values. Keep that failure local.
+	defer func() {
+		if failure := recover(); failure != nil {
+			err = fmt.Errorf("encode %s: %v", name, failure)
+		}
+	}()
 	var node yaml.Node
 	if err := node.Encode(value); err != nil {
 		return err
 	}
-	for i := 0; i < len(d.Frontmatter.Content); i += 2 {
-		if d.Frontmatter.Content[i].Value == name {
-			previous := d.Frontmatter.Content[i+1]
-			node.Anchor = previous.Anchor
-			node.HeadComment = previous.HeadComment
-			node.LineComment = previous.LineComment
-			node.FootComment = previous.FootComment
-			*previous = node
-			return nil
-		}
+	if previous := field(&d.Frontmatter, name); previous != nil {
+		node.Anchor, node.HeadComment = previous.Anchor, previous.HeadComment
+		node.LineComment, node.FootComment = previous.LineComment, previous.FootComment
+		*previous = node
+	} else {
+		d.Frontmatter.Kind, d.Frontmatter.Tag = yaml.MappingNode, "!!map"
+		d.Frontmatter.Content = append(d.Frontmatter.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: name}, &node)
 	}
-	d.Frontmatter.Content = append(d.Frontmatter.Content,
-		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: name}, &node)
 	return nil
 }
 
-// Marshal serializes a document, preserving its Markdown body byte for byte.
-// YAML formatting may change; additional fields stay in the syntax tree.
+// Marshal preserves damaged metadata as data rather than rejecting the record.
 func (d *Document) Marshal() ([]byte, error) {
-	if _, err := d.Metadata(); err != nil {
-		return nil, err
-	}
 	var output bytes.Buffer
 	output.WriteString("---\n")
 	encoder := yaml.NewEncoder(&output)

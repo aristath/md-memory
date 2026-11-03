@@ -1,28 +1,23 @@
 # md-memory
 
-A standalone Go package for a Markdown-backed memory engine.
+A standalone Go package for connected Markdown records. Durability, continued
+operation, and simple code are the project's priorities; see [AGENTS.md](AGENTS.md).
 
-## Record layout
+## Files
 
 ```text
 memory-store/
-  memories/
-    m_<12-character-suffix>.md
-  entities/
-    e_<12-character-suffix>.md
-  topics/
-    t_<12-character-suffix>.md
-  stories/
-    s_<12-character-suffix>.md
+  memories/m_<12-character-suffix>.md
+  entities/e_<12-character-suffix>.md
+  topics/t_<12-character-suffix>.md
+  stories/s_<12-character-suffix>.md
   .index/
   .lock
 ```
 
-IDs consist of a type prefix (`m_`, `e_`, `t_`, or `s_`) followed by 12 random
-lowercase letters or digits. The prefix is part of the ID, including in references.
-The same suffix in different record types produces distinct IDs.
-The filename is `<id>.md` and is the sole source of record identity. IDs are not
-stored in YAML metadata. Each file has YAML frontmatter and a Markdown body:
+The filename is the record's identity. IDs are a type prefix followed by 12 random
+lowercase letters or digits, and are returned as `Document.ID`, never written as
+an `id` metadata field. A record contains YAML frontmatter and a Markdown body:
 
 ```markdown
 ---
@@ -37,62 +32,73 @@ relations:
 Markdown body.
 ```
 
-Additional metadata may contain arbitrary YAML values, including lists and nested
-mappings. Relation types are open-ended. A relation is stored in its source file;
-incoming connections are derived with the same type name.
+Metadata is open-ended, including lists and nested mappings. Relation types are
+open-ended too. Relations live in their source file; reverse connections are
+derived using the same type. Markdown files are authoritative; `.index/` is disposable.
 
-The Markdown files are authoritative. `.index/` is reserved for generated data
-that can be rebuilt from the files.
+## Documents
 
-## Document format
+- `Parse(data)` always returns the readable content, including damaged records.
+- `Document.Metadata()` reads fields independently. For example, numeric `3`
+  works as the title `"3"`, and one invalid field does not hide other fields.
+- `Document.Diagnostics()` reports unknown timestamps, unresolved relations,
+  unparsed metadata, and other recoverable problems without failing the operation.
+- `Document.Set(name, value)` edits one field while preserving other YAML fields.
+- `Document.Marshal()` serializes the document without rejecting damaged metadata.
 
-The document codec and ID generation are available independently of storage:
+Unknown values remain in the YAML tree. Missing timestamps stay unknown rather
+than being invented. Syntactically unreadable frontmatter is retained verbatim in
+`unparsed_frontmatter` when serialized, with the Markdown body unchanged. If the
+frontmatter boundaries cannot be determined, the entire original is retained as
+the body. Reads do not silently rewrite original files.
 
-- `NewID("m_")` and `ValidID` generate and validate prefixed record IDs.
-- `Parse` reads frontmatter and preserves the Markdown body.
-- Standalone documents have no ID until the store assigns one from a filename.
-- `Document.Metadata` reads the core fields; `Document.Set` edits a metadata field.
-- `Document.Marshal` preserves additional YAML fields and the exact body, while
-  allowing YAML formatting to change.
+Standalone parsed documents have no ID; the store derives it from the filename.
 
-## Filesystem storage
+## Store
 
-- `Open(path)` creates missing store directories and preserves existing files.
-- `Store.Create(destination, fields, body)` creates a record in an explicit
-  destination: `Memories`, `Entities`, `Topics`, or `Stories`. Fields are a
-  `map[string]any` containing YAML metadata.
-- `Store.Read(id)` resolves the prefixed ID directly to its file and returns that
-  filename's ID as `Document.ID`.
+- `Open(path)` initializes missing directories and recovers interrupted writes.
+  An unavailable record directory or damaged cache does not disable healthy ones.
+- `Store.Create(destination, fields, body)` saves a new record. Choose `Memories`,
+  `Entities`, `Topics`, or `Stories`; fields are YAML metadata as `map[string]any`.
+  The engine generates the ID and both UTC timestamps. A supplied `id` is ignored.
+- `Store.Read(id)` reads a record and retries pending publication for that ID.
+- `Store.Recover()` retries outstanding work. Individual failures are isolated.
+- `Store.Diagnostics()` reports directory and recovery issues safely across goroutines.
 
-Creation assigns the filename ID and both UTC timestamps. A supplied `id` metadata
-field is ignored, and supplied timestamps are overridden. Both creation and reading
-return `Document.ID`; document serialization does not include it. Additional
-metadata and the body are preserved. See the [executable example](example_test.go)
-for the complete create/read sequence.
+See the [executable example](example_test.go). `.lock` coordinates engine processes
+and must not be removed while the store is in use. External editors do not acquire
+this advisory lock. Filesystem access stays confined to the root.
 
-Engine processes coordinate through an OS-backed `.lock` file at the store root.
-It remains separate from the disposable `.index/` directory and must stay in place
-while the store is in use. Store operations also support concurrent goroutines.
-These advisory locks coordinate engine access; external editors do not acquire them.
+Healthy committed records can be read without taking the write lock. If write
+coordination is damaged, existing records remain readable while unsafe writes
+are blocked and the coordination issue is reported through diagnostics.
 
-Creation writes and syncs a hidden staging file, publishes the complete record
-using an atomic hard link that cannot replace an existing filename, then syncs
-the directory. Collisions generate a fresh ID. A non-nil document returned with
-an error identifies a record that was published but whose final sync or cleanup
-failed; callers should use that ID to inspect the existing record before retrying.
-The storage layer requires a local filesystem supporting hard links, advisory
-locking, and directory syncing.
+Opening an existing store does not require opening or syncing all its ancestors.
+The cache may be rebuilt; blocked record directories retain their contents, and
+errors affect operations on that directory only.
 
-Malformed files return errors identifying the affected path and remain unchanged.
-Other records remain readable and new records can still be created. Staging files
-left by process interruption remain hidden;
-they are not returned as records or overwritten by new creations.
+## Durable writes and recovery
 
-Updates, deletion, malformed-file recovery, target-existence checks, and index
-construction are outside this increment. `.index/` is initialized but remains
-empty; current storage operations do not depend on it.
+A new write first goes to a hidden staging file whose name includes the expected
+SHA-256 checksum. Recovery verifies completeness before publishing anything. A
+complete write is synced, linked to a `.pending` name, and the directory is synced.
+The final `<id>.md` name is then published without replacing existing files and synced.
 
-Run checks with:
+A failure never deletes the staged data. Complete writes recover automatically on
+open, read, or explicit recovery, including interruption before the `.pending`
+marker. Incomplete or conflicting data is retained and reported. Recovery never
+promotes an unverified partial file or overwrites a conflicting record.
+
+`Document.Pending` means the record is retained in staging. A successful creation
+with `Pending=true` has durably stored the complete record; it remains readable
+while final publication is retried. If syncing cannot establish durability, the
+operation returns an error and the retained document/ID where available. Use that
+ID to inspect or resume the same write rather than creating another record.
+Cleanup errors after durable publication are diagnostics, not failed saves.
+
+The current store requires a local filesystem with hard links, advisory locks,
+and directory syncing. Updates, deletion, target-existence checks, and index
+construction are outside the current increment.
 
 ```sh
 go test -race ./...
