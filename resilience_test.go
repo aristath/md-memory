@@ -21,6 +21,14 @@ type encodedCycle struct{ Next *encodedCycle }
 
 func (*encodedCycle) MarshalYAML() (any, error) { return "Handled by custom encoder", nil }
 
+type selfReturning int
+
+func (value selfReturning) MarshalYAML() (any, error) { return value, nil }
+
+type scalarEncoder int
+
+func (value scalarEncoder) MarshalYAML() (any, error) { return int(value), nil }
+
 type embeddedCycle struct{ Next *embeddedPayload }
 type embeddedPayload struct {
 	embeddedCycle `yaml:",inline"`
@@ -80,7 +88,7 @@ func testCyclicMetadata(t *testing.T, path string) {
 	customMap["self"] = customMap
 	failed := failingMap{}
 	failed["self"] = failed
-	for _, value := range []any{cycle, slice, pointer, embedded, customMap, failed} {
+	for _, value := range []any{cycle, slice, pointer, embedded, customMap, failed, selfReturning(3)} {
 		doc, err := store.Create(Memories, map[string]any{"title": 3, "cyclic": value}, "Healthy body")
 		if err != nil {
 			t.Fatal(err)
@@ -107,6 +115,7 @@ func testCyclicMetadata(t *testing.T, path string) {
 	ignored.Next = ignored
 	doc, err := store.Create(Topics, map[string]any{
 		"shared": []any{shared, shared}, "slices": slices, "custom": custom, "ignored": ignored,
+		"scalars": []scalarEncoder{3, 3},
 	}, "Still working")
 	if err != nil || len(doc.Diagnostics()) != 0 {
 		t.Fatalf("ordinary shared values were rejected: %v", err)

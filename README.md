@@ -65,6 +65,10 @@ Custom YAML encoders run once, and their output goes through the same cycle
 handling. Embedded fields and `omitempty`/`IsZero` are handled during encoding,
 so omitted cycles do not replace otherwise usable metadata. Other unencodable
 Go fields also use a typed placeholder and diagnostic rather than unsafe formatting.
+YAML nodes inside a list, map, or struct share the field's anchor scope. Encoding
+copies the complete value, including aliases and comments, so later caller edits
+cannot change the document. Repeated custom-encoder values are checked along the
+active encoding path as well as ordinary map, slice, and pointer cycles.
 
 ## Store
 

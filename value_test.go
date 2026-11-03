@@ -82,3 +82,62 @@ func TestValueEncodingPreservesYAMLSemantics(t *testing.T) {
 		})
 	}
 }
+
+func TestNodeContainersKeepAliases(t *testing.T) {
+	for _, kind := range []string{"pointer list", "value list", "map", "struct"} {
+		t.Run(kind, func(t *testing.T) {
+			definition := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "Keep", Anchor: "v", LineComment: "Keep value comment"}
+			reference := &yaml.Node{Kind: yaml.AliasNode, Value: "v", Alias: definition, LineComment: "Keep alias comment"}
+			var value any
+			switch kind {
+			case "pointer list":
+				value = []*yaml.Node{definition, reference}
+			case "value list":
+				value = []yaml.Node{*definition, *reference}
+			case "map":
+				value = map[string]*yaml.Node{"definition": definition, "reference": reference}
+			case "struct":
+				value = struct{ Definition, Reference *yaml.Node }{definition, reference}
+			}
+			direct, err := yaml.Marshal(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var want any
+			if err := yaml.Unmarshal(direct, &want); err != nil {
+				t.Fatal(err)
+			}
+			store, err := Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			doc, err := store.Create(Memories, map[string]any{"payload": value}, "Body")
+			if err != nil || len(doc.Diagnostics()) != 0 {
+				t.Fatalf("valid YAML aliases were replaced: %v, %v", err, doc.Diagnostics())
+			}
+			before, err := doc.Marshal()
+			if err != nil {
+				t.Fatal(err)
+			}
+			definition.Value, reference.Value = "Changed by caller", "broken"
+			after, err := doc.Marshal()
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatal("encoding retained mutable references to the caller's nodes")
+			}
+			read, err := store.Read(doc.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var fields map[string]any
+			if err := read.Frontmatter.Decode(&fields); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(fields["payload"], want) || read.Body != "Body" {
+				t.Fatalf("saved values changed: %v", fields["payload"])
+			}
+			if !bytes.Contains(before, []byte("*v")) || !bytes.Contains(before, []byte("Keep value comment")) || !bytes.Contains(before, []byte("Keep alias comment")) {
+				t.Fatalf("alias representation or comment was lost:\n%s\nOriginal:\n%s", before, direct)
+			}
+		})
+	}
+}

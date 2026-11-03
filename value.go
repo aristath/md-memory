@@ -23,6 +23,7 @@ func encodeValue(value any) (yaml.Node, error) {
 		inline  bool
 	}
 	active := map[reference]bool{}
+	var custom []any
 	var encode func(reflect.Value, bool) (yaml.Node, error)
 	encode = func(v reflect.Value, inline bool) (node yaml.Node, err error) {
 		if !v.IsValid() || (v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface) && v.IsNil() {
@@ -52,18 +53,31 @@ func encodeValue(value any) (yaml.Node, error) {
 				if nodeCycle(&typed, map[*yaml.Node]bool{}) {
 					return node, errCyclicValue
 				}
-				err = node.Encode(typed)
+				node = typed
+				if node.Kind == yaml.DocumentNode && len(node.Content) == 1 {
+					node = *node.Content[0]
+				}
 				return
 			case *yaml.Node:
 				if nodeCycle(typed, map[*yaml.Node]bool{}) {
 					return node, errCyclicValue
 				}
-				err = node.Encode(typed)
+				node = *typed
+				if node.Kind == yaml.DocumentNode && len(node.Content) == 1 {
+					node = *node.Content[0]
+				}
 				return
 			case time.Time, *time.Time, time.Duration:
 				err = node.Encode(typed)
 				return
 			case yaml.Marshaler:
+				for _, previous := range custom {
+					if reflect.DeepEqual(previous, typed) {
+						return node, errCyclicValue
+					}
+				}
+				custom = append(custom, typed)
+				defer func() { custom = custom[:len(custom)-1] }()
 				output, err := typed.MarshalYAML()
 				if err != nil {
 					return node, err
@@ -173,7 +187,22 @@ func encodeValue(value any) (yaml.Node, error) {
 		}
 		return
 	}
-	return encode(reflect.ValueOf(value), false)
+	node, err := encode(reflect.ValueOf(value), false)
+	if err != nil {
+		return node, err
+	}
+	// Resolve anchors once for the complete value, then retain an independent
+	// tree so later caller edits cannot mutate the encoded document.
+	data, err := yaml.Marshal(&node)
+	if err != nil {
+		return node, err
+	}
+	var result yaml.Node
+	err = yaml.Unmarshal(data, &result)
+	if result.Kind == yaml.DocumentNode && len(result.Content) == 1 {
+		result = *result.Content[0]
+	}
+	return result, err
 }
 
 // Match YAML's omitempty behavior, including custom IsZero methods. Pointers
