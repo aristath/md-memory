@@ -183,9 +183,9 @@ func (s *Store) Create(destination Destination, fields map[string]any, body stri
 		}
 		if err := d.Set(name, value); err != nil {
 			d.warnings = append(d.warnings, err.Error())
-			text := fmt.Sprintf("<cyclic %T>", value)
-			if !errors.Is(err, errCyclicValue) {
-				text = fmt.Sprint(value)
+			text := fmt.Sprintf("<unencodable %T>", value)
+			if errors.Is(err, errCyclicValue) {
+				text = fmt.Sprintf("<cyclic %T>", value)
 			}
 			_ = d.Set(name, text)
 		}

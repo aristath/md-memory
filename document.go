@@ -195,12 +195,9 @@ func (d *Document) Set(name string, value any) (err error) {
 			err = fmt.Errorf("encode %s: %v", name, failure)
 		}
 	}()
-	if cyclicValue(value) {
-		return fmt.Errorf("encode %s: %w", name, errCyclicValue)
-	}
-	var node yaml.Node
-	if err := node.Encode(value); err != nil {
-		return err
+	node, err := encodeValue(value)
+	if err != nil {
+		return fmt.Errorf("encode %s: %w", name, err)
 	}
 	if previous := field(&d.Frontmatter, name); previous != nil {
 		preserveAliases(&d.Frontmatter, previous)

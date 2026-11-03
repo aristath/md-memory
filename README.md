@@ -61,6 +61,10 @@ Self-referencing Go maps, slices, or pointers cannot be encoded by the YAML Go
 encoder. `Set` reports that field without changing the document; `Create` saves a
 typed placeholder with a diagnostic and continues saving the other fields and body.
 Ordinary shared values, ignored struct fields, and YAML aliases remain supported.
+Custom YAML encoders run once, and their output goes through the same cycle
+handling. Embedded fields and `omitempty`/`IsZero` are handled during encoding,
+so omitted cycles do not replace otherwise usable metadata. Other unencodable
+Go fields also use a typed placeholder and diagnostic rather than unsafe formatting.
 
 ## Store
 

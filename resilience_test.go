@@ -21,6 +21,37 @@ type encodedCycle struct{ Next *encodedCycle }
 
 func (*encodedCycle) MarshalYAML() (any, error) { return "Handled by custom encoder", nil }
 
+type embeddedCycle struct{ Next *embeddedPayload }
+type embeddedPayload struct {
+	embeddedCycle `yaml:",inline"`
+	Name          string
+}
+
+type encodedMap map[string]any
+
+func (value encodedMap) MarshalYAML() (any, error) { return map[string]any(value), nil }
+
+type failingMap map[string]any
+
+func (failingMap) MarshalYAML() (any, error) { return nil, errors.New("custom encoder failed") }
+
+type omittedCycle struct {
+	Next  *omittedCycle
+	Calls int
+}
+
+func (value *omittedCycle) IsZero() bool { value.Calls++; return true }
+
+type countedEncoder struct{ Calls int }
+
+func (value *countedEncoder) MarshalYAML() (any, error) {
+	value.Calls++
+	if value.Calls != 1 {
+		return nil, errors.New("custom encoder ran more than once")
+	}
+	return map[string]any{"value": "Keep"}, nil
+}
+
 func TestCyclicMetadataStaysIsolated(t *testing.T) {
 	if output, err := helperProcess(t, "cyclic-metadata", t.TempDir()).CombinedOutput(); err != nil {
 		if len(output) > 1000 {
@@ -43,7 +74,13 @@ func testCyclicMetadata(t *testing.T, path string) {
 	type recursive struct{ Next *recursive }
 	pointer := &recursive{}
 	pointer.Next = pointer
-	for _, value := range []any{cycle, slice, pointer} {
+	embedded := &embeddedPayload{Name: "Healthy"}
+	embedded.Next = embedded
+	customMap := encodedMap{"healthy": "Keep"}
+	customMap["self"] = customMap
+	failed := failingMap{}
+	failed["self"] = failed
+	for _, value := range []any{cycle, slice, pointer, embedded, customMap, failed} {
 		doc, err := store.Create(Memories, map[string]any{"title": 3, "cyclic": value}, "Healthy body")
 		if err != nil {
 			t.Fatal(err)
@@ -77,6 +114,45 @@ func testCyclicMetadata(t *testing.T, path string) {
 	parsed := Parse([]byte("---\nvalue: &value [*value]\n---\nBody"))
 	if err := parsed.Set("copy", *field(&parsed.Frontmatter, "value")); err != nil {
 		t.Fatalf("valid YAML recursion was rejected: %v", err)
+	}
+}
+
+func TestOmittedCyclesKeepHealthyMetadata(t *testing.T) {
+	optional := &omittedCycle{}
+	optional.Next = optional
+	custom := &countedEncoder{}
+	value := struct {
+		Name     string
+		Optional *omittedCycle `yaml:"optional,omitempty"`
+		Custom   *countedEncoder
+	}{Name: "Healthy name", Optional: optional, Custom: custom}
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := store.Create(Memories, map[string]any{"payload": value}, "Healthy body")
+	if err != nil || len(doc.Diagnostics()) != 0 {
+		t.Fatalf("YAML's omitted field disabled healthy metadata: %v, %v", err, doc.Diagnostics())
+	}
+	read, err := store.Read(doc.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields struct {
+		Payload struct {
+			Name     string
+			Optional any
+			Custom   map[string]string
+		}
+	}
+	if err := read.Frontmatter.Decode(&fields); err != nil {
+		t.Fatal(err)
+	}
+	if fields.Payload.Name != value.Name || fields.Payload.Optional != nil || fields.Payload.Custom["value"] != "Keep" {
+		t.Fatalf("healthy fields were replaced: %+v", fields.Payload)
+	}
+	if optional.Calls != 1 || custom.Calls != 1 {
+		t.Fatalf("encoding methods were invoked repeatedly: IsZero=%d, MarshalYAML=%d", optional.Calls, custom.Calls)
 	}
 }
 
