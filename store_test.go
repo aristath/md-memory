@@ -468,6 +468,14 @@ func TestStoreProcess(t *testing.T) {
 	if role == "" {
 		return
 	}
+	if role == "cyclic-metadata" {
+		testCyclicMetadata(t, path)
+		return
+	}
+	if role == "orphan-collision" {
+		testOrphanCollision(t, path)
+		return
+	}
 	if role == "staged-crash" {
 		store := &Store{path: path}
 		err := store.locked(true, func(root *os.Root) error {

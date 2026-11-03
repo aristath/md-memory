@@ -141,6 +141,14 @@ func (s *Store) recoverDirectory(root *os.Root, directory string) {
 		s.note(directory, err)
 		return
 	}
+	// Rebuild this directory's file diagnostics from a successful scan. A failed
+	// scan must retain earlier problems rather than imply that the files vanished.
+	s.issues.Range(func(key, _ any) bool {
+		if filepath.Dir(key.(string)) == directory {
+			s.issues.Delete(key)
+		}
+		return true
+	})
 	for _, entry := range entries {
 		s.recoverFile(root, directory, entry.Name())
 	}

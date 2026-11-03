@@ -183,7 +183,11 @@ func (s *Store) Create(destination Destination, fields map[string]any, body stri
 		}
 		if err := d.Set(name, value); err != nil {
 			d.warnings = append(d.warnings, err.Error())
-			_ = d.Set(name, fmt.Sprint(value))
+			text := fmt.Sprintf("<cyclic %T>", value)
+			if !errors.Is(err, errCyclicValue) {
+				text = fmt.Sprint(value)
+			}
+			_ = d.Set(name, text)
 		}
 	}
 	if field(&d.Frontmatter, "title") == nil {
@@ -199,10 +203,24 @@ func (s *Store) Create(destination Destination, fields map[string]any, body stri
 		if err := syncPath(root, "."); err != nil {
 			return err
 		}
+		entries, err := fs.ReadDir(root.FS(), string(destination))
+		if err != nil {
+			return err
+		}
+		staged := map[string]bool{}
+		for _, entry := range entries {
+			if strings.HasPrefix(entry.Name(), ".") && strings.HasSuffix(entry.Name(), ".tmp") {
+				id, _, _ := strings.Cut(strings.TrimPrefix(entry.Name(), "."), ".md.")
+				staged[id] = true
+			}
+		}
 		for {
 			id, err := NewID(prefix)
 			if err != nil {
 				return err
+			}
+			if staged[id] {
+				continue
 			}
 			name := filepath.Join(string(destination), id+".md")
 			if _, err := root.Lstat(name); err == nil {
@@ -316,7 +334,8 @@ func (s *Store) Read(id string) (*Document, error) {
 		if s != nil {
 			if root, openErr := os.OpenRoot(s.path); openErr == nil {
 				defer root.Close()
-				for _, candidate := range []string{name, pendingName(name)} {
+				// Publication can remove .pending after the first committed check.
+				for _, candidate := range []string{name, pendingName(name), name} {
 					if data, readErr := readFile(root, candidate); readErr == nil {
 						d = Parse(data)
 						d.ID, d.Pending = id, candidate != name

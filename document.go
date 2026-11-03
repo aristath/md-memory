@@ -195,6 +195,9 @@ func (d *Document) Set(name string, value any) (err error) {
 			err = fmt.Errorf("encode %s: %v", name, failure)
 		}
 	}()
+	if cyclicValue(value) {
+		return fmt.Errorf("encode %s: %w", name, errCyclicValue)
+	}
 	var node yaml.Node
 	if err := node.Encode(value); err != nil {
 		return err

@@ -57,6 +57,10 @@ the entire original is retained as
 the body. Reads do not silently rewrite original files.
 
 Standalone parsed documents have no ID; the store derives it from the filename.
+Self-referencing Go maps, slices, or pointers cannot be encoded by the YAML Go
+encoder. `Set` reports that field without changing the document; `Create` saves a
+typed placeholder with a diagnostic and continues saving the other fields and body.
+Ordinary shared values, ignored struct fields, and YAML aliases remain supported.
 
 ## Store
 
@@ -72,6 +76,8 @@ Standalone parsed documents have no ID; the store derives it from the filename.
 - `Store.Recover()` retries outstanding work when the lock is available.
   Individual failures are isolated; successful recovery clears the deferred status.
 - `Store.Diagnostics()` reports directory and recovery issues safely across goroutines.
+  Successful directory scans clear obsolete file issues and report remaining
+  damage again; failed scans retain earlier issues.
 
 See the [executable example](example_test.go). `.lock` coordinates engine processes
 and must not be removed while the store is in use. External editors do not acquire
@@ -82,7 +88,8 @@ coordination is damaged, existing records remain readable while unsafe writes
 are blocked and the coordination issue is reported through diagnostics. Pending
 work never takes precedence over readable committed content. Readable pending
 records also remain available while another writer holds the lock; publication
-is deferred and reported on the returned document.
+is deferred and reported on the returned document. Reads recheck the committed
+filename if the pending name disappears during publication.
 
 During initialization, the engine syncs the store's ancestors before creating
 `.lock`. If syncing fails, existing content stays readable and writes are blocked;
@@ -105,6 +112,8 @@ A failure never deletes the staged data. Complete writes recover automatically o
 open, read, or explicit recovery, including interruption before the `.pending`
 marker. Incomplete or conflicting data is retained and reported. Recovery never
 promotes an unverified partial file or overwrites a conflicting record.
+IDs held by unfinished staging files are reserved for their original records,
+even before a `.pending` marker exists.
 
 `Document.Pending` means the record is retained in staging. A successful creation
 with `Pending=true` has durably stored the complete record; it remains readable
