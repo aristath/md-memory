@@ -470,7 +470,7 @@ func TestStoreProcess(t *testing.T) {
 	}
 	if role == "staged-crash" {
 		store := &Store{path: path}
-		err := store.locked(func(root *os.Root) error {
+		err := store.locked(true, func(root *os.Root) error {
 			if _, err := stage(root, filepath.Join("memories", "m_7k3m9x2q6v4c.md"), []byte(sample)); err != nil {
 				return err
 			}

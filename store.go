@@ -140,13 +140,13 @@ func ensureDirectory(root *os.Root, name string) error {
 	if err := root.Mkdir(name, 0700); err != nil {
 		return err
 	}
-	return syncDirectory(root, ".")
+	return syncPath(root, ".")
 }
 
-// Recover resumes completed pending writes. A bad directory or pending record
-// remains isolated and is reported through Diagnostics; other recovery continues.
+// Recover resumes completed pending writes when the write lock is available.
+// Open reports deferred recovery without blocking access to readable records.
 func (s *Store) Recover() error {
-	return s.locked(func(root *os.Root) error {
+	return s.locked(false, func(root *os.Root) error {
 		// The cache is disposable, unlike the record directories.
 		if info, err := root.Lstat(".index"); err == nil && !info.IsDir() {
 			s.note(".index", root.Remove(".index"))
@@ -189,11 +189,11 @@ func (s *Store) Create(destination Destination, fields map[string]any, body stri
 	now := time.Now().UTC()
 	_ = d.Set("created_at", now)
 	_ = d.Set("updated_at", now)
-	err = s.locked(func(root *os.Root) error {
+	err = s.locked(true, func(root *os.Root) error {
 		if err := ensureDirectory(root, string(destination)); err != nil {
 			return err
 		}
-		if err := syncDirectory(root, "."); err != nil {
+		if err := syncPath(root, "."); err != nil {
 			return err
 		}
 		for {
@@ -231,9 +231,9 @@ func (s *Store) Create(destination Destination, fields map[string]any, body stri
 			if err != nil {
 				d.warnings = append(d.warnings, err.Error())
 			}
-			if errors.Is(err, fs.ErrExist) {
+			if errors.Is(err, fs.ErrExist) || errors.Is(err, errUnverifiedPending) {
 				return err
-			} // A conflicting record must remain untouched.
+			} // Conflicting or changed data cannot confirm this save.
 			return nil // The synced pending record remains readable even if publication is blocked.
 		}
 	})
@@ -259,16 +259,20 @@ func (s *Store) Read(id string) (*Document, error) {
 			data, readErr := readFile(root, name)
 			pending := regularFile(root, pendingName(name)) == nil
 			_ = root.Close()
-			if readErr == nil && !pending {
+			if readErr == nil {
 				d := Parse(data)
 				d.ID = id
+				if pending {
+					d.warnings = append(d.warnings, "Pending work is retained for recovery; committed content returned")
+				}
 				return d, nil
 			}
 		}
 	}
 	var d *Document
-	err := s.locked(func(root *os.Root) error {
+	err := s.locked(true, func(root *os.Root) error {
 		pending := false
+		var recoveryErr error
 		var staging []string
 		if err := regularFile(root, name); err != nil {
 			// Only missing/blocked records need a directory scan for pre-publication writes.
@@ -281,6 +285,7 @@ func (s *Store) Read(id string) (*Document, error) {
 		}
 		if err := regularFile(root, pendingName(name)); err == nil {
 			published, err := s.complete(root, name)
+			recoveryErr = err
 			pending = !published
 			s.note(name, err)
 		}
@@ -297,6 +302,9 @@ func (s *Store) Read(id string) (*Document, error) {
 		}
 		d = Parse(data)
 		d.ID, d.Pending = id, pending
+		if recoveryErr != nil {
+			d.warnings = append(d.warnings, recoveryErr.Error())
+		}
 		return nil
 	})
 	if err != nil {
@@ -319,7 +327,7 @@ func (s *Store) Read(id string) (*Document, error) {
 	return d, nil
 }
 
-func (s *Store) locked(operation func(*os.Root) error) error {
+func (s *Store) locked(wait bool, operation func(*os.Root) error) error {
 	if s == nil {
 		return errors.New("store is nil")
 	}
@@ -333,8 +341,18 @@ func (s *Store) locked(operation func(*os.Root) error) error {
 	}
 	lock := flock.New(filepath.Join(s.path, ".lock"))
 	defer func() { s.note("close lock", lock.Close()) }()
-	if err := lock.Lock(); err != nil {
-		return err
+	if wait {
+		if err := lock.Lock(); err != nil {
+			return err
+		}
+	} else {
+		acquired, err := lock.TryLock()
+		if err != nil {
+			return err
+		}
+		if !acquired {
+			return errors.New("recovery deferred while another writer holds the lock")
+		}
 	}
 	return operation(root)
 }
@@ -357,14 +375,14 @@ func readFile(root *os.Root, name string) ([]byte, error) {
 	return root.ReadFile(name)
 }
 
-func syncDirectory(root *os.Root, name string) error {
-	directory, err := root.Open(name)
+func syncPath(root *os.Root, name string) error {
+	file, err := root.Open(name)
 	if err != nil {
 		return err
 	}
-	err = directory.Sync()
+	err = file.Sync()
 	if err != nil {
-		err = directory.Sync()
+		err = file.Sync()
 	}
-	return errors.Join(err, directory.Close())
+	return errors.Join(err, file.Close())
 }

@@ -43,13 +43,16 @@ derived using the same type. Markdown files are authoritative; `.index/` is disp
   works as the title `"3"`, and one invalid field does not hide other fields.
 - `Document.Diagnostics()` reports unknown timestamps, unresolved relations,
   unparsed metadata, and other recoverable problems without failing the operation.
-- `Document.Set(name, value)` edits one field while preserving other YAML fields.
+- `Document.Set(name, value)` edits one field while preserving other YAML fields,
+  including references to nested anchors in the replaced value.
 - `Document.Marshal()` serializes the document without rejecting damaged metadata.
 
 Unknown values remain in the YAML tree. Missing timestamps stay unknown rather
-than being invented. Syntactically unreadable frontmatter is retained verbatim in
-`unparsed_frontmatter` when serialized, with the Markdown body unchanged. If the
-frontmatter boundaries cannot be determined, the entire original is retained as
+than being invented. Syntactically unreadable frontmatter or content following a
+YAML document end marker is retained verbatim in `unparsed_frontmatter` when
+serialized. Healthy fields in the first YAML document remain usable, and the
+Markdown body stays unchanged. If the frontmatter boundaries cannot be determined,
+the entire original is retained as
 the body. Reads do not silently rewrite original files.
 
 Standalone parsed documents have no ID; the store derives it from the filename.
@@ -58,11 +61,15 @@ Standalone parsed documents have no ID; the store derives it from the filename.
 
 - `Open(path)` initializes missing directories and recovers interrupted writes.
   An unavailable record directory or damaged cache does not disable healthy ones.
+  If another writer holds the lock, recovery is deferred with a diagnostic;
+  opening a reader does not wait for that writer.
 - `Store.Create(destination, fields, body)` saves a new record. Choose `Memories`,
   `Entities`, `Topics`, or `Stories`; fields are YAML metadata as `map[string]any`.
   The engine generates the ID and both UTC timestamps. A supplied `id` is ignored.
-- `Store.Read(id)` reads a record and retries pending publication for that ID.
-- `Store.Recover()` retries outstanding work. Individual failures are isolated.
+- `Store.Read(id)` reads committed content first, or retries pending publication
+  when the committed record is unavailable.
+- `Store.Recover()` retries outstanding work when the lock is available.
+  Individual failures are isolated.
 - `Store.Diagnostics()` reports directory and recovery issues safely across goroutines.
 
 See the [executable example](example_test.go). `.lock` coordinates engine processes
@@ -71,7 +78,8 @@ this advisory lock. Filesystem access stays confined to the root.
 
 Healthy committed records can be read without taking the write lock. If write
 coordination is damaged, existing records remain readable while unsafe writes
-are blocked and the coordination issue is reported through diagnostics.
+are blocked and the coordination issue is reported through diagnostics. Pending
+work never takes precedence over readable committed content.
 
 Opening an existing store does not require opening or syncing all its ancestors.
 The cache may be rebuilt; blocked record directories retain their contents, and
@@ -83,6 +91,9 @@ A new write first goes to a hidden staging file whose name includes the expected
 SHA-256 checksum. Recovery verifies completeness before publishing anything. A
 complete write is synced, linked to a `.pending` name, and the directory is synced.
 The final `<id>.md` name is then published without replacing existing files and synced.
+Publication checks the pending bytes against the expected checksum recorded in
+the staging filename. This evidence is retained until removal of the pending
+marker is durable; a damaged pending copy remains readable with diagnostics.
 
 A failure never deletes the staged data. Complete writes recover automatically on
 open, read, or explicit recovery, including interruption before the `.pending`

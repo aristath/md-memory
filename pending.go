@@ -11,6 +11,8 @@ import (
 	"strings"
 )
 
+var errUnverifiedPending = errors.New("pending checksum cannot be verified; data retained")
+
 func pendingName(name string) string {
 	return filepath.Join(filepath.Dir(name), "."+filepath.Base(name)+".pending")
 }
@@ -42,15 +44,7 @@ func prepare(root *os.Root, name, temporary string) (bool, error) {
 	if temporary != temporaryName(name, data) {
 		return false, errors.New("incomplete or changed staging data retained")
 	}
-	file, err := root.Open(temporary)
-	if err != nil {
-		return false, err
-	}
-	err = file.Sync()
-	if err != nil {
-		err = file.Sync()
-	}
-	if err := errors.Join(err, file.Close()); err != nil {
+	if err := syncPath(root, temporary); err != nil {
 		return false, err
 	}
 	if err := root.Link(temporary, pendingName(name)); err != nil {
@@ -62,7 +56,7 @@ func prepare(root *os.Root, name, temporary string) (bool, error) {
 			return false, fmt.Errorf("pending data conflicts with %s: %w", name, fs.ErrExist)
 		}
 	}
-	return true, syncDirectory(root, filepath.Dir(name))
+	return true, syncPath(root, filepath.Dir(name))
 }
 
 // Only the final file and directory sync establish publication. Cleanup failures
@@ -73,28 +67,46 @@ func (s *Store) complete(root *os.Root, name string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if err := root.Link(pending, name); err != nil {
-		if !errors.Is(err, fs.ErrExist) {
-			return false, err
-		}
-		existing, readErr := readFile(root, name)
-		if readErr != nil {
-			return false, readErr
-		}
+	temporary := temporaryName(name, data)
+	existing, readErr := readFile(root, name)
+	if readErr == nil {
 		if !bytes.Equal(data, existing) {
 			return false, fmt.Errorf("pending data conflicts with %s: %w", name, fs.ErrExist)
 		}
+	} else {
+		if !errors.Is(readErr, fs.ErrNotExist) {
+			return false, readErr
+		}
+		// The checksum-bearing filename records the original intent. Never use
+		// a ready marker to bypass that proof, even if its bytes are readable.
+		if err := regularFile(root, temporary); err != nil {
+			return false, fmt.Errorf("%w: %v", errUnverifiedPending, err)
+		}
+		if err := syncPath(root, pending); err != nil {
+			return false, err
+		}
+		if err := root.Link(pending, name); err != nil {
+			return false, err
+		}
 	}
-	if err := syncDirectory(root, filepath.Dir(name)); err != nil {
+	if err := syncPath(root, filepath.Dir(name)); err != nil {
 		return false, err
 	}
-	temporary := temporaryName(name, data)
 	stagedInfo, _ := root.Lstat(pending)
+	// Retain checksum evidence until removal of the ready marker is durable.
+	if err := root.Remove(pending); err != nil {
+		s.note(pending, err)
+		return true, nil
+	}
+	s.note(pending, nil)
+	if err := syncPath(root, filepath.Dir(name)); err != nil {
+		s.note("cleanup "+name, err)
+		return true, nil
+	}
 	if info, err := root.Lstat(temporary); err == nil && stagedInfo != nil && os.SameFile(info, stagedInfo) {
 		s.note(temporary, root.Remove(temporary))
 	}
-	s.note(pending, root.Remove(pending))
-	s.note("cleanup "+name, syncDirectory(root, filepath.Dir(name)))
+	s.note("cleanup "+name, syncPath(root, filepath.Dir(name)))
 	return true, nil
 }
 

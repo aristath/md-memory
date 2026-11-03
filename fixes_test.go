@@ -1,0 +1,224 @@
+package memory
+
+import (
+	"bufio"
+	"bytes"
+	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"go.yaml.in/yaml/v3"
+)
+
+func TestFrontmatterTrailingContentIsRetained(t *testing.T) {
+	for _, tail := range []string{"custom: DO_NOT_LOSE\n", "broken: [DO_NOT_LOSE\n"} {
+		header := "title: Example\ncreated_at: 2026-11-03T10:00:00Z\nupdated_at: 2026-11-03T10:00:00Z\n...\n" + tail
+		d := Parse([]byte("---\n" + header + "---\nOriginal body"))
+		if metadata := d.Metadata(); metadata.Title != "Example" || metadata.CreatedAt.IsZero() || metadata.UpdatedAt.IsZero() {
+			t.Fatal("trailing content hid healthy metadata")
+		}
+		encoded, err := d.Marshal()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Contains(encoded, []byte("DO_NOT_LOSE")) || len(d.Diagnostics()) == 0 {
+			t.Fatal("trailing header content was silently discarded")
+		}
+		var retained string
+		raw := field(&Parse(encoded).Frontmatter, "unparsed_frontmatter")
+		if raw == nil {
+			t.Fatal("original frontmatter was not retained")
+		}
+		if err := raw.Decode(&retained); err != nil || retained != header {
+			t.Fatalf("header changed: %q, %v", retained, err)
+		}
+		if Parse(encoded).Body != "Original body" {
+			t.Fatal("body changed")
+		}
+	}
+}
+
+func TestCorruptedReadyWriteIsNotPublished(t *testing.T) {
+	path := t.TempDir()
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	name := filepath.Join("memories", "m_7k3m9x2q6v4c.md")
+	if ready, err := stage(root, name, []byte(sample)); !ready || err != nil {
+		t.Fatal(err)
+	}
+	changed := []byte("---\ntitle: Truncated\n---\nOnly part of the body")
+	if err := root.WriteFile(temporaryName(name, []byte(sample)), changed, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if published, err := store.complete(root, name); published || !errors.Is(err, errUnverifiedPending) {
+		t.Fatalf("changed data was acknowledged as saved: %v", err)
+	}
+	if err := store.Recover(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := root.Lstat(name); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal("corrupted pending data was published")
+	}
+	if data, err := root.ReadFile(pendingName(name)); err != nil || !bytes.Equal(data, changed) {
+		t.Fatal("damaged pending data was discarded")
+	}
+	doc, err := store.Read("m_7k3m9x2q6v4c")
+	if err != nil || !doc.Pending || len(doc.Diagnostics()) == 0 {
+		t.Fatalf("damaged data was hidden or reported as complete: %v", err)
+	}
+}
+
+func TestCommittedContentWinsOverPendingWhenLockBreaks(t *testing.T) {
+	path := t.TempDir()
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	committed, err := store.Create(Memories, nil, "Authoritative body")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	name := filepath.Join("memories", committed.ID+".md")
+	if ready, err := stage(root, name, []byte(sample)); !ready || err != nil {
+		t.Fatal(err)
+	}
+	if err := root.Remove(".lock"); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.Mkdir(".lock", 0700); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := reopened.Read(committed.ID)
+	if err != nil || doc.Body != "Authoritative body" || doc.Pending {
+		t.Fatalf("pending content replaced the committed memory: %+v %v", doc, err)
+	}
+	if len(doc.Diagnostics()) == 0 {
+		t.Fatal("pending recovery was not reported")
+	}
+	if data, err := root.ReadFile(pendingName(name)); err != nil || string(data) != sample {
+		t.Fatal("conflicting pending work was lost")
+	}
+}
+
+func TestOpenDoesNotWaitForUnrelatedWriter(t *testing.T) {
+	path := t.TempDir()
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := store.Create(Memories, nil, "Readable body")
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := helperProcess(t, "hold-lock", path)
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdin, err := command.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdin.Close()
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = command.Process.Kill(); _ = command.Wait() }()
+	if line, err := bufio.NewReader(stdout).ReadString('\n'); err != nil || line != "locked\n" {
+		t.Fatalf("child did not lock: %q %v", line, err)
+	}
+	opened := make(chan *Store, 1)
+	failures := make(chan error, 1)
+	go func() {
+		s, err := Open(path)
+		if err != nil {
+			failures <- err
+		} else {
+			opened <- s
+		}
+	}()
+	select {
+	case s := <-opened:
+		read, err := s.Read(doc.ID)
+		if err != nil || read.Body != "Readable body" {
+			t.Fatalf("fresh reader could not read: %v", err)
+		}
+	case err := <-failures:
+		t.Fatal(err)
+	case <-time.After(time.Second):
+		t.Fatal("opening a reader waited for an unrelated writer")
+	}
+}
+
+func TestReplacingNestedAnchorKeepsExternalAliases(t *testing.T) {
+	input := strings.Replace(sample, "aliases: &names [\"α\", \"000123\", \"yes\"]", "aliases: &names [\"α\", &nested \"000123\", \"yes\"]", 1)
+	input = strings.Replace(input, "custom:\n", "nested_reference: *nested # Keep reference comment\ncustom:\n", 1)
+	doc := Parse([]byte(input))
+	if err := doc.Set("aliases", []string{"Replacement"}); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := doc.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var root yaml.Node
+	if err := yaml.Unmarshal(encoded, &root); err != nil {
+		t.Fatalf("edit broke YAML: %v", err)
+	}
+	read := Parse(encoded)
+	var value string
+	if err := field(&read.Frontmatter, "nested_reference").Decode(&value); err != nil || value != "000123" {
+		t.Fatalf("referenced value lost: %q %v", value, err)
+	}
+	if !bytes.Contains(encoded, []byte("Keep reference comment")) {
+		t.Fatal("alias comment lost")
+	}
+	if read.Body != doc.Body || read.Metadata().Title != "Example" {
+		t.Fatal("unrelated content changed")
+	}
+}
+
+func TestReplacingNestedAnchorsKeepsRecursiveReferences(t *testing.T) {
+	doc := Parse([]byte("---\naliases:\n  outer: &outer\n    inner: &inner [*outer]\ninner_reference: *inner\nouter_reference: *outer\nagain: *inner\n---\nBody"))
+	if err := doc.Set("aliases", "Replacement"); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := doc.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var node yaml.Node
+	if err := yaml.Unmarshal(encoded, &node); err != nil {
+		t.Fatalf("recursive references broke YAML: %v", err)
+	}
+	read := Parse(encoded)
+	inner := field(&read.Frontmatter, "inner_reference")
+	outer := field(&read.Frontmatter, "outer_reference")
+	again := field(&read.Frontmatter, "again")
+	if inner.Anchor != "inner" || outer.Alias != inner.Content[0] || again.Alias != inner {
+		t.Fatal("references no longer share their original values")
+	}
+	if field(inner.Content[0], "inner").Alias != inner {
+		t.Fatal("recursive reference was lost")
+	}
+}

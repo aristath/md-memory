@@ -4,6 +4,7 @@ package memory
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -56,9 +57,23 @@ func Parse(data []byte) *Document {
 		if delimiter(line) {
 			d.Body = string(remaining)
 			var node yaml.Node
-			err := yaml.Unmarshal(header.Bytes(), &node)
+			decoder := yaml.NewDecoder(bytes.NewReader(header.Bytes()))
+			err := decoder.Decode(&node)
+			decoded := err == nil
+			if err == io.EOF {
+				err = nil
+			}
+			if err == nil {
+				var extra yaml.Node
+				if trailing := decoder.Decode(&extra); trailing != io.EOF {
+					err = fmt.Errorf("content after the first YAML document is retained")
+				}
+			}
 			if node.Kind == yaml.DocumentNode && len(node.Content) == 1 {
 				node = *node.Content[0]
+			}
+			if decoded && node.Kind == yaml.MappingNode {
+				d.Frontmatter = node
 			}
 			if err == nil && node.Kind == 0 {
 				return d // Empty frontmatter is an empty mapping.
@@ -185,6 +200,7 @@ func (d *Document) Set(name string, value any) (err error) {
 		return err
 	}
 	if previous := field(&d.Frontmatter, name); previous != nil {
+		preserveAliases(&d.Frontmatter, previous)
 		node.Anchor, node.HeadComment = previous.Anchor, previous.HeadComment
 		node.LineComment, node.FootComment = previous.LineComment, previous.FootComment
 		*previous = node
@@ -193,6 +209,59 @@ func (d *Document) Set(name string, value any) (err error) {
 		d.Frontmatter.Content = append(d.Frontmatter.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: name}, &node)
 	}
 	return nil
+}
+
+// Move a removed nested anchor to its first surviving reference. Other aliases
+// keep their names, including recursive references, without dangling definitions.
+func preserveAliases(root, replaced *yaml.Node) {
+	removed := map[*yaml.Node]*yaml.Node{}
+	var collect func(*yaml.Node)
+	collect = func(node *yaml.Node) {
+		if node.Anchor != "" {
+			removed[node] = nil
+		}
+		for _, child := range node.Content {
+			collect(child)
+		}
+	}
+	for _, child := range replaced.Content {
+		collect(child)
+	}
+	if len(removed) == 0 {
+		return
+	}
+	var visit func(*yaml.Node) *yaml.Node
+	visit = func(node *yaml.Node) *yaml.Node {
+		if node == replaced {
+			return node
+		}
+		target := node
+		if node.Kind == yaml.AliasNode {
+			target = node.Alias
+		}
+		if definition, affected := removed[target]; affected {
+			if definition != nil {
+				return &yaml.Node{Kind: yaml.AliasNode, Value: target.Anchor, Alias: definition,
+					HeadComment: node.HeadComment, LineComment: node.LineComment, FootComment: node.FootComment}
+			}
+			if node.Kind == yaml.AliasNode {
+				copy := *target
+				copy.HeadComment = strings.TrimSpace(copy.HeadComment + "\n" + node.HeadComment)
+				copy.LineComment = strings.TrimSpace(copy.LineComment + "\n" + node.LineComment)
+				copy.FootComment = strings.TrimSpace(copy.FootComment + "\n" + node.FootComment)
+				node = &copy
+			}
+			removed[target] = node
+		}
+		// Copy the slots so relocating recursive definitions cannot turn an
+		// alias in the original subtree into a direct cycle in Content.
+		node.Content = append([]*yaml.Node(nil), node.Content...)
+		for i, child := range node.Content {
+			node.Content[i] = visit(child)
+		}
+		return node
+	}
+	visit(root)
 }
 
 // Marshal preserves damaged metadata as data rather than rejecting the record.
