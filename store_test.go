@@ -478,6 +478,10 @@ func TestStoreProcess(t *testing.T) {
 		testCyclicMetadata(t, path)
 		return
 	}
+	if role == "shared-merges" {
+		testSharedMergeReferences(t)
+		return
+	}
 	if role == "orphan-collision" {
 		testOrphanCollision(t, path)
 		return

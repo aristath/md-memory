@@ -2,6 +2,7 @@ package memory
 
 import (
 	"bytes"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -134,6 +135,92 @@ func TestDamagedMergeSourcesKeepHealthyMetadataAvailable(t *testing.T) {
 		encoded, err := doc.Marshal()
 		if err != nil || Parse(encoded).Body != "Body" {
 			t.Fatalf("damaged merge prevented serialization: %v", err)
+		}
+	}
+}
+
+func TestAliasKeysPreserveFieldIdentity(t *testing.T) {
+	for _, fields := range []string{
+		"key: &title unrelated\n*title: Keep unrelated value\ntitle: Actual title\n",
+		"key: &label title\n*label: Actual title\nunrelated: Keep unrelated value\n",
+	} {
+		doc := Parse([]byte("---\n" + fields + "created_at: 2026-11-03T00:00:00Z\nupdated_at: 2026-11-03T00:00:00Z\n---\nBody"))
+		if doc.Metadata().Title != "Actual title" || len(doc.Diagnostics()) != 0 {
+			t.Fatalf("alias name was mistaken for its key: %+v, %v", doc.Metadata(), doc.Diagnostics())
+		}
+		if err := doc.Set("title", "New title"); err != nil {
+			t.Fatal(err)
+		}
+		encoded, err := doc.Marshal()
+		if err != nil {
+			t.Fatal(err)
+		}
+		read := Parse(encoded)
+		var values map[string]any
+		if err := read.Frontmatter.Decode(&values); err != nil {
+			t.Fatal(err)
+		}
+		if values["title"] != "New title" || values["unrelated"] != "Keep unrelated value" || read.Metadata().Title != "New title" || read.Body != "Body" || len(read.Diagnostics()) != 0 {
+			t.Fatalf("editing title changed another field: %v, %v", values, read.Diagnostics())
+		}
+		if !bytes.Contains(encoded, []byte("*")) {
+			t.Fatal("editing a value flattened its alias key")
+		}
+	}
+}
+
+func TestDuplicateAliasesUseResolvedKeys(t *testing.T) {
+	for _, key := range []string{"title", "3"} {
+		doc := Parse([]byte("---\nkey: &label " + key + "\n*label: First\n'" + key + "': Second\n---\nBody"))
+		if !strings.Contains(strings.Join(doc.Diagnostics(), "\n"), "Duplicate field "+key+" retained") || field(&doc.Frontmatter, key).Value != "First" {
+			t.Fatalf("a duplicate resolved key was missed: %v", doc.Diagnostics())
+		}
+		if err := doc.Set(key, "Edited first"); err != nil {
+			t.Fatal(err)
+		}
+		encoded, err := doc.Marshal()
+		if err != nil {
+			t.Fatal(err)
+		}
+		read := Parse(encoded)
+		if field(&read.Frontmatter, key).Value != "Edited first" || read.Frontmatter.Content[5].Value != "Second" || read.Body != "Body" {
+			t.Fatal("editing a duplicate discarded a retained value")
+		}
+	}
+}
+
+func TestSharedMergeReferencesRemainResponsive(t *testing.T) {
+	if output, err := helperProcess(t, "shared-merges", "").CombinedOutput(); err != nil {
+		t.Fatalf("shared merge references blocked metadata: %v\n%s", err, output)
+	}
+}
+
+func testSharedMergeReferences(t *testing.T) {
+	var source strings.Builder
+	source.WriteString("---\ntitle: Healthy\ncreated_at: 2026-11-03T00:00:00Z\nupdated_at: 2026-11-03T00:00:00Z\nbase: &m0 {note: Keep}\n")
+	for i := 1; i <= 40; i++ {
+		fmt.Fprintf(&source, "m%d: &m%d {<<: [*m%d, *m%d]}\n", i, i, i-1, i-1)
+	}
+	for _, fallback := range []bool{false, true} {
+		merge, relations := "<<: *m40\n", 0
+		if fallback {
+			merge, relations = "<<: [*m40, {relations: [{type: after, target: m_b8r5n2w9d4hx}]}]\n", 1
+		}
+		doc := Parse([]byte(source.String() + merge + "---\nBody"))
+		m := doc.Metadata()
+		if m.Title != "Healthy" || m.CreatedAt.IsZero() || m.UpdatedAt.IsZero() || len(m.Relations) != relations || len(doc.Diagnostics()) != 0 {
+			t.Fatalf("shared sources hid healthy metadata: %+v, %v", m, doc.Diagnostics())
+		}
+		if err := doc.Set("title", "Edited"); err != nil {
+			t.Fatal(err)
+		}
+		encoded, err := doc.Marshal()
+		if err != nil {
+			t.Fatal(err)
+		}
+		read := Parse(encoded)
+		if read.Metadata().Title != "Edited" || len(read.Metadata().Relations) != relations || read.Body != "Body" || len(read.Diagnostics()) != 0 {
+			t.Fatal("shared sources prevented editing or rereading")
 		}
 	}
 }

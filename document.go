@@ -106,24 +106,32 @@ func delimiter(line []byte) bool {
 
 func field(node *yaml.Node, name string) *yaml.Node {
 	for i := 0; i+1 < len(node.Content); i += 2 {
-		if node.Content[i].Value == name {
+		if key, ok := fieldName(node.Content[i]); ok && key == name {
 			return node.Content[i+1]
 		}
 	}
 	return nil
 }
 
+// Decode scalar keys and their aliases the same way for reads, edits, and
+// duplicate detection. Null and compound keys have no string field identity.
+func fieldName(node *yaml.Node) (string, bool) {
+	var name string
+	err := node.Decode(&name)
+	return name, err == nil && node.ShortTag() != "!!null"
+}
+
 // Resolve inherited metadata without changing the source tree. Explicit fields
-// win; merge sequences use their first matching source. Cycles stay local.
+// win; merge sequences use their first matching source. Each source is searched
+// once per field, so shared defaults and cycles cannot multiply the work.
 func metadataField(root *yaml.Node, name string) *yaml.Node {
-	active := map[*yaml.Node]bool{}
+	visited := map[*yaml.Node]bool{}
 	var lookup func(*yaml.Node) *yaml.Node
 	lookup = func(node *yaml.Node) *yaml.Node {
-		if node == nil || active[node] {
+		if node == nil || visited[node] {
 			return nil
 		}
-		active[node] = true
-		defer delete(active, node)
+		visited[node] = true
 		switch node.Kind {
 		case yaml.AliasNode:
 			return lookup(node.Alias)
@@ -176,7 +184,10 @@ func (d *Document) metadata() (m Metadata, warnings []string) {
 	}
 	seen := map[string]bool{}
 	for i := 0; i+1 < len(d.Frontmatter.Content); i += 2 {
-		name := d.Frontmatter.Content[i].Value
+		name, ok := fieldName(d.Frontmatter.Content[i])
+		if !ok {
+			continue
+		}
 		if seen[name] {
 			warnings = append(warnings, "Duplicate field "+name+" retained; the metadata view uses its first value")
 		}
