@@ -1,4 +1,4 @@
-# md-memory
+# sōngyā Memory Engine
 
 A standalone Go package for connected Markdown records. Durability, continued
 operation, and simple code are the project's priorities; see [AGENTS.md](AGENTS.md).
