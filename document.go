@@ -12,8 +12,8 @@ import (
 )
 
 type Relation struct {
-	Type   string `yaml:"type"`
-	Target string `yaml:"target"`
+	Type   string `yaml:"type" json:"type"`
+	Target string `yaml:"target" json:"target"`
 }
 
 type Metadata struct {
@@ -29,6 +29,7 @@ type Document struct {
 	ID          string `yaml:"-"`
 	Revision    string `yaml:"-"`
 	Pending     bool   `yaml:"-"`
+	Unconfirmed bool   `yaml:"-"`
 	Frontmatter yaml.Node
 	Body        string
 	warnings    []string

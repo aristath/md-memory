@@ -12,6 +12,8 @@ memory-store/
   topics/t_<12-character-suffix>.md
   stories/s_<12-character-suffix>.md
   .index/
+  .batches/
+  .imports/
   .lock
 ```
 
@@ -66,9 +68,10 @@ the body. Reads do not silently rewrite original files.
 
 Standalone parsed documents have no ID; the store derives it from the filename.
 Metadata inputs are data: scalars, maps, lists, and raw YAML nodes. Pointers to
-these values, named scalar types, `time.Time`, `time.Duration`, `Relation`, and
-`Metadata` are supported. Go struct tags and custom encoding callbacks belong
-outside the engine; callers can convert such values to a YAML node first.
+these values, named scalar types, `time.Time`, `time.Duration`, `Relation`,
+`Metadata`, and exact `json.Number` values are supported. Go struct tags and
+custom encoding callbacks belong outside the engine; callers can convert such
+values to a YAML node first.
 
 An unsupported value or cyclic Go reference becomes a `!md-memory/issue` scalar at
 that location. Healthy siblings and the body remain usable. The issue is saved
@@ -137,7 +140,11 @@ errors affect operations on that directory only.
 ## Updates
 
 `Document.Revision` is the SHA-256 of the exact committed file bytes. It is never
-stored in YAML. Pending creations have no committed revision. A successful update
+stored in YAML. Pending creations have no committed revision. If a damaged batch
+journal prevents verification, readable canonical bytes remain available with
+`Unconfirmed=true`, diagnostics, and no committed revision. Healthy records remain
+usable. Unconfirmed redirects and dates do not establish canonical identities or
+chronology; graph/story results retain that qualification. A successful update
 returns the new revision; use it for the next update.
 
 An update checks the base revision before staging and again immediately before
@@ -202,11 +209,308 @@ the replacement. A second hard link named `publish` is atomically renamed over t
 committed name; the synced payload remains until the destination directory is
 synced. Unknown staging files are preserved.
 
-The current store requires a local filesystem with hard links, advisory locks,
-and directory syncing. Deletion, target-existence checks, and index
-construction are outside the current increment.
+The store requires a local filesystem with hard links, advisory locks, and
+directory syncing. It has no general record-deletion operation. Explicit
+abandonment can remove its own uncommitted creations; the journal retains their
+complete proposals.
 
 ```sh
 go test -race ./...
 go vet ./...
 ```
+
+## Discovery and search
+
+`Scan(ctx)` returns the derived catalogue, including readable records with damaged
+metadata or filenames. An orphan has a source path and no fabricated ID;
+`ReadSource(path)` makes its original bytes inspectable. Scanning does not repair
+or rewrite source files. `Search(ctx, Query)` is the bounded client-facing view.
+Readable single-record creations retained in staging remain discoverable with
+`pending: true` and no committed revision. New batch records stay hidden until
+the entire batch commits.
+
+Every query reads and hashes the current source bytes. The index caches parsing,
+not filesystem freshness: edits and removals are reflected on the next query.
+`Rebuild(ctx)` bypasses cached parsing entirely and writes a fresh derived view.
+Deleting or corrupting `.index/` rebuilds it from Markdown. Cache format changes
+also discard cached interpretations rather than migrating authoritative files.
+An unavailable cache is a diagnostic; it cannot roll back a successful write. This deliberately simple
+strategy reads the store on each query; it is not intended as a large remote
+search service.
+
+Search ranks title/name and alias matches, descriptions, prose, and episode time.
+Use `kind`, `related_to`, and `relation_type` to restrict results. The relationship
+filter matches stored outgoing targets; graph queries also resolve redirects.
+Retired records are excluded unless `include_retired` is true. Results have
+source paths, revisions, excerpts, and diagnostics. Engine list/search/graph pages
+default to 10 items and cap at 50; follow `next` while `truncated` is true.
+Pagination is over the current view. A direct edit between pages can change that
+view, so refresh rather than treating offsets as a permanent snapshot.
+
+## Graph, episode time, and stories
+
+`Graph(ctx, GraphQuery)` supplies source-owned edges and derived backlinks. Use
+`direction` incoming/outgoing/both, optional `type`, and a traversal `depth`
+(default 1, maximum 5). No inverse relationship or symmetry is invented.
+`entities`, `topics`, and topic `broader` lists are also exposed as edges named
+for their metadata fields. Exact story references produce derived `contains`
+edges, so a memory's backlinks also identify its containing stories. These edges
+are not copied into source metadata. A retired starting ID resolves to its sole
+known replacement; ambiguous replacements remain explicit. `Resolve(ctx, id)` exposes
+the full redirect result. Missing or cyclic targets remain inspectable.
+An edge's `resolved` flag concerns target availability, not the truth of a
+relationship. Additional qualifiers remain in the source. Use an open name such
+as `possibly_before` for uncertain ordering; only explicit `before`/`after`
+claims participate in chronology.
+
+Only `before` and `after` have temporal meaning. `Timeline(ctx, Query)` returns
+records and constraints, not a guessed sorted biography. Episode metadata is:
+
+```yaml
+time:
+  description: "the winter I moved away"
+  earliest: 2006-12-01
+  latest: 2007-03-31
+```
+
+Each field is optional. Bounds accept ISO dates, RFC3339 timestamps, or UTC
+`YYYY-MM-DD HH:MM:SS`; an upper date includes its whole day. An unrecognized value
+remains source data. Creation/update timestamps never become episode dates.
+Explicit ordering is checked globally for cycles and incompatible date ranges.
+Conflicting constraints are returned as unusable with diagnostics. Invalid date
+ranges are ignored for inference without disabling independent relative order.
+Date-proven constraints are derived between displayed records without materializing every
+pair in the entire store. Displayed times remain the original stated bounds;
+validation does not write inferred dates into records.
+
+Stories use exact `[[m_0123456789ab]]` references (any valid record prefix works).
+Ordinary Markdown links are ordinary prose. `Compose(ctx, storyID, offset, limit)`
+expands canonical bodies, and nested stories, in narrative order. It never stores
+copies of those narratives. Missing references have visible markers; ambiguous
+redirects retain the retired account and identify replacements. Cycles and depth
+beyond 32 retain a reference marker. One render allows 100,000 reference visits;
+if that is exceeded, retrieve a nested story separately. Completed expansion
+lengths skip shared prefixes when paging larger compositions. Output defaults to
+4 KiB and caps at 16 KiB, with byte offsets and continuation. Unicode pages preserve
+whole characters, even if that requires up to three bytes beyond a tiny requested
+limit. Binary fragments use `base64` instead of losing bytes through JSON text.
+
+Graph/timeline summaries bound descriptive fields and mark `details_truncated`.
+Search summaries likewise abbreviate details; read the source for full metadata.
+These display limits never change authoritative content or relationship semantics.
+
+## Related changes and retry safety
+
+`Prepare(ctx, account, limit)` searches all record types together and returns a
+fresh request key, shortlists, possible duplicate names, and identity ambiguities.
+It uses deterministic lexical matching, with no LLM calls. A shortlist is evidence
+to review, not an automatic identity assignment.
+
+`ApplyBatch(ctx, BatchRequest)` accepts creations, revision-checked updates, and
+story membership changes in one request. New changes can declare a `ref`; use
+`$ref` values in metadata or `[[$ref]]` in body references. The engine assigns
+final IDs. Existing changes supply `id` and `revision`. Omitted fields remain
+intact; omitted `body` preserves it. `append` adds a paragraph, while
+`add_relations` appends source-owned edges without discarding existing entries.
+Story additions require an existing story's revision, or its new `$ref`, and an
+ordered member list. Unknown story IDs/references genuinely block safe changes;
+unresolved ordinary relationships can remain in source metadata.
+
+Supply one stable `key` and reuse exactly the same request on retry. Different
+changes under that key are blocked. Keys bind the accepted intent; they do not
+expire or become reusable after organization. Accounts remain in the journal and
+in affected memories' `original_accounts`; they are never silently discarded if
+capture creates only other record types.
+
+The batch boundary is:
+
+1. Before acceptance, prepare and check every change. No authoritative record is
+   published by a rejected preparation.
+2. Acceptance means the checksum-verified journal and its containing directories
+   have been synced. It retains the original account, original/proposed bytes,
+   allocated IDs, and request fingerprint under `.batches/`.
+3. Reserve every affected record, then publish and sync each file. Until a commit
+   marker exists, engine reads expose the prior view; new records stay hidden.
+   Catalogue scans coordinate with writers to avoid mixing batch views.
+4. After all proposed files are verified and synced, sync the commit marker.
+   Cleanup failure becomes a diagnostic, not a failed capture. Retrying committed
+   work returns the original receipt without replacing later edits.
+
+Canonical files are published individually: raw filesystem readers can observe
+intermediate versions. Separate individual reads are not one snapshot. External
+editors do not acquire the advisory lock; a conflicting edit is exposed and
+preserved, rather than hidden behind the old view. The final compare/rename race
+with an uncooperative editor also applies to batch publication and withdrawal.
+
+Receipts distinguish `not_accepted`, `pending`, `blocked`, `committed`, and
+`abandoned`. `BatchStatus(ctx, key)` inspects accepted work. Errors before confirmed
+acceptance can still leave retained preparation; reuse the same key and inspect
+rather than creating a duplicate under a different key. Recovery verifies journals
+and content before resuming; incomplete, corrupt, or conflicting work is retained
+and diagnosed independently of healthy records. After durable acceptance,
+cancellation does not discard the work: publication may finish or be resumed on
+open/recovery. A lost response is resolved through the same key. A read crossing
+a concurrent withdrawal may report a transient revision conflict; retrying obtains a stable
+view rather than exposing an uncommitted proposal.
+
+`BatchData(ctx, key, id, view)` reads retained `before`, `proposed`, or `account`
+bytes. To resolve a blocked batch, review these and the current record. Restore a
+reviewed base and recover, or explicitly call `AbandonBatch(ctx, key)` to withdraw
+an uncommitted batch. Withdrawal itself is durable and resumable (`abandoning`
+until complete). It restores only bytes matching this batch's publication,
+preserves later edits/deletions, and retains every proposal. A committed batch
+cannot be withdrawn. An abandoned key is terminal; retries never publish it again.
+Use a new reviewed, revision-checked request for subsequent changes.
+
+Keep `.batches/`, `.imports/`, and pending directories alongside authoritative
+records when backing up unfinished work. `.index/` alone is disposable. There are
+no automatic Git commits or pushes of user memories.
+
+## Organization and import
+
+`Merge(ctx, MergeRequest)` takes reviewed source IDs and revisions, creates a new
+canonical record, and retires sources through redirects. By default it preserves
+their bodies in a combined account and carries names/aliases and relationships.
+An explicit replacement narrative is a caller's reviewed choice. Original source
+bodies remain available under retired IDs.
+
+`Split(ctx, SplitRequest)` takes a reviewed source and explicit replacement parts.
+The original redirects to all replacements. Backlinks cannot safely choose one;
+that ambiguity stays visible until a reviewed relationship update resolves it.
+Merge/split requests use the same batch keys and retry guarantees. They are
+explicit operations, not automatic inference from shared words or names.
+
+Imports are separate from normal capture. Configure source roots explicitly.
+`PreviewImports(ctx, sourceRoot, offset, limit)` lists Markdown sources with exact
+byte revisions. Read and review them, then call `Import(ctx, sourceRoot, request)`
+with that revision and optional exact byte ranges (`start` inclusive, `end`
+exclusive). Omitting parts imports the whole file verbatim. No automatic splitting,
+identity assignment, rewriting, or inferred dates occur.
+
+The importer preserves a checksum-named original under `.imports/` before applying
+an idempotent batch. It returns source-to-record mappings and uncovered substantive
+byte ranges. Non-whitespace gaps make `coverage_complete` false; omitted material
+remains in the original. `ReadArchive(checksum)` verifies and reads that archive,
+even after the external source is gone. Retries use the preserved source and the
+same record IDs. Changing an accepted partition requires reviewed organization,
+not importing a second active copy under the same path. Source roots remain
+separate from the active store; source files are never rewritten.
+
+## MCP server
+
+The server uses the [official Go SDK](https://go.sdk.modelcontextprotocol.io/quick_start/)
+and its [stdio transport](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/stdio).
+No network listener, authentication service, scheduler, or inference model is
+needed. The SDK handles protocol negotiation and transport lifecycle.
+
+Build with the Go version in `go.mod` (Go's toolchain selection can fetch it):
+
+```sh
+go build -o /tmp/md-memory-mcp ./cmd/md-memory-mcp
+/tmp/md-memory-mcp --store /absolute/path/to/memory-store
+```
+
+Or install the executable:
+
+```sh
+go install ./cmd/md-memory-mcp
+```
+
+A typical MCP client configuration is:
+
+```json
+{
+  "mcpServers": {
+    "md-memory": {
+      "command": "/absolute/path/to/md-memory-mcp",
+      "args": [
+        "--store", "/absolute/path/to/memory-store",
+        "--import-root", "notes=/absolute/path/to/reviewed-sources"
+      ]
+    }
+  }
+}
+```
+
+Import roots are optional and repeatable. Clients select their configured names;
+they cannot supply arbitrary root paths. Store access is confined to its root.
+Only protocol messages go to stdout; flags and errors go to stderr. The process
+handles EOF, SIGINT, SIGTERM, and request cancellation through the SDK.
+
+The tools are:
+
+| Tool | Purpose |
+| --- | --- |
+| `prepare_memory` | One compact cross-record shortlist, ambiguities, and request key |
+| `save_memory` | One complete related batch |
+| `search_memory` | List or search with filters and continuation |
+| `read_memory` | Page bodies, source files, import originals, or retained batch bytes |
+| `explore_memory` | Outgoing links, backlinks, and bounded traversal |
+| `memory_timeline` | Partial chronology and constraint diagnostics |
+| `compose_story` | Page a story composed from canonical references |
+| `organize_memory` | Explicit merge or split |
+| `import_memories` | Preview or apply reviewed source ranges |
+| `memory_maintenance` | Status, receipt, recovery, explicit abandonment, or index refresh |
+
+`memory://guide` supplies workflow instructions; `memory://records/{id}/{offset}`
+reads a raw canonical source page. Tool descriptions and schemas are available at
+initialization, so ordinary capture needs no schema-fetch call.
+
+Ordinary capture is exactly two tool calls:
+
+```json
+{"name":"prepare_memory","arguments":{"account":"I had coffee with John."}}
+```
+
+Use its returned key for the whole related change:
+
+```json
+{
+  "name": "save_memory",
+  "arguments": {
+    "key": "KEY_FROM_PREPARATION",
+    "account": "I had coffee with John.",
+    "changes": [
+      {"ref":"john","kind":"entities","fields":{"name":"John"}},
+      {
+        "ref":"episode",
+        "fields":{
+          "title":"Coffee with John",
+          "relations":[{"type":"with","target":"$john"}]
+        },
+        "body":"I had coffee with John."
+      }
+    ]
+  }
+}
+```
+
+If preparation reveals several plausible Johns, preserve uncertainty instead of
+blindly using this example's new entity. New topics and stories can join the same
+batch; classification and story membership are optional.
+
+Results use MCP `structuredContent` with a status/data envelope; text content is
+a short status summary. Read the receipt's status as well as the outer operation
+status. `isError` means an operation was blocked, not that an accepted batch was
+lost. Inspect its receipt before deciding what to do next.
+
+MCP search/preparation/timeline pages cap at 8 records; graph pages at 20. Record
+reads cap at 4 KiB and story pages at 4 KiB. `offset`/`next` are byte offsets for
+text and item offsets for lists. Invalid UTF-8 pages return `base64`.
+Diagnostics are abbreviated with explicit truncation; full source and retained
+proposal pages remain available. The structured envelope has a 28 KiB budget;
+oversized results return an explicit compact summary without changing write
+outcomes. Receipt lists cap at 20 records. Large keys/reference labels may be
+omitted from a summary with truncation flags; the caller already holds its key.
+Use `memory_maintenance(action="receipt", key=..., view="source", offset=...)`
+to page the complete JSON receipt without losing exact labels. Inspect proposals
+with `read_memory(key=..., id=..., view="proposed")`, originals with `view="before"`,
+and the original account with `view="account"`. Imported originals use
+`read_memory(archive=CHECKSUM)`. Follow the returned continuation until complete.
+
+The stdio acceptance tests launch the actual executable with the official MCP
+client; they cover discovery, two-call capture, retrieval, enrichment, stale
+updates, resources, configured imports, restart/retry, cancellation, binary
+pages, large receipts, response budgets, and signal/EOF shutdown with pending
+requests. All fixtures are temporary; no Clara integration or live-memory
+transformation is performed.

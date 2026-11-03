@@ -226,3 +226,16 @@ func normalizeNode(root *yaml.Node) (*yaml.Node, []string) {
 	})
 	return node, warnings
 }
+
+// sequenceNode keeps unusual values as list entries instead of flattening them
+// away when organization or capture needs to add another value.
+func sequenceNode(source *yaml.Node) *yaml.Node {
+	node, _ := normalizeNode(source)
+	if node.ShortTag() == "!!null" {
+		return &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+	}
+	if node.Kind != yaml.SequenceNode {
+		return &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Content: []*yaml.Node{node}}
+	}
+	return node
+}

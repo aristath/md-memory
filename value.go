@@ -1,9 +1,11 @@
 package memory
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"sort"
+	"strings"
 	"time"
 
 	"go.yaml.in/yaml/v3"
@@ -56,6 +58,15 @@ func encodeValue(value any) (*yaml.Node, []string) {
 				source = &typed
 			case *yaml.Node:
 				source = typed
+			case json.Number:
+				if _, err := json.Marshal(typed); err != nil {
+					return issueValue(err.Error())
+				}
+				tag := "!!int"
+				if strings.ContainsAny(string(typed), ".eE") {
+					tag = "!!float"
+				}
+				return &yaml.Node{Kind: yaml.ScalarNode, Tag: tag, Value: string(typed)}
 			case time.Time, time.Duration, Relation, Metadata:
 				return yamlValue(typed)
 			}
@@ -73,12 +84,23 @@ func encodeValue(value any) (*yaml.Node, []string) {
 			for iterator.Next() {
 				entries = append(entries, pair{walk(iterator.Key()), walk(iterator.Value())})
 			}
+			order := func(node *yaml.Node) string {
+				normalized, _ := normalizeNode(node)
+				data, _ := yaml.Marshal(normalized)
+				return string(data)
+			}
 			sort.SliceStable(entries, func(i, j int) bool {
 				a, b := entries[i].key, entries[j].key
 				if a.Value != b.Value {
 					return a.Value < b.Value
 				}
-				return a.Tag < b.Tag
+				if a.Tag != b.Tag {
+					return a.Tag < b.Tag
+				}
+				if left, right := order(a), order(b); left != right {
+					return left < right
+				}
+				return order(entries[i].value) < order(entries[j].value)
 			})
 			node := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
 			for _, entry := range entries {

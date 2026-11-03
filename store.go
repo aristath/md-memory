@@ -175,13 +175,18 @@ func (s *Store) Recover() error {
 			_ = root.Remove(".index")
 		}
 		s.note(".index", ensureDirectory(root, ".index"))
+		directories := []string{}
 		for _, destination := range destinations {
 			name := string(destination)
 			err := ensureDirectory(root, name)
 			s.note(name, err)
 			if err == nil {
-				s.recoverDirectory(root, name)
+				directories = append(directories, name)
 			}
+		}
+		s.recoverBatches(root)
+		for _, name := range directories {
+			s.recoverDirectory(root, name)
 		}
 		return nil
 	})
@@ -311,7 +316,7 @@ func (s *Store) Read(id string) (*Document, error) {
 // One policy for every read: committed content wins; staged bytes stay useful
 // even when incomplete. Recheck the committed name after concurrent cleanup.
 func readCopy(root *os.Root, id, name string) (*Document, error) {
-	data, err := readFile(root, name)
+	data, err := readRecordFile(root, name)
 	pending := false
 	var warning string
 	if err != nil {
@@ -328,7 +333,7 @@ func readCopy(root *os.Root, id, name string) (*Document, error) {
 			}
 		} else {
 			stagedErr := err
-			data, err = readFile(root, name)
+			data, err = readRecordFile(root, name)
 			if err != nil {
 				if errors.Is(stagedErr, fs.ErrNotExist) {
 					return nil, committedErr
@@ -339,10 +344,15 @@ func readCopy(root *os.Root, id, name string) (*Document, error) {
 	}
 	doc := Parse(data)
 	doc.ID, doc.Pending = id, pending
+	doc.Unconfirmed = warning != ""
+	if issue := batchReadIssue(root, name); issue != nil {
+		doc.Unconfirmed = true
+		doc.warnings = append(doc.warnings, issue.Error())
+	}
 	if warning != "" {
 		doc.warnings = append(doc.warnings, warning)
 	}
-	if !pending {
+	if !pending && !doc.Unconfirmed {
 		doc.Revision = dataRevision(data)
 		if _, err := root.Lstat(pendingName(name)); err == nil {
 			doc.warnings = append(doc.warnings, pendingWarning)

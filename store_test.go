@@ -474,6 +474,10 @@ func TestStoreProcess(t *testing.T) {
 	if role == "" {
 		return
 	}
+	if strings.HasPrefix(role, "batch-") {
+		testBatchProcess(t, role, path)
+		return
+	}
 	if strings.HasPrefix(role, "update-") {
 		testUpdateProcess(t, role, path)
 		return

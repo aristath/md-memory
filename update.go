@@ -34,35 +34,10 @@ func (s *Store) Update(id, revision string, fields map[string]any, body string) 
 	if err != nil {
 		return nil, err
 	}
-	if doc.Pending || doc.Revision != revision {
+	if doc.Pending || doc.Unconfirmed || doc.Revision != revision {
 		return doc, fmt.Errorf("update %s: %w", id, ErrConflict)
 	}
-	doc.warnings = slices.DeleteFunc(doc.warnings, func(warning string) bool { return warning == pendingWarning })
-	created, _ := normalizeNode(metadataField(&doc.Frontmatter, "created_at"))
-	for name, value := range fields {
-		if name != "id" && name != "created_at" && name != "updated_at" {
-			if err := doc.Set(name, value); err != nil {
-				_ = doc.Set(name, issueValue(err.Error()))
-			}
-		}
-	}
-	_ = doc.Set("updated_at", time.Now().UTC())
-	// An edit to an anchor or merge source must not change creation time indirectly.
-	changed, _ := normalizeNode(metadataField(&doc.Frontmatter, "created_at"))
-	// These independent snapshots compare values and alias targets, not anchor
-	// spelling or parser positions. Set assigns labels again if restoration is needed.
-	for _, snapshot := range []*yaml.Node{created, changed} {
-		walkNodes(snapshot, func(node *yaml.Node) {
-			node.Anchor, node.Line, node.Column = "", 0, 0
-			if node.Kind == yaml.AliasNode {
-				node.Value = ""
-			}
-		})
-	}
-	if !reflect.DeepEqual(created, changed) {
-		_ = doc.Set("created_at", created)
-	}
-	doc.Body = body
+	applyFields(doc, fields, body)
 	data, err := doc.Marshal()
 	if err != nil {
 		return doc, err
@@ -102,6 +77,35 @@ func (s *Store) Update(id, revision string, fields map[string]any, body string) 
 		doc.Revision = dataRevision(data)
 	}
 	return doc, err
+}
+
+func applyFields(doc *Document, fields map[string]any, body string) {
+	doc.warnings = slices.DeleteFunc(doc.warnings, func(warning string) bool { return warning == pendingWarning })
+	created, _ := normalizeNode(metadataField(&doc.Frontmatter, "created_at"))
+	for name, value := range fields {
+		if name != "id" && name != "created_at" && name != "updated_at" {
+			if err := doc.Set(name, value); err != nil {
+				_ = doc.Set(name, issueValue(err.Error()))
+			}
+		}
+	}
+	_ = doc.Set("updated_at", time.Now().UTC())
+	// An edit to an anchor or merge source must not change creation time indirectly.
+	changed, _ := normalizeNode(metadataField(&doc.Frontmatter, "created_at"))
+	// These independent snapshots compare values and alias targets, not anchor
+	// spelling or parser positions. Set assigns labels again if restoration is needed.
+	for _, snapshot := range []*yaml.Node{created, changed} {
+		walkNodes(snapshot, func(node *yaml.Node) {
+			node.Anchor, node.Line, node.Column = "", 0, 0
+			if node.Kind == yaml.AliasNode {
+				node.Value = ""
+			}
+		})
+	}
+	if !reflect.DeepEqual(created, changed) {
+		_ = doc.Set("created_at", created)
+	}
+	doc.Body = body
 }
 
 func (s *Store) publishUpdate(root *os.Root, name, base string, data []byte) (bool, error) {
