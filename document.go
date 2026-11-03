@@ -230,6 +230,29 @@ func preserveAliases(root, replaced *yaml.Node) {
 	if len(removed) == 0 {
 		return
 	}
+	// A moved definition must not shadow a different definition with the same
+	// name. Reserve all names before assigning unique ones to removed anchors.
+	names := map[string]int{}
+	var count func(*yaml.Node)
+	count = func(node *yaml.Node) {
+		if node.Anchor != "" {
+			names[node.Anchor]++
+		}
+		for _, child := range node.Content {
+			count(child)
+		}
+	}
+	count(root)
+	for node := range removed {
+		if names[node.Anchor] < 2 {
+			continue
+		}
+		name := node.Anchor
+		for suffix := 1; names[node.Anchor] != 0; suffix++ {
+			node.Anchor = fmt.Sprintf("%s_%d", name, suffix)
+		}
+		names[node.Anchor] = 1
+	}
 	var visit func(*yaml.Node) *yaml.Node
 	visit = func(node *yaml.Node) *yaml.Node {
 		if node == replaced {

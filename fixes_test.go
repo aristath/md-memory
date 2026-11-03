@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gofrs/flock"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -220,5 +221,180 @@ func TestReplacingNestedAnchorsKeepsRecursiveReferences(t *testing.T) {
 	}
 	if field(inner.Content[0], "inner").Alias != inner {
 		t.Fatal("recursive reference was lost")
+	}
+}
+
+func TestInitializationRetriesUnsyncedParents(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permissions")
+	}
+	for _, destination := range []string{"store", "unfinished-parent/store"} {
+		t.Run(destination, func(t *testing.T) {
+			parent := filepath.Join(t.TempDir(), "parent")
+			if err := os.Mkdir(parent, 0300); err != nil {
+				t.Fatal(err)
+			}
+			defer os.Chmod(parent, 0700)
+			path := filepath.Join(parent, destination)
+			var unfinished *Store
+			for range 2 {
+				store, err := Open(path)
+				if err == nil {
+					unfinished = store
+					if _, err := store.Create(Memories, nil, "Must remain unacknowledged"); err == nil {
+						t.Fatal("save succeeded before the new store's parents could be synced")
+					}
+				}
+			}
+			// Even an interrupted initializer must not hide existing content.
+			if err := os.MkdirAll(filepath.Join(path, "memories"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(path, "memories", "m_7k3m9x2q6v4c.md"), []byte(sample), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if unfinished == nil {
+				t.Fatal("initialization failure prevented opening a reader")
+			}
+			if doc, err := unfinished.Read("m_7k3m9x2q6v4c"); err != nil || doc.Body != Parse([]byte(sample)).Body {
+				t.Fatalf("initialization failure hid readable data: %v", err)
+			}
+			if err := os.Chmod(parent, 0700); err != nil {
+				t.Fatal(err)
+			}
+			store, err := Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := unfinished.Recover(); err != nil || len(unfinished.Diagnostics()) != 0 {
+				t.Fatalf("repaired initialization left stale diagnostics: %v, %v", err, unfinished.Diagnostics())
+			}
+			saved, err := store.Create(Memories, nil, "Recovered initialization")
+			if err != nil {
+				t.Fatal(err)
+			}
+			// An initialized store still works through a traverse-only parent.
+			if err := os.Chmod(parent, 0111); err != nil {
+				t.Fatal(err)
+			}
+			store, err = Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if read, err := store.Read(saved.ID); err != nil || read.Body != saved.Body {
+				t.Fatalf("recovered memory unavailable: %v", err)
+			}
+			if _, err := store.Create(Topics, nil, "Still writable"); err != nil {
+				t.Fatalf("initialized store unnecessarily needed its parent reopened: %v", err)
+			}
+		})
+	}
+}
+
+func TestPendingReadDoesNotWaitAndRecoveryClearsDeferredDiagnostic(t *testing.T) {
+	path := t.TempDir()
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	id := "m_7k3m9x2q6v4c"
+	name := filepath.Join("memories", id+".md")
+	if ready, err := stage(root, name, []byte(sample)); !ready || err != nil {
+		t.Fatal(err)
+	}
+	lock := flock.New(filepath.Join(path, ".lock"))
+	if err := lock.Lock(); err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	store, err = Open(path)
+	if err != nil || len(store.Diagnostics()) == 0 {
+		t.Fatalf("deferred recovery was not reported: %v", err)
+	}
+	readDone := make(chan *Document, 1)
+	readErrors := make(chan error, 1)
+	go func() {
+		doc, err := store.Read(id)
+		if err != nil {
+			readErrors <- err
+		} else {
+			readDone <- doc
+		}
+	}()
+	select {
+	case doc := <-readDone:
+		if !doc.Pending || doc.Body != Parse([]byte(sample)).Body || len(doc.Diagnostics()) == 0 {
+			t.Fatal("pending data or deferred recovery status lost")
+		}
+	case err := <-readErrors:
+		t.Fatal(err)
+	case <-time.After(time.Second):
+		t.Fatal("complete pending data waited behind an unrelated writer")
+	}
+	if err := lock.Unlock(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Recover(); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.Diagnostics()) != 0 {
+		t.Fatalf("successful recovery left stale diagnostics: %v", store.Diagnostics())
+	}
+	if doc, err := store.Read(id); err != nil || doc.Pending || doc.Body != Parse([]byte(sample)).Body {
+		t.Fatalf("pending record did not recover: %v", err)
+	}
+}
+
+func TestRecoveryClearsDeferredDiagnostic(t *testing.T) {
+	path := t.TempDir()
+	if _, err := Open(path); err != nil {
+		t.Fatal(err)
+	}
+	lock := flock.New(filepath.Join(path, ".lock"))
+	if err := lock.Lock(); err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	store, err := Open(path)
+	if err != nil || len(store.Diagnostics()) == 0 {
+		t.Fatalf("deferred recovery was not reported: %v", err)
+	}
+	if err := lock.Unlock(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Recover(); err != nil || len(store.Diagnostics()) != 0 {
+		t.Fatalf("recovery left stale diagnostics: %v, %v", err, store.Diagnostics())
+	}
+}
+
+func TestRelocatedAnchorsDoNotShadowUnrelatedValues(t *testing.T) {
+	for _, reserved := range []string{"", "reserved: &a_1 Reserved\n"} {
+		input := "---\nreplace:\n  original: &a OLD\n  nested: &b [*a]\nshadow: &a NEW\n" + reserved + "out: *b\nafter: *a\n---\nBody"
+		if reserved != "" {
+			input = strings.Replace(input, "after: *a\n", "after: *a\nreserved_after: *a_1\n", 1)
+		}
+		doc := Parse([]byte(input))
+		if err := doc.Set("replace", "Replacement"); err != nil {
+			t.Fatal(err)
+		}
+		encoded, err := doc.Marshal()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var values map[string]any
+		if err := Parse(encoded).Frontmatter.Decode(&values); err != nil {
+			t.Fatal(err)
+		}
+		if values["after"] != "NEW" || values["shadow"] != "NEW" || values["out"].([]any)[0] != "OLD" {
+			t.Fatalf("editing one field changed unrelated values: %v", values)
+		}
+		if reserved != "" && (values["reserved"] != "Reserved" || values["reserved_after"] != "Reserved") {
+			t.Fatal("renamed anchor collided with an existing name")
+		}
 	}
 }

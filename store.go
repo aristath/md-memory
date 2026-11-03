@@ -73,7 +73,7 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := makeRoot(path); err != nil {
+	if err := os.MkdirAll(path, 0700); err != nil {
 		return nil, err
 	}
 	path, err = filepath.EvalSymlinks(path)
@@ -85,6 +85,15 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	s := &Store{path: path}
+	// Creating .lock completes initialization. Until it exists, retries must
+	// sync every ancestor, including directories left by an interrupted Open.
+	if _, err := root.Lstat(".lock"); errors.Is(err, fs.ErrNotExist) {
+		if err := syncParents(path); err != nil {
+			s.note("initialization", err)
+			s.note("close root", root.Close())
+			return s, nil // Existing content remains readable; writes lack a lock.
+		}
+	}
 	lock, err := root.OpenFile(".lock", os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
 	if err == nil {
 		err = lock.Close()
@@ -96,34 +105,24 @@ func Open(path string) (*Store, error) {
 		s.note("write coordination", err)
 		return s, nil
 	}
-	if err := s.Recover(); err != nil {
-		s.note("recovery", err)
-	}
+	_ = s.Recover()
 	return s, nil
 }
 
-// Only newly created root directories need their parent entries synced.
-// Existing stores do not require read access to every ancestor directory.
-func makeRoot(path string) error {
-	if info, err := os.Stat(path); err == nil {
-		if info.IsDir() {
+// An initialized store does not need its ancestors reopened on later calls.
+func syncParents(path string) error {
+	for parent := filepath.Dir(path); ; parent = filepath.Dir(parent) {
+		directory, err := os.Open(parent)
+		if err != nil {
+			return err
+		}
+		if err := errors.Join(directory.Sync(), directory.Close()); err != nil {
+			return err
+		}
+		if parent == filepath.Dir(parent) {
 			return nil
 		}
-		return fmt.Errorf("%s is not a directory", path)
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return err
 	}
-	if err := makeRoot(filepath.Dir(path)); err != nil {
-		return err
-	}
-	if err := os.Mkdir(path, 0700); err != nil && !errors.Is(err, fs.ErrExist) {
-		return err
-	}
-	parent, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return err
-	}
-	return errors.Join(parent.Sync(), parent.Close())
 }
 
 func ensureDirectory(root *os.Root, name string) error {
@@ -146,7 +145,7 @@ func ensureDirectory(root *os.Root, name string) error {
 // Recover resumes completed pending writes when the write lock is available.
 // Open reports deferred recovery without blocking access to readable records.
 func (s *Store) Recover() error {
-	return s.locked(false, func(root *os.Root) error {
+	err := s.locked(false, func(root *os.Root) error {
 		// The cache is disposable, unlike the record directories.
 		if info, err := root.Lstat(".index"); err == nil && !info.IsDir() {
 			s.note(".index", root.Remove(".index"))
@@ -162,6 +161,10 @@ func (s *Store) Recover() error {
 		}
 		return nil
 	})
+	if s != nil {
+		s.note("recovery", err)
+	}
+	return err
 }
 
 // Create assigns the filename ID and UTC timestamps. Metadata problems are
@@ -270,7 +273,7 @@ func (s *Store) Read(id string) (*Document, error) {
 		}
 	}
 	var d *Document
-	err := s.locked(true, func(root *os.Root) error {
+	err := s.locked(false, func(root *os.Root) error {
 		pending := false
 		var recoveryErr error
 		var staging []string
@@ -308,17 +311,18 @@ func (s *Store) Read(id string) (*Document, error) {
 		return nil
 	})
 	if err != nil {
-		// A coordination failure may block recovery, but a complete pending copy
-		// is still useful and safe to read without changing any files.
+		// Recovery may be busy or blocked. Recheck committed content first in
+		// case the writer just published it, then return readable pending data.
 		if s != nil {
 			if root, openErr := os.OpenRoot(s.path); openErr == nil {
-				data, readErr := readFile(root, pendingName(name))
-				_ = root.Close()
-				if readErr == nil {
-					d = Parse(data)
-					d.ID, d.Pending = id, true
-					d.warnings = append(d.warnings, err.Error())
-					return d, nil
+				defer root.Close()
+				for _, candidate := range []string{name, pendingName(name)} {
+					if data, readErr := readFile(root, candidate); readErr == nil {
+						d = Parse(data)
+						d.ID, d.Pending = id, candidate != name
+						d.warnings = append(d.warnings, err.Error())
+						return d, nil
+					}
 				}
 			}
 		}
@@ -354,6 +358,8 @@ func (s *Store) locked(wait bool, operation func(*os.Root) error) error {
 			return errors.New("recovery deferred while another writer holds the lock")
 		}
 	}
+	s.note("initialization", nil)
+	s.note("write coordination", nil)
 	return operation(root)
 }
 

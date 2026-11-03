@@ -44,7 +44,8 @@ derived using the same type. Markdown files are authoritative; `.index/` is disp
 - `Document.Diagnostics()` reports unknown timestamps, unresolved relations,
   unparsed metadata, and other recoverable problems without failing the operation.
 - `Document.Set(name, value)` edits one field while preserving other YAML fields,
-  including references to nested anchors in the replaced value.
+  including references to nested anchors in the replaced value. Colliding anchor
+  names are renamed when needed to preserve their original values.
 - `Document.Marshal()` serializes the document without rejecting damaged metadata.
 
 Unknown values remain in the YAML tree. Missing timestamps stay unknown rather
@@ -69,7 +70,7 @@ Standalone parsed documents have no ID; the store derives it from the filename.
 - `Store.Read(id)` reads committed content first, or retries pending publication
   when the committed record is unavailable.
 - `Store.Recover()` retries outstanding work when the lock is available.
-  Individual failures are isolated.
+  Individual failures are isolated; successful recovery clears the deferred status.
 - `Store.Diagnostics()` reports directory and recovery issues safely across goroutines.
 
 See the [executable example](example_test.go). `.lock` coordinates engine processes
@@ -79,9 +80,14 @@ this advisory lock. Filesystem access stays confined to the root.
 Healthy committed records can be read without taking the write lock. If write
 coordination is damaged, existing records remain readable while unsafe writes
 are blocked and the coordination issue is reported through diagnostics. Pending
-work never takes precedence over readable committed content.
+work never takes precedence over readable committed content. Readable pending
+records also remain available while another writer holds the lock; publication
+is deferred and reported on the returned document.
 
-Opening an existing store does not require opening or syncing all its ancestors.
+During initialization, the engine syncs the store's ancestors before creating
+`.lock`. If syncing fails, existing content stays readable and writes are blocked;
+reopening retries initialization. Once initialized, a store does not require
+opening or syncing all its ancestors on later calls.
 The cache may be rebuilt; blocked record directories retain their contents, and
 errors affect operations on that directory only.
 
