@@ -8,15 +8,15 @@ import (
 )
 
 const sample = `---
-id: 7k3m9x2q6v4c
+id: m_7k3m9x2q6v4c
 title: Example
 created_at: 2026-11-03T10:00:00Z
 updated_at: 2026-11-03T10:00:00Z
 relations:
   - type: motivated_by
-    target: b8r5n2w9d4hx
+    target: m_b8r5n2w9d4hx
   - type: custom_connection
-    target: 9za4cd6ef8gh
+    target: t_9za4cd6ef8gh
 # User-defined metadata
 aliases: &names ["α", "000123", "yes"]
 custom:
@@ -110,13 +110,13 @@ func TestEditingAnchoredFieldPreservesReferences(t *testing.T) {
 func TestRejectsMalformedDocumentsWithoutChangingInput(t *testing.T) {
 	for name, input := range map[string]string{
 		"no header":       "# Plain Markdown",
-		"unclosed header": "---\nid: 7k3m9x2q6v4c\n",
+		"unclosed header": "---\nid: m_7k3m9x2q6v4c\n",
 		"invalid YAML":    "---\na: [\n---\n",
 		"non-mapping":     "---\n- value\n---\n",
-		"duplicate ID":    strings.Replace(sample, "title: Example", "id: b8r5n2w9d4hx", 1),
-		"invalid ID":      strings.Replace(sample, "7k3m9x2q6v4c", "../bad", 1),
+		"duplicate ID":    strings.Replace(sample, "title: Example", "id: m_b8r5n2w9d4hx", 1),
+		"invalid ID":      strings.Replace(sample, "m_7k3m9x2q6v4c", "../bad", 1),
 		"missing time":    strings.Replace(sample, "created_at: 2026-11-03T10:00:00Z\n", "", 1),
-		"invalid target":  strings.Replace(sample, "b8r5n2w9d4hx", "missing", 1),
+		"invalid target":  strings.Replace(sample, "m_b8r5n2w9d4hx", "missing", 1),
 		"empty type":      strings.Replace(sample, "type: motivated_by", "type: ''", 1),
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -133,7 +133,7 @@ func TestRejectsMalformedDocumentsWithoutChangingInput(t *testing.T) {
 
 func TestNewDocumentAndValidationBeforeMarshal(t *testing.T) {
 	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.FixedZone("example", 7200))
-	doc, err := NewDocument(Metadata{ID: "7k3m9x2q6v4c", Title: "Example", CreatedAt: now, UpdatedAt: now}, "Body")
+	doc, err := NewDocument(Metadata{ID: "m_7k3m9x2q6v4c", Title: "Example", CreatedAt: now, UpdatedAt: now}, "Body")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,15 +150,25 @@ func TestNewDocumentAndValidationBeforeMarshal(t *testing.T) {
 }
 
 func TestIDs(t *testing.T) {
-	for _, id := range []string{"", "../7k3m9x2q6v", "7K3M9X2Q6V4C", "7k3m9x2q6v4!", "abcdefghijklmn"} {
+	for _, id := range []string{"", "7k3m9x2q6v4c", "m_7K3M9X2Q6V4C", "m_7k3m9x2q6v4!", "x_7k3m9x2q6v4c", "m-7k3m9x2q6v4c", "m_7k3m9x2q6v4cc", "m_../badpath!"} {
 		if ValidID(id) {
 			t.Errorf("accepted invalid ID %q", id)
 		}
 	}
-	for range 100 {
-		id, err := NewID()
-		if err != nil || !ValidID(id) {
-			t.Fatalf("invalid generated ID %q: %v", id, err)
+	for _, prefix := range []string{"m_", "e_", "t_", "s_"} {
+		if !ValidID(prefix + "7k3m9x2q6v4c") {
+			t.Errorf("rejected valid ID with prefix %q", prefix)
+		}
+		for range 25 {
+			id, err := NewID(prefix)
+			if err != nil || !ValidID(id) || !strings.HasPrefix(id, prefix) {
+				t.Fatalf("invalid generated ID %q: %v", id, err)
+			}
+		}
+	}
+	for _, prefix := range []string{"", "m", "x_", "memory_"} {
+		if _, err := NewID(prefix); err == nil {
+			t.Errorf("generated ID with invalid prefix %q", prefix)
 		}
 	}
 }

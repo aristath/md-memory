@@ -7,28 +7,30 @@ A standalone Go package for a Markdown-backed memory engine.
 ```text
 memory-store/
   memories/
-    <id>.md
+    m_<12-character-suffix>.md
   entities/
-    <id>.md
+    e_<12-character-suffix>.md
   topics/
-    <id>.md
+    t_<12-character-suffix>.md
   stories/
-    <id>.md
+    s_<12-character-suffix>.md
   .index/
 ```
 
-IDs contain 12 lowercase letters or digits and are unique across the store.
+IDs consist of a type prefix (`m_`, `e_`, `t_`, or `s_`) followed by 12 random
+lowercase letters or digits. The prefix is part of the ID, including in references.
+The same suffix in different record types produces distinct IDs.
 The filename is `<id>.md`. Each file has YAML frontmatter and a Markdown body:
 
 ```markdown
 ---
-id: 7k3m9x2q6v4c
+id: m_7k3m9x2q6v4c
 title: Example
 created_at: 2026-11-03T10:00:00Z
 updated_at: 2026-11-03T10:00:00Z
 relations:
   - type: motivated_by
-    target: b8r5n2w9d4hx
+    target: m_b8r5n2w9d4hx
 ---
 
 Markdown body.
@@ -45,7 +47,7 @@ that can be rebuilt from the files.
 
 This increment implements the document codec and candidate ID generation:
 
-- `NewID` and `ValidID` generate and validate the agreed identifier format.
+- `NewID("m_")` and `ValidID` generate and validate prefixed record IDs.
 - `Parse` reads frontmatter and preserves the Markdown body.
 - `Document.Metadata` reads the core fields; `Document.Set` edits a metadata field.
 - `Document.Marshal` preserves additional YAML fields and the exact body, while

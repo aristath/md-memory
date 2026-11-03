@@ -94,7 +94,7 @@ func (d *Document) Metadata() (Metadata, error) {
 		return metadata, fmt.Errorf("frontmatter: %w", err)
 	}
 	if !ValidID(metadata.ID) {
-		return metadata, errors.New("id must contain 12 lowercase letters or digits")
+		return metadata, errors.New("id must use m_, e_, t_, or s_ followed by 12 lowercase letters or digits")
 	}
 	if metadata.CreatedAt.IsZero() || metadata.UpdatedAt.IsZero() {
 		return metadata, errors.New("created_at and updated_at must be timestamps")
