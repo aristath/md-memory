@@ -34,7 +34,7 @@ func TestValueEncodingPreservesYAMLSemantics(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			encoded := encodeValue(value)
+			encoded, _ := encodeValue(value)
 			actual, err := yaml.Marshal(encoded)
 			if err != nil {
 				t.Fatal(err)

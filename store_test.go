@@ -482,6 +482,14 @@ func TestStoreProcess(t *testing.T) {
 		testSharedMergeReferences(t)
 		return
 	}
+	if role == "raw-yaml-recovery" {
+		testRawYAMLRecovery(t, path)
+		return
+	}
+	if role == "failed-collision" {
+		testFailedCollision(t, path)
+		return
+	}
 	if role == "orphan-collision" {
 		testOrphanCollision(t, path)
 		return

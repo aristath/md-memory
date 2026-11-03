@@ -56,9 +56,10 @@ func Parse(data []byte) *Document {
 		line, remaining, newline := bytes.Cut(rest, []byte("\n"))
 		if delimiter(line) {
 			d.Body = string(remaining)
-			var node yaml.Node
+			var parsed yaml.Node
 			decoder := yaml.NewDecoder(bytes.NewReader(header.Bytes()))
-			err := decoder.Decode(&node)
+			err := decoder.Decode(&parsed)
+			node := &parsed
 			decoded := err == nil
 			if err == io.EOF {
 				err = nil
@@ -70,17 +71,15 @@ func Parse(data []byte) *Document {
 				}
 			}
 			if node.Kind == yaml.DocumentNode && len(node.Content) == 1 {
-				node = *node.Content[0]
+				node = node.Content[0]
 			}
 			if decoded && node.Kind == yaml.MappingNode {
-				d.Frontmatter = node
+				assignNode(&d.Frontmatter, node)
 			}
 			if err == nil && node.Kind == 0 {
 				return d // Empty frontmatter is an empty mapping.
 			}
-			if err == nil && node.Kind == yaml.MappingNode {
-				d.Frontmatter = node
-			} else {
+			if err != nil || node.Kind != yaml.MappingNode {
 				_ = d.Set("unparsed_frontmatter", header.String())
 				message := "Frontmatter is not a mapping; original retained"
 				if err != nil {
@@ -105,9 +104,15 @@ func delimiter(line []byte) bool {
 }
 
 func field(node *yaml.Node, name string) *yaml.Node {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return nil
+	}
 	for i := 0; i+1 < len(node.Content); i += 2 {
 		if key, ok := fieldName(node.Content[i]); ok && key == name {
-			return node.Content[i+1]
+			if value := node.Content[i+1]; value != nil {
+				return value
+			}
+			return yamlValue(nil)
 		}
 	}
 	return nil
@@ -116,9 +121,25 @@ func field(node *yaml.Node, name string) *yaml.Node {
 // Decode scalar keys and their aliases the same way for reads, edits, and
 // duplicate detection. Null and compound keys have no string field identity.
 func fieldName(node *yaml.Node) (string, bool) {
+	node = dereference(node)
+	if node == nil || node.Kind != yaml.ScalarNode || node.ShortTag() == "!!null" {
+		return "", false
+	}
 	var name string
 	err := node.Decode(&name)
-	return name, err == nil && node.ShortTag() != "!!null"
+	return name, err == nil
+}
+
+func dereference(node *yaml.Node) *yaml.Node {
+	seen := map[*yaml.Node]bool{}
+	for node != nil && node.Kind == yaml.AliasNode {
+		if seen[node] {
+			return nil
+		}
+		seen[node] = true
+		node = node.Alias
+	}
+	return node
 }
 
 // Resolve inherited metadata without changing the source tree. Explicit fields
@@ -146,7 +167,7 @@ func metadataField(root *yaml.Node, name string) *yaml.Node {
 				return value
 			}
 			for i := 0; i+1 < len(node.Content); i += 2 {
-				if node.Content[i].Kind == yaml.ScalarNode && node.Content[i].ShortTag() == "!!merge" {
+				if key := node.Content[i]; key != nil && key.Kind == yaml.ScalarNode && key.ShortTag() == "!!merge" {
 					return lookup(node.Content[i+1])
 				}
 			}
@@ -156,35 +177,39 @@ func metadataField(root *yaml.Node, name string) *yaml.Node {
 	return lookup(root)
 }
 
-func (d *Document) metadata() (m Metadata, warnings []string) {
-	decode := func(name string, value any) {
-		if node := metadataField(&d.Frontmatter, name); node != nil {
-			err := node.Decode(value)
-			if timestamp, ok := value.(*time.Time); ok && err != nil {
-				for _, layout := range []string{time.RFC3339Nano, time.DateTime, time.DateOnly} {
-					if parsed, parseErr := time.Parse(layout, node.Value); parseErr == nil {
-						*timestamp, err = parsed.UTC(), nil
-						break
-					}
+func decodeField(root *yaml.Node, name string, value any) error {
+	node := dereference(metadataField(root, name))
+	if node == nil {
+		return nil
+	}
+	err := node.Decode(value)
+	if timestamp, ok := value.(*time.Time); ok {
+		if err != nil {
+			for _, layout := range []string{time.RFC3339Nano, time.DateTime, time.DateOnly} {
+				if parsed, parseErr := time.Parse(layout, node.Value); parseErr == nil {
+					*timestamp, err = parsed, nil
+					break
 				}
 			}
-			if err != nil {
-				warnings = append(warnings, fmt.Sprintf("%s: %v", name, err))
-			}
+		}
+		if err == nil {
+			*timestamp = timestamp.UTC()
 		}
 	}
-	decode("title", &m.Title)
-	decode("created_at", &m.CreatedAt)
-	decode("updated_at", &m.UpdatedAt)
-	if m.CreatedAt.IsZero() {
-		warnings = append(warnings, "created_at is unknown")
+	if err != nil {
+		return fmt.Errorf("%s: %w", name, err)
 	}
-	if m.UpdatedAt.IsZero() {
-		warnings = append(warnings, "updated_at is unknown")
-	}
+	return nil
+}
+
+func duplicateFields(node *yaml.Node) []string {
+	var warnings []string
 	seen := map[string]bool{}
-	for i := 0; i+1 < len(d.Frontmatter.Content); i += 2 {
-		name, ok := fieldName(d.Frontmatter.Content[i])
+	if node == nil || node.Kind != yaml.MappingNode {
+		return warnings
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		name, ok := fieldName(node.Content[i])
 		if !ok {
 			continue
 		}
@@ -193,27 +218,51 @@ func (d *Document) metadata() (m Metadata, warnings []string) {
 		}
 		seen[name] = true
 	}
-	if node := metadataField(&d.Frontmatter, "relations"); node != nil {
-		if node.Kind == yaml.AliasNode {
-			node = node.Alias
+	return warnings
+}
+
+func (d *Document) metadata() (m Metadata, warnings []string) {
+	for _, err := range []error{
+		decodeField(&d.Frontmatter, "title", &m.Title),
+		decodeField(&d.Frontmatter, "created_at", &m.CreatedAt),
+		decodeField(&d.Frontmatter, "updated_at", &m.UpdatedAt),
+	} {
+		if err != nil {
+			warnings = append(warnings, err.Error())
 		}
-		nodes := node.Content
-		if node.Kind != yaml.SequenceNode {
-			nodes = []*yaml.Node{node}
-		}
-		for i, entry := range nodes {
-			var relation Relation
-			if err := entry.Decode(&relation); err != nil {
+	}
+	if m.CreatedAt.IsZero() {
+		warnings = append(warnings, "created_at is unknown")
+	}
+	if m.UpdatedAt.IsZero() {
+		warnings = append(warnings, "updated_at is unknown")
+	}
+	warnings = append(warnings, duplicateFields(&d.Frontmatter)...)
+	node := dereference(metadataField(&d.Frontmatter, "relations"))
+	if node == nil || node.ShortTag() == "!!null" {
+		return m, warnings
+	}
+	nodes := node.Content
+	if node.Kind != yaml.SequenceNode {
+		nodes = []*yaml.Node{node}
+	}
+	for i, entry := range nodes {
+		var relation Relation
+		for _, err := range []error{decodeField(entry, "type", &relation.Type), decodeField(entry, "target", &relation.Target)} {
+			if err != nil {
 				warnings = append(warnings, fmt.Sprintf("relation %d: %v", i, err))
 			}
-			relation.Type = strings.TrimSpace(relation.Type)
-			relation.Target = strings.TrimSpace(relation.Target)
-			if relation.Type == "" || !ValidID(relation.Target) {
-				warnings = append(warnings, fmt.Sprintf("relation %d is unresolved", i))
-			}
-			if relation.Type != "" || relation.Target != "" {
-				m.Relations = append(m.Relations, relation)
-			}
+		}
+		for _, warning := range duplicateFields(dereference(entry)) {
+			warnings = append(warnings, fmt.Sprintf("relation %d: %s", i, warning))
+		}
+		relation.Type = strings.TrimSpace(relation.Type)
+		relation.Target = strings.TrimSpace(relation.Target)
+		if relation.Type == "" || !ValidID(relation.Target) {
+			warnings = append(warnings, fmt.Sprintf("relation %d is unresolved", i))
+		}
+		if relation.Type != "" || relation.Target != "" {
+			m.Relations = append(m.Relations, relation)
 		}
 	}
 	return m, warnings
@@ -242,65 +291,32 @@ func (d *Document) Set(name string, value any) (err error) {
 			err = fmt.Errorf("encode %s: %v", name, failure)
 		}
 	}()
-	node := encodeValue(value)
+	node, warnings := encodeValue(value)
+	d.warnings = append(d.warnings, warnings...)
+	root, warnings := normalizeNode(&d.Frontmatter)
+	d.warnings = append(d.warnings, warnings...)
+	if d.Frontmatter.IsZero() {
+		root = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	} else if root.Kind != yaml.MappingNode {
+		root = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Content: []*yaml.Node{yamlValue("unparsed_frontmatter"), root}}
+	}
+	assignNode(&d.Frontmatter, root)
 	if previous := field(&d.Frontmatter, name); previous != nil {
-		preserveAliases(&d.Frontmatter, previous)
 		if previous.Anchor != "" {
 			node.Anchor = previous.Anchor
 		}
-		node.HeadComment = previous.HeadComment
-		node.LineComment, node.FootComment = previous.LineComment, previous.FootComment
-		walkNodes(node, func(child *yaml.Node) {
-			if child.Kind == yaml.AliasNode && child.Alias == node {
-				child.Alias = previous
-			}
-		})
-		*previous = *node
+		mergeComments(node, previous)
+		assignNode(previous, node)
 	} else {
-		d.Frontmatter.Kind, d.Frontmatter.Tag = yaml.MappingNode, "!!map"
 		d.Frontmatter.Content = append(d.Frontmatter.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: name}, node)
 	}
-	d.warnings = append(d.warnings, normalizeAnchors(&d.Frontmatter)...)
+	root, warnings = normalizeNode(&d.Frontmatter)
+	d.warnings = append(d.warnings, warnings...)
+	assignNode(&d.Frontmatter, root)
 	return nil
 }
 
-// References follow node identity. Give definitions unique names across the
-// whole document, then update their aliases to match before YAML is emitted.
-func normalizeAnchors(root *yaml.Node) (warnings []string) {
-	names, used := map[string]bool{}, map[string]bool{}
-	walkNodes(root, func(node *yaml.Node) { names[node.Anchor] = true })
-	walkNodes(root, func(node *yaml.Node) {
-		if node.Anchor == "" {
-			return
-		}
-		original := node.Anchor
-		name := strings.Map(func(r rune) rune {
-			if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-' {
-				return r
-			}
-			return '_'
-		}, original)
-		if name != original || used[name] {
-			node.Anchor = name
-			for suffix := 1; names[node.Anchor]; suffix++ {
-				node.Anchor = fmt.Sprintf("%s_%d", name, suffix)
-			}
-			names[node.Anchor] = true
-		}
-		if name != original {
-			warnings = append(warnings, fmt.Sprintf("YAML anchor %q repaired as %q", original, node.Anchor))
-		}
-		used[node.Anchor] = true
-	})
-	walkNodes(root, func(node *yaml.Node) {
-		if node.Kind == yaml.AliasNode && node.Alias != nil {
-			node.Value = node.Alias.Anchor
-		}
-	})
-	return warnings
-}
-
-// Alias pointers may be recursive; only Content belongs to the document tree.
+// Content is a tree after normalization; alias pointers may be recursive.
 func walkNodes(node *yaml.Node, visit func(*yaml.Node)) {
 	visit(node)
 	for _, child := range node.Content {
@@ -308,57 +324,13 @@ func walkNodes(node *yaml.Node, visit func(*yaml.Node)) {
 	}
 }
 
-// Move a removed nested anchor to its first surviving reference. Other aliases
-// keep their names, including recursive references, without dangling definitions.
-func preserveAliases(root, replaced *yaml.Node) {
-	removed := map[*yaml.Node]*yaml.Node{}
-	var collect func(*yaml.Node)
-	collect = func(node *yaml.Node) {
-		if node.Anchor != "" {
-			removed[node] = nil
+func assignNode(destination, source *yaml.Node) {
+	*destination = *source
+	walkNodes(destination, func(node *yaml.Node) {
+		if node.Kind == yaml.AliasNode && node.Alias == source {
+			node.Alias = destination
 		}
-		for _, child := range node.Content {
-			collect(child)
-		}
-	}
-	for _, child := range replaced.Content {
-		collect(child)
-	}
-	if len(removed) == 0 {
-		return
-	}
-	var visit func(*yaml.Node) *yaml.Node
-	visit = func(node *yaml.Node) *yaml.Node {
-		if node == replaced {
-			return node
-		}
-		target := node
-		if node.Kind == yaml.AliasNode {
-			target = node.Alias
-		}
-		if definition, affected := removed[target]; affected {
-			if definition != nil {
-				return &yaml.Node{Kind: yaml.AliasNode, Value: target.Anchor, Alias: definition,
-					HeadComment: node.HeadComment, LineComment: node.LineComment, FootComment: node.FootComment}
-			}
-			if node.Kind == yaml.AliasNode {
-				copy := *target
-				copy.HeadComment = strings.TrimSpace(copy.HeadComment + "\n" + node.HeadComment)
-				copy.LineComment = strings.TrimSpace(copy.LineComment + "\n" + node.LineComment)
-				copy.FootComment = strings.TrimSpace(copy.FootComment + "\n" + node.FootComment)
-				node = &copy
-			}
-			removed[target] = node
-		}
-		// Copy the slots so relocating recursive definitions cannot turn an
-		// alias in the original subtree into a direct cycle in Content.
-		node.Content = append([]*yaml.Node(nil), node.Content...)
-		for i, child := range node.Content {
-			node.Content[i] = visit(child)
-		}
-		return node
-	}
-	visit(root)
+	})
 }
 
 // Marshal preserves damaged metadata as data rather than rejecting the record.
@@ -367,7 +339,11 @@ func (d *Document) Marshal() ([]byte, error) {
 	output.WriteString("---\n")
 	encoder := yaml.NewEncoder(&output)
 	encoder.SetIndent(2)
-	if err := encoder.Encode(&d.Frontmatter); err != nil {
+	node, _ := normalizeNode(&d.Frontmatter)
+	if d.Frontmatter.IsZero() {
+		node = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	}
+	if err := encoder.Encode(node); err != nil {
 		return nil, err
 	}
 	if err := encoder.Close(); err != nil {

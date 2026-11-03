@@ -87,9 +87,7 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{path: path}
-	_, err = root.Lstat(".lock")
-	s.needsInit = errors.Is(err, fs.ErrNotExist)
+	s := &Store{path: path, needsInit: true}
 	s.note("close root", root.Close())
 	_ = s.Recover()
 	return s, nil
@@ -100,10 +98,10 @@ func Open(path string) (*Store, error) {
 func (s *Store) initialize(root *os.Root) (err error) {
 	s.initMu.Lock()
 	defer s.initMu.Unlock()
+	defer func() { s.note("initialization", err) }()
 	if !s.needsInit {
 		return regularFile(root, ".lock")
 	}
-	defer func() { s.note("initialization", err) }()
 	if _, err = root.Lstat(".lock"); errors.Is(err, fs.ErrNotExist) {
 		if err = syncParents(s.path); err != nil {
 			return err
@@ -162,7 +160,7 @@ func (s *Store) Recover() error {
 	err := s.locked(false, func(root *os.Root) error {
 		// The cache is disposable, unlike the record directories.
 		if info, err := root.Lstat(".index"); err == nil && !info.IsDir() {
-			s.note(".index", root.Remove(".index"))
+			_ = root.Remove(".index")
 		}
 		s.note(".index", ensureDirectory(root, ".index"))
 		for _, destination := range destinations {
@@ -190,23 +188,28 @@ func (s *Store) Create(destination Destination, fields map[string]any, body stri
 	if err != nil {
 		return nil, err
 	}
-	d := &Document{Body: body}
+	values := make(map[string]any, len(fields)+3)
 	for name, value := range fields {
-		if name == "id" || name == "created_at" || name == "updated_at" {
-			continue
-		}
-		if err := d.Set(name, value); err != nil {
-			_ = d.Set(name, issueValue(err.Error()))
+		if name != "id" && name != "created_at" && name != "updated_at" {
+			values[name] = value
 		}
 	}
-	if field(&d.Frontmatter, "title") == nil {
-		_ = d.Set("title", "")
+	if _, exists := values["title"]; !exists {
+		values["title"] = ""
 	}
 	now := time.Now().UTC()
-	_ = d.Set("created_at", now)
-	_ = d.Set("updated_at", now)
+	values["created_at"], values["updated_at"] = now, now
+	node, warnings := encodeValue(values)
+	d := &Document{Body: body, warnings: warnings}
+	assignNode(&d.Frontmatter, node)
+	data, err := d.Marshal()
+	if err != nil {
+		return d, err
+	}
 	err = s.locked(true, func(root *os.Root) error {
-		if err := ensureDirectory(root, string(destination)); err != nil {
+		err := ensureDirectory(root, string(destination))
+		s.note(string(destination), err)
+		if err != nil {
 			return err
 		}
 		if err := syncPath(root, "."); err != nil {
@@ -223,13 +226,11 @@ func (s *Store) Create(destination Destination, fields map[string]any, body stri
 			} else if !errors.Is(err, fs.ErrNotExist) {
 				return err
 			}
-			d.ID = id
-			data, err := d.Marshal()
-			if err != nil {
-				return err
-			}
 			retained, err := stage(root, name, data)
 			d.Pending = retained
+			if retained {
+				d.ID = id
+			}
 			if err != nil {
 				if !retained && errors.Is(err, fs.ErrExist) {
 					continue
@@ -366,8 +367,6 @@ func (s *Store) locked(wait bool, operation func(*os.Root) error) error {
 			return errors.New("recovery deferred while another writer holds the lock")
 		}
 	}
-	s.note("initialization", nil)
-	s.note("write coordination", nil)
 	return operation(root)
 }
 

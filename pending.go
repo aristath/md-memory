@@ -141,9 +141,10 @@ func (s *Store) recoverDirectory(root *os.Root, directory string) {
 		err = syncPath(root, directory)
 	}
 	if err != nil {
-		s.note(directory, err)
+		s.note(directory+".scan", err)
 		return
 	}
+	s.note(directory+".scan", nil)
 	s.issues.Range(func(key, _ any) bool {
 		if strings.HasPrefix(key.(string), directory+string(filepath.Separator)) {
 			s.issues.Delete(key)

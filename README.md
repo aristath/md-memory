@@ -53,6 +53,8 @@ derived using the same type. Markdown files are authoritative; `.index/` is disp
   document while preserving their values and references. Alias keys use their
   resolved field names consistently for reads, edits, and duplicate diagnostics.
 - `Document.Marshal()` serializes the document without rejecting damaged metadata.
+  Editing a directly supplied non-mapping root retains that root in
+  `unparsed_frontmatter` and makes the edited field available normally.
 
 Unknown values remain in the YAML tree. Missing timestamps stay unknown rather
 than being invented. Syntactically unreadable frontmatter or content following a
@@ -68,16 +70,21 @@ these values, named scalar types, `time.Time`, `time.Duration`, `Relation`, and
 `Metadata` are supported. Go struct tags and custom encoding callbacks belong
 outside the engine; callers can convert such values to a YAML node first.
 
-An unsupported value or cyclic reference becomes a `!md-memory/issue` scalar at
+An unsupported value or cyclic Go reference becomes a `!md-memory/issue` scalar at
 that location. Healthy siblings and the body remain usable. The issue is saved
 with the record, so `Diagnostics()` still reports it, with its metadata path,
 after reopening. Ordinary shared values and YAML aliases remain supported.
 An incomplete raw YAML mapping retains its healthy entries and unfinished key;
-only the missing value becomes an issue scalar.
+only the missing value becomes an issue scalar. Other malformed node shapes
+retain their readable values and children in a recovery mapping. Invalid UTF-8
+scalar bytes are retained as YAML binary data; unsafe comments use an escaped
+representation so they cannot break the header.
 New Go maps use lexical key ordering. Parsed YAML retains its existing ordering.
 YAML nodes inside a list or map share the field's anchor scope. Encoding copies
 the supplied nodes, including aliases and comments, so later caller edits cannot
-change the document.
+change the document. Supplied alias targets retain their identity even when map
+ordering moves a reference before its definition. Shared Go maps and lists are
+encoded once and referenced with aliases rather than expanded repeatedly.
 
 ## Store
 
@@ -88,6 +95,9 @@ change the document.
 - `Store.Create(destination, fields, body)` saves a new record. Choose `Memories`,
   `Entities`, `Topics`, or `Stories`; fields are YAML metadata as `map[string]any`.
   The engine generates the ID and both UTC timestamps. A supplied `id` is ignored.
+  Metadata is encoded before acquiring the write lock. A failed save returns an
+  ID only when this operation has reserved it; a collision never claims another
+  write's ID.
 - `Store.Read(id)` reads committed content first, or retries pending publication
   when the committed record is unavailable.
 - `Store.Recover()` retries outstanding work when the lock is available.

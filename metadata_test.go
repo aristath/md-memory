@@ -206,7 +206,7 @@ func testSharedMergeReferences(t *testing.T) {
 		if fallback {
 			merge, relations = "<<: [*m40, {relations: [{type: after, target: m_b8r5n2w9d4hx}]}]\n", 1
 		}
-		doc := Parse([]byte(source.String() + merge + "---\nBody"))
+		doc := Parse([]byte(source.String() + "? *m40\n: Compound key\n" + merge + "---\nBody"))
 		m := doc.Metadata()
 		if m.Title != "Healthy" || m.CreatedAt.IsZero() || m.UpdatedAt.IsZero() || len(m.Relations) != relations || len(doc.Diagnostics()) != 0 {
 			t.Fatalf("shared sources hid healthy metadata: %+v, %v", m, doc.Diagnostics())
