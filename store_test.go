@@ -235,7 +235,7 @@ func TestPublicationNeverOverwritesExistingFiles(t *testing.T) {
 	if err := root.WriteFile(name, []byte("Existing contents"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if ready, err := stage(root, name, []byte(sample)); !ready || err != nil {
+	if ready, err := stage(root, name, "", []byte(sample)); !ready || err != nil {
 		t.Fatal(err)
 	}
 	store := &Store{path: path}
@@ -246,7 +246,7 @@ func TestPublicationNeverOverwritesExistingFiles(t *testing.T) {
 	if string(data) != "Existing contents" {
 		t.Fatal("existing contents changed")
 	}
-	if data, err := root.ReadFile(temporaryName(name, []byte(sample))); err != nil || string(data) != sample {
+	if data, err := root.ReadFile(temporaryName(name, "", []byte(sample))); err != nil || string(data) != sample {
 		t.Fatal("recoverable pending data was discarded")
 	}
 
@@ -474,6 +474,10 @@ func TestStoreProcess(t *testing.T) {
 	if role == "" {
 		return
 	}
+	if strings.HasPrefix(role, "update-") {
+		testUpdateProcess(t, role, path)
+		return
+	}
 	if role == "cyclic-metadata" {
 		testCyclicMetadata(t, path)
 		return
@@ -497,7 +501,7 @@ func TestStoreProcess(t *testing.T) {
 	if role == "staged-crash" {
 		store := &Store{path: path}
 		err := store.locked(true, func(root *os.Root) error {
-			if _, err := stage(root, filepath.Join("memories", "m_7k3m9x2q6v4c.md"), []byte(sample)); err != nil {
+			if _, err := stage(root, filepath.Join("memories", "m_7k3m9x2q6v4c.md"), "", []byte(sample)); err != nil {
 				return err
 			}
 			fmt.Println("staged")

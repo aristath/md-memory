@@ -100,6 +100,12 @@ encoded once and referenced with aliases rather than expanded repeatedly.
   write's ID.
 - `Store.Read(id)` reads committed content first, or retries pending publication
   when the committed record is unavailable.
+- `Store.Update(id, revision, fields, body)` patches metadata and replaces the
+  body of an existing committed record. Pass `Revision` from a read or successful
+  committed save, and pass the previous body when only metadata changes. Fields
+  omitted from the patch remain intact. The engine ignores proposed `id`,
+  `created_at`, and `updated_at` fields, preserves the existing creation value
+  (including missing or damaged data), and assigns the current UTC update time.
 - `Store.Recover()` retries outstanding work when the lock is available.
   Individual failures are isolated; successful recovery clears the deferred status.
   Saving an unrelated record does not clear deferred recovery.
@@ -115,7 +121,7 @@ Healthy committed records can be read without taking the write lock. If write
 coordination is damaged, existing records remain readable while unsafe writes
 are blocked and the coordination issue is reported through diagnostics. Pending
 work never takes precedence over readable committed content. Readable pending
-records also remain available while another writer holds the lock; publication
+creations also remain available while another writer holds the lock; publication
 is deferred and reported on the returned document. Reads recheck the committed
 filename if the pending name disappears during publication.
 
@@ -128,9 +134,41 @@ coordination lock.
 The cache may be rebuilt; blocked record directories retain their contents, and
 errors affect operations on that directory only.
 
+## Updates
+
+`Document.Revision` is the SHA-256 of the exact committed file bytes. It is never
+stored in YAML. Pending creations have no committed revision. A successful update
+returns the new revision; use it for the next update.
+
+An update checks the base revision before staging and again immediately before
+replacement, while engine writers coordinate through `.lock`. A stale revision
+returns `ErrConflict`; use `errors.Is(err, memory.ErrConflict)` to identify it.
+Read the current record and resolve the conflicting edits before submitting a new
+update. Retrying an old revision cannot overwrite a newer committed version.
+
+Only one pending change reserves a record at a time. Update first attempts to
+recover existing staging for that record; unresolved work blocks another update
+to the same record while other records remain usable. Missing committed records
+are never recreated from update proposals. Reads continue returning the committed
+version while an update is pending.
+
+An update returns an error if it cannot confirm durable publication. A returned
+document with `Pending=true` identifies this attempt's retained staging; the error
+may indicate incomplete data or an unsynced write. `Recover()` or reopening the
+store retries complete, verified work. The proposal is not a confirmed committed
+version until publication succeeds. Re-read the record after recovery. Conflicting
+or incomplete proposals remain on disk with diagnostics for deliberate resolution.
+
+External editors do not acquire the advisory lock. Revision checks detect edits
+visible before the last check, but checking bytes and renaming a file are not an
+atomic compare-and-swap. An external edit between those steps can still be
+overwritten. Concurrent writers need to use the engine's lock for that guarantee.
+Byte revisions also cannot distinguish a file that changed and was restored to
+exactly the same bytes.
+
 ## Durable writes and recovery
 
-A new write exclusively creates a hidden `.ID.md.pending/` directory to reserve
+A creation exclusively creates a hidden `.ID.md.pending/` directory to reserve
 its ID. This requires no scan of other records. Inside it, a file named
 `<sha256>.tmp` holds the data and records its expected checksum. The file, staging
 directory, and destination directory are synced before publication. Recovery
@@ -141,9 +179,10 @@ staging cleanup begins. If the final file already exists with identical bytes,
 it is also synced before the redundant staged copy is removed, even when the
 two paths refer to separate files.
 
-A failure never deletes the staged data. Complete writes recover automatically on
-open, read, or explicit recovery. Empty reservations, ambiguous candidates,
-incomplete data, and conflicting data are retained and reported. Recovery never
+Before durable publication, failures retain the staged data. Complete creations
+recover automatically on open, read, or explicit recovery. Pending updates recover
+on open or explicit recovery; committed reads keep returning the current version.
+Empty reservations, ambiguous candidates, incomplete data, and conflicting data are retained and reported. Recovery never
 promotes an unverified partial file or overwrites a conflicting record. Readable
 partial staging data remains available with `Pending=true` and diagnostics.
 An unfinished staging directory keeps its ID reserved for its original record.
@@ -155,8 +194,16 @@ operation returns an error and the retained document/ID where available. Use tha
 ID to inspect or resume the same write rather than creating another record.
 Cleanup errors after durable publication are diagnostics, not failed saves.
 
+Updates share the same reservation directory. Their payload is named
+`<base-sha256>.<new-sha256>.tmp`. Recovery verifies the new checksum and requires
+the committed bytes to match the base before replacing anything. If they already
+match the new checksum, recovery confirms and syncs that result without replaying
+the replacement. A second hard link named `publish` is atomically renamed over the
+committed name; the synced payload remains until the destination directory is
+synced. Unknown staging files are preserved.
+
 The current store requires a local filesystem with hard links, advisory locks,
-and directory syncing. Updates, deletion, target-existence checks, and index
+and directory syncing. Deletion, target-existence checks, and index
 construction are outside the current increment.
 
 ```sh

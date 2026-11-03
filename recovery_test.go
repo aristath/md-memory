@@ -169,7 +169,7 @@ func TestPendingWriteRecoversAfterPublicationFailure(t *testing.T) {
 	defer root.Close()
 	id := "m_7k3m9x2q6v4c"
 	name := filepath.Join("memories", id+".md")
-	if ready, err := stage(root, name, []byte(sample)); !ready || err != nil {
+	if ready, err := stage(root, name, "", []byte(sample)); !ready || err != nil {
 		t.Fatal(err)
 	}
 	// A destination obstruction prevents publication, but not access to staged data.
@@ -224,7 +224,7 @@ func TestIncompleteAndConflictingWritesStayIsolated(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer root.Close()
-	incomplete := temporaryName(filepath.Join("memories", "m_000000000000.md"), []byte(sample))
+	incomplete := temporaryName(filepath.Join("memories", "m_000000000000.md"), "", []byte(sample))
 	if err := root.MkdirAll(filepath.Dir(incomplete), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +232,7 @@ func TestIncompleteAndConflictingWritesStayIsolated(t *testing.T) {
 		t.Fatal(err)
 	}
 	name := filepath.Join("memories", "m_7k3m9x2q6v4c.md")
-	if ready, err := stage(root, name, []byte(sample)); !ready || err != nil {
+	if ready, err := stage(root, name, "", []byte(sample)); !ready || err != nil {
 		t.Fatal(err)
 	}
 	if err := root.WriteFile(name, []byte("Different original record"), 0600); err != nil {
@@ -241,7 +241,7 @@ func TestIncompleteAndConflictingWritesStayIsolated(t *testing.T) {
 	if err := store.Recover(); err != nil {
 		t.Fatal(err)
 	}
-	for name, want := range map[string]string{incomplete: "Incomplete original", name: "Different original record", temporaryName(name, []byte(sample)): sample} {
+	for name, want := range map[string]string{incomplete: "Incomplete original", name: "Different original record", temporaryName(name, "", []byte(sample)): sample} {
 		data, err := root.ReadFile(name)
 		if err != nil || string(data) != want {
 			t.Fatalf("discarded unresolved work %s: %v", name, err)
@@ -270,7 +270,7 @@ func TestPublicationPreservesUnrelatedStagingData(t *testing.T) {
 	}
 	defer root.Close()
 	name := filepath.Join("memories", "m_7k3m9x2q6v4c.md")
-	if ready, err := stage(root, name, []byte(sample)); !ready || err != nil {
+	if ready, err := stage(root, name, "", []byte(sample)); !ready || err != nil {
 		t.Fatal(err)
 	}
 	// Files unrelated to the staged record must never be deleted by cleanup.
@@ -299,7 +299,7 @@ func TestStagedFileRecoversBeforePublication(t *testing.T) {
 			if err := os.Mkdir(filepath.Join(path, pendingName(name)), 0700); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(path, temporaryName(name, []byte(sample))), []byte(sample), 0600); err != nil {
+			if err := os.WriteFile(filepath.Join(path, temporaryName(name, "", []byte(sample))), []byte(sample), 0600); err != nil {
 				t.Fatal(err)
 			}
 			if trigger == "open" {

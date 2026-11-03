@@ -180,7 +180,7 @@ func testOrphanCollision(t *testing.T, path string) {
 	defer root.Close()
 	id := "m_000000000000"
 	name := filepath.Join("memories", id+".md")
-	temporary := temporaryName(name, []byte(sample))
+	temporary := temporaryName(name, "", []byte(sample))
 	if err := root.Mkdir(pendingName(name), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -213,8 +213,8 @@ func TestRemovedArtifactsClearOnlyObsoleteDiagnostics(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer root.Close()
-	first := temporaryName("memories/m_000000000000.md", []byte(sample))
-	second := temporaryName("entities/e_000000000000.md", []byte(sample))
+	first := temporaryName("memories/m_000000000000.md", "", []byte(sample))
+	second := temporaryName("entities/e_000000000000.md", "", []byte(sample))
 	for _, name := range []string{first, second} {
 		if err := root.MkdirAll(filepath.Dir(name), 0700); err != nil {
 			t.Fatal(err)
@@ -285,7 +285,7 @@ func TestReadsSurviveConcurrentPublication(t *testing.T) {
 	for iteration := range 150 {
 		id := fmt.Sprintf("m_%012d", iteration)
 		name := filepath.Join("memories", id+".md")
-		if ready, err := stage(root, name, []byte(sample)); !ready || err != nil {
+		if ready, err := stage(root, name, "", []byte(sample)); !ready || err != nil {
 			t.Fatal(err)
 		}
 		start := make(chan struct{})

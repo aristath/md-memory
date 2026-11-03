@@ -29,5 +29,12 @@ func ExampleStore() {
 		panic(err)
 	}
 	fmt.Println(read.Body)
-	// Output: Markdown body.
+	updated, err := store.Update(read.ID, read.Revision, map[string]any{"title": "Edited"}, "More detail.")
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(updated.Body)
+	// Output:
+	// Markdown body.
+	// More detail.
 }

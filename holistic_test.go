@@ -107,7 +107,7 @@ func TestUnrelatedSaveDoesNotClearDeferredRecovery(t *testing.T) {
 	defer root.Close()
 	id := "m_000000000000"
 	name := filepath.Join("memories", id+".md")
-	if _, err := stage(root, name, []byte(sample)); err != nil {
+	if _, err := stage(root, name, "", []byte(sample)); err != nil {
 		t.Fatal(err)
 	}
 	lock := flock.New(filepath.Join(path, ".lock"))
@@ -149,7 +149,7 @@ func TestRecoveryCleansIdenticalIndependentCopies(t *testing.T) {
 	defer root.Close()
 	id := "m_000000000000"
 	name := filepath.Join("memories", id+".md")
-	if _, err := stage(root, name, []byte(sample)); err != nil {
+	if _, err := stage(root, name, "", []byte(sample)); err != nil {
 		t.Fatal(err)
 	}
 	// A restore or an editor's atomic save can replace the canonical inode while
@@ -188,7 +188,7 @@ func TestStagingReservationAndAmbiguityStayIsolated(t *testing.T) {
 	if err := root.Mkdir(pendingName(name), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if retained, err := stage(root, name, []byte(sample)); retained || !errors.Is(err, fs.ErrExist) {
+	if retained, err := stage(root, name, "", []byte(sample)); retained || !errors.Is(err, fs.ErrExist) {
 		t.Fatalf("reused claimed ID: %v", err)
 	}
 	if err := store.Recover(); err != nil {
@@ -198,7 +198,7 @@ func TestStagingReservationAndAmbiguityStayIsolated(t *testing.T) {
 		t.Fatalf("empty reservation mistaken for an absent record: %v", err)
 	}
 	for _, data := range [][]byte{[]byte(sample), []byte("Different retained body")} {
-		if err := root.WriteFile(temporaryName(name, data), data, 0600); err != nil {
+		if err := root.WriteFile(temporaryName(name, "", data), data, 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -209,7 +209,7 @@ func TestStagingReservationAndAmbiguityStayIsolated(t *testing.T) {
 		t.Fatal("arbitrarily selected one of two staged records")
 	}
 	for _, data := range [][]byte{[]byte(sample), []byte("Different retained body")} {
-		if got, err := root.ReadFile(temporaryName(name, data)); err != nil || !bytes.Equal(got, data) {
+		if got, err := root.ReadFile(temporaryName(name, "", data)); err != nil || !bytes.Equal(got, data) {
 			t.Fatal("ambiguous data was discarded")
 		}
 	}
@@ -257,17 +257,17 @@ func TestRecoveryFinishesInterruptedStagingCleanup(t *testing.T) {
 	defer root.Close()
 	name := "memories/m_000000000000.md"
 	data := []byte(sample)
-	if _, err := stage(root, name, data); err != nil {
+	if _, err := stage(root, name, "", data); err != nil {
 		t.Fatal(err)
 	}
-	if err := root.Link(temporaryName(name, data), name); err != nil {
+	if err := root.Link(temporaryName(name, "", data), name); err != nil {
 		t.Fatal(err)
 	}
 	if err := syncPath(root, "memories"); err != nil {
 		t.Fatal(err)
 	}
 	// Publication finished; cleanup removed the payload but not its directory.
-	if err := root.Remove(temporaryName(name, data)); err != nil {
+	if err := root.Remove(temporaryName(name, "", data)); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Recover(); err != nil || len(store.Diagnostics()) != 0 {
@@ -297,7 +297,7 @@ func TestPublicationKeepsStagingWhenDirectorySyncFails(t *testing.T) {
 	defer root.Close()
 	name := "memories/m_000000000000.md"
 	data := []byte(sample)
-	if _, err := stage(root, name, data); err != nil {
+	if _, err := stage(root, name, "", data); err != nil {
 		t.Fatal(err)
 	}
 	publicationRoot, err := os.OpenRoot(filepath.Join(path, "memories"))
@@ -319,7 +319,7 @@ func TestPublicationKeepsStagingWhenDirectorySyncFails(t *testing.T) {
 	if _, err := root.Lstat(name); err != nil {
 		t.Fatalf("test did not reach publication: %v", err)
 	}
-	if retained, err := root.ReadFile(temporaryName(name, data)); err != nil || !bytes.Equal(retained, data) {
+	if retained, err := root.ReadFile(temporaryName(name, "", data)); err != nil || !bytes.Equal(retained, data) {
 		t.Fatal("failed publication discarded durable staging")
 	}
 	if err := store.Recover(); err != nil || len(store.Diagnostics()) != 0 {

@@ -55,11 +55,11 @@ func TestCorruptedReadyWriteIsNotPublished(t *testing.T) {
 	}
 	defer root.Close()
 	name := filepath.Join("memories", "m_7k3m9x2q6v4c.md")
-	if ready, err := stage(root, name, []byte(sample)); !ready || err != nil {
+	if ready, err := stage(root, name, "", []byte(sample)); !ready || err != nil {
 		t.Fatal(err)
 	}
 	changed := []byte("---\ntitle: Truncated\n---\nOnly part of the body")
-	if err := root.WriteFile(temporaryName(name, []byte(sample)), changed, 0600); err != nil {
+	if err := root.WriteFile(temporaryName(name, "", []byte(sample)), changed, 0600); err != nil {
 		t.Fatal(err)
 	}
 	if published, err := store.complete(root, name); published || !errors.Is(err, errUnverifiedPending) {
@@ -71,7 +71,7 @@ func TestCorruptedReadyWriteIsNotPublished(t *testing.T) {
 	if _, err := root.Lstat(name); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatal("corrupted pending data was published")
 	}
-	if data, err := root.ReadFile(temporaryName(name, []byte(sample))); err != nil || !bytes.Equal(data, changed) {
+	if data, err := root.ReadFile(temporaryName(name, "", []byte(sample))); err != nil || !bytes.Equal(data, changed) {
 		t.Fatal("damaged pending data was discarded")
 	}
 	doc, err := store.Read("m_7k3m9x2q6v4c")
@@ -96,7 +96,7 @@ func TestCommittedContentWinsOverPendingWhenLockBreaks(t *testing.T) {
 	}
 	defer root.Close()
 	name := filepath.Join("memories", committed.ID+".md")
-	if ready, err := stage(root, name, []byte(sample)); !ready || err != nil {
+	if ready, err := stage(root, name, "", []byte(sample)); !ready || err != nil {
 		t.Fatal(err)
 	}
 	if err := root.Remove(".lock"); err != nil {
@@ -116,7 +116,7 @@ func TestCommittedContentWinsOverPendingWhenLockBreaks(t *testing.T) {
 	if len(doc.Diagnostics()) == 0 {
 		t.Fatal("pending recovery was not reported")
 	}
-	if data, err := root.ReadFile(temporaryName(name, []byte(sample))); err != nil || string(data) != sample {
+	if data, err := root.ReadFile(temporaryName(name, "", []byte(sample))); err != nil || string(data) != sample {
 		t.Fatal("conflicting pending work was lost")
 	}
 }
@@ -301,7 +301,7 @@ func TestPendingReadDoesNotWaitAndRecoveryClearsDeferredDiagnostic(t *testing.T)
 	defer root.Close()
 	id := "m_7k3m9x2q6v4c"
 	name := filepath.Join("memories", id+".md")
-	if ready, err := stage(root, name, []byte(sample)); !ready || err != nil {
+	if ready, err := stage(root, name, "", []byte(sample)); !ready || err != nil {
 		t.Fatal(err)
 	}
 	lock := flock.New(filepath.Join(path, ".lock"))

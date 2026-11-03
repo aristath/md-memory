@@ -14,21 +14,30 @@ import (
 
 var errUnverifiedPending = errors.New("pending checksum cannot be verified; data retained")
 
+const pendingWarning = "Pending work is retained for recovery; committed content returned"
+
+func dataRevision(data []byte) string {
+	return fmt.Sprintf("%x", sha256.Sum256(data))
+}
+
 func pendingName(name string) string {
 	return filepath.Join(filepath.Dir(name), "."+filepath.Base(name)+".pending")
 }
 
 // The directory reserves the ID; its checksum-named file records the complete
 // intended write. No scan of other records is needed to claim an ID.
-func temporaryName(name string, data []byte) string {
-	return filepath.Join(pendingName(name), fmt.Sprintf("%x.tmp", sha256.Sum256(data)))
+func temporaryName(name, base string, data []byte) string {
+	if base != "" {
+		base += "."
+	}
+	return filepath.Join(pendingName(name), base+dataRevision(data)+".tmp")
 }
 
-func stage(root *os.Root, name string, data []byte) (bool, error) {
+func stage(root *os.Root, name, base string, data []byte) (bool, error) {
 	if err := root.Mkdir(pendingName(name), 0700); err != nil {
 		return false, err
 	}
-	temporary := temporaryName(name, data)
+	temporary := temporaryName(name, base, data)
 	file, err := root.OpenFile(temporary, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		return true, err
@@ -37,11 +46,11 @@ func stage(root *os.Root, name string, data []byte) (bool, error) {
 	if err := errors.Join(writeErr, file.Close()); err != nil {
 		return true, err
 	}
-	return true, prepare(root, name, temporary, data)
+	return true, prepare(root, name, base, temporary, data)
 }
 
-func prepare(root *os.Root, name, temporary string, data []byte) error {
-	if temporary != temporaryName(name, data) {
+func prepare(root *os.Root, name, base, temporary string, data []byte) error {
+	if temporary != temporaryName(name, base, data) {
 		return errUnverifiedPending
 	}
 	for _, path := range []string{temporary, pendingName(name), filepath.Dir(name)} {
@@ -54,42 +63,51 @@ func prepare(root *os.Root, name, temporary string, data []byte) error {
 
 // Unknown files are retained. Multiple candidate records are ambiguous, so none
 // is chosen for publication merely because it appeared first in a listing.
-func stagedData(root *os.Root, name string) ([]byte, string, error) {
+func stagedData(root *os.Root, name string) ([]byte, string, string, error) {
 	directory := pendingName(name)
 	info, err := root.Lstat(directory)
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
 	if !info.IsDir() {
-		return nil, "", fmt.Errorf("%s is not a staging directory", directory)
+		return nil, "", "", fmt.Errorf("%s is not a staging directory", directory)
 	}
 	entries, err := fs.ReadDir(root.FS(), directory)
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
-	var temporary string
+	var temporary, base string
 	for _, entry := range entries {
-		filename := entry.Name()
-		if len(filename) != 68 || !strings.HasSuffix(filename, ".tmp") {
+		parts := strings.Split(entry.Name(), ".")
+		if len(parts) != 2 && len(parts) != 3 || parts[len(parts)-1] != "tmp" {
 			continue
 		}
-		if _, err := hex.DecodeString(filename[:64]); err != nil {
+		valid := true
+		for _, hash := range parts[:len(parts)-1] {
+			if _, err := hex.DecodeString(hash); len(hash) != 64 || err != nil {
+				valid = false
+			}
+		}
+		if !valid {
 			continue
 		}
 		if temporary != "" {
-			return nil, "", fmt.Errorf("multiple staged records for %s; all retained", name)
+			return nil, "", "", fmt.Errorf("multiple staged records for %s; all retained", name)
 		}
-		temporary = filepath.Join(directory, filename)
+		temporary = filepath.Join(directory, entry.Name())
+		if len(parts) == 3 {
+			base = parts[0]
+		}
 	}
 	if temporary == "" {
-		return nil, "", fmt.Errorf("unfinished write for %s is retained without a readable record", name)
+		return nil, "", "", fmt.Errorf("unfinished write for %s is retained without a readable record", name)
 	}
 	data, err := readFile(root, temporary)
-	return data, temporary, err
+	return data, temporary, base, err
 }
 
 func (s *Store) complete(root *os.Root, name string) (bool, error) {
-	data, temporary, err := stagedData(root, name)
+	data, temporary, base, err := stagedData(root, name)
 	if err != nil {
 		// A crash during cleanup may leave an empty reservation after the final
 		// record is durable. Remove only an empty directory, never unknown data.
@@ -102,8 +120,11 @@ func (s *Store) complete(root *os.Root, name string) (bool, error) {
 		}
 		return false, err
 	}
-	if err := prepare(root, name, temporary, data); err != nil {
+	if err := prepare(root, name, base, temporary, data); err != nil {
 		return false, err
+	}
+	if base != "" {
+		return s.publishUpdate(root, name, base, data)
 	}
 	return s.publish(root, name, data)
 }
@@ -112,27 +133,36 @@ func (s *Store) complete(root *os.Root, name string) (bool, error) {
 // data. A new hard link reuses that synced inode. An existing final file is
 // checked and synced before its staged copy is removed.
 func (s *Store) publish(root *os.Root, name string, data []byte) (bool, error) {
-	temporary := temporaryName(name, data)
-	if err := root.Link(temporary, name); err != nil {
-		if !errors.Is(err, fs.ErrExist) {
-			return false, err
-		}
-		existing, readErr := readFile(root, name)
-		if readErr != nil || !bytes.Equal(data, existing) {
-			return false, fmt.Errorf("pending data conflicts with %s: %w", name, fs.ErrExist)
-		}
-		if err := syncPath(root, name); err != nil {
-			return false, err
-		}
+	temporary := temporaryName(name, "", data)
+	if err := linkData(root, temporary, name, data); err != nil {
+		return false, err
 	}
 	if err := syncPath(root, filepath.Dir(name)); err != nil {
 		return false, err
 	}
+	s.cleanup(root, name, temporary)
+	return true, nil
+}
+
+func linkData(root *os.Root, source, destination string, data []byte) error {
+	if err := root.Link(source, destination); err != nil {
+		if !errors.Is(err, fs.ErrExist) {
+			return err
+		}
+		existing, readErr := readFile(root, destination)
+		if readErr != nil || !bytes.Equal(data, existing) {
+			return fmt.Errorf("pending data conflicts with %s: %w", destination, fs.ErrExist)
+		}
+		return syncPath(root, destination)
+	}
+	return nil
+}
+
+func (s *Store) cleanup(root *os.Root, name, temporary string) {
 	// Publication is durable. Cleanup problems are diagnostics, never failed saves.
 	s.note(temporary, root.Remove(temporary))
 	s.note(pendingName(name), root.Remove(pendingName(name)))
 	s.note(name+".cleanup", syncPath(root, filepath.Dir(name)))
-	return true, nil
 }
 
 func (s *Store) recoverDirectory(root *os.Root, directory string) {

@@ -40,6 +40,18 @@ func (d Destination) prefix() (string, error) {
 	return "", fmt.Errorf("unknown destination %q", d)
 }
 
+func recordName(id string) (string, error) {
+	if ValidID(id) {
+		for _, destination := range destinations {
+			prefix, _ := destination.prefix()
+			if id[:2] == prefix {
+				return filepath.Join(string(destination), id+".md"), nil
+			}
+		}
+	}
+	return "", fmt.Errorf("invalid record ID %q", id)
+}
+
 // Store holds no open files between calls. Diagnostics is safe across goroutines.
 type Store struct {
 	path      string
@@ -226,7 +238,7 @@ func (s *Store) Create(destination Destination, fields map[string]any, body stri
 			} else if !errors.Is(err, fs.ErrNotExist) {
 				return err
 			}
-			retained, err := stage(root, name, data)
+			retained, err := stage(root, name, "", data)
 			d.Pending = retained
 			if retained {
 				d.ID = id
@@ -249,25 +261,20 @@ func (s *Store) Create(destination Destination, fields map[string]any, body stri
 			return nil // The synced pending record remains readable even if publication is blocked.
 		}
 	})
+	if err == nil && !d.Pending {
+		d.Revision = dataRevision(data)
+	}
 	return d, err
 }
 
 func (s *Store) Read(id string) (*Document, error) {
-	if !ValidID(id) {
-		return nil, fmt.Errorf("invalid record ID %q", id)
+	name, err := recordName(id)
+	if err != nil {
+		return nil, err
 	}
 	if s == nil {
 		return nil, errors.New("store is nil")
 	}
-	var destination Destination
-	for _, candidate := range destinations {
-		prefix, _ := candidate.prefix()
-		if prefix == id[:2] {
-			destination = candidate
-			break
-		}
-	}
-	name := filepath.Join(string(destination), id+".md")
 	root, err := os.OpenRoot(s.path)
 	if err != nil {
 		return nil, err
@@ -309,11 +316,14 @@ func readCopy(root *os.Root, id, name string) (*Document, error) {
 	var warning string
 	if err != nil {
 		committedErr := err
-		var temporary string
-		data, temporary, err = stagedData(root, name)
+		var temporary, base string
+		data, temporary, base, err = stagedData(root, name)
+		if err == nil && base != "" {
+			err = fmt.Errorf("pending update requires a committed base: %w", fs.ErrNotExist)
+		}
 		if err == nil {
 			pending = true
-			if temporary != temporaryName(name, data) {
+			if temporary != temporaryName(name, "", data) {
 				warning = errUnverifiedPending.Error()
 			}
 		} else {
@@ -333,8 +343,9 @@ func readCopy(root *os.Root, id, name string) (*Document, error) {
 		doc.warnings = append(doc.warnings, warning)
 	}
 	if !pending {
+		doc.Revision = dataRevision(data)
 		if _, err := root.Lstat(pendingName(name)); err == nil {
-			doc.warnings = append(doc.warnings, "Pending work is retained for recovery; committed content returned")
+			doc.warnings = append(doc.warnings, pendingWarning)
 		}
 	}
 	return doc, nil

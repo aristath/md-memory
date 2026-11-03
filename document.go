@@ -27,6 +27,7 @@ type Metadata struct {
 // fields. Diagnostics reports problems without making the record unavailable.
 type Document struct {
 	ID          string `yaml:"-"`
+	Revision    string `yaml:"-"`
 	Pending     bool   `yaml:"-"`
 	Frontmatter yaml.Node
 	Body        string
