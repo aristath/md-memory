@@ -113,9 +113,44 @@ func field(node *yaml.Node, name string) *yaml.Node {
 	return nil
 }
 
+// Resolve inherited metadata without changing the source tree. Explicit fields
+// win; merge sequences use their first matching source. Cycles stay local.
+func metadataField(root *yaml.Node, name string) *yaml.Node {
+	active := map[*yaml.Node]bool{}
+	var lookup func(*yaml.Node) *yaml.Node
+	lookup = func(node *yaml.Node) *yaml.Node {
+		if node == nil || active[node] {
+			return nil
+		}
+		active[node] = true
+		defer delete(active, node)
+		switch node.Kind {
+		case yaml.AliasNode:
+			return lookup(node.Alias)
+		case yaml.SequenceNode:
+			for _, source := range node.Content {
+				if value := lookup(source); value != nil {
+					return value
+				}
+			}
+		case yaml.MappingNode:
+			if value := field(node, name); value != nil {
+				return value
+			}
+			for i := 0; i+1 < len(node.Content); i += 2 {
+				if node.Content[i].Kind == yaml.ScalarNode && node.Content[i].ShortTag() == "!!merge" {
+					return lookup(node.Content[i+1])
+				}
+			}
+		}
+		return nil
+	}
+	return lookup(root)
+}
+
 func (d *Document) metadata() (m Metadata, warnings []string) {
 	decode := func(name string, value any) {
-		if node := field(&d.Frontmatter, name); node != nil {
+		if node := metadataField(&d.Frontmatter, name); node != nil {
 			err := node.Decode(value)
 			if timestamp, ok := value.(*time.Time); ok && err != nil {
 				for _, layout := range []string{time.RFC3339Nano, time.DateTime, time.DateOnly} {
@@ -147,7 +182,7 @@ func (d *Document) metadata() (m Metadata, warnings []string) {
 		}
 		seen[name] = true
 	}
-	if node := field(&d.Frontmatter, "relations"); node != nil {
+	if node := metadataField(&d.Frontmatter, "relations"); node != nil {
 		if node.Kind == yaml.AliasNode {
 			node = node.Alias
 		}
@@ -214,25 +249,35 @@ func (d *Document) Set(name string, value any) (err error) {
 		d.Frontmatter.Kind, d.Frontmatter.Tag = yaml.MappingNode, "!!map"
 		d.Frontmatter.Content = append(d.Frontmatter.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: name}, node)
 	}
-	normalizeAnchors(&d.Frontmatter)
+	d.warnings = append(d.warnings, normalizeAnchors(&d.Frontmatter)...)
 	return nil
 }
 
 // References follow node identity. Give definitions unique names across the
 // whole document, then update their aliases to match before YAML is emitted.
-func normalizeAnchors(root *yaml.Node) {
+func normalizeAnchors(root *yaml.Node) (warnings []string) {
 	names, used := map[string]bool{}, map[string]bool{}
 	walkNodes(root, func(node *yaml.Node) { names[node.Anchor] = true })
 	walkNodes(root, func(node *yaml.Node) {
 		if node.Anchor == "" {
 			return
 		}
-		name := node.Anchor
-		if used[name] {
+		original := node.Anchor
+		name := strings.Map(func(r rune) rune {
+			if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-' {
+				return r
+			}
+			return '_'
+		}, original)
+		if name != original || used[name] {
+			node.Anchor = name
 			for suffix := 1; names[node.Anchor]; suffix++ {
 				node.Anchor = fmt.Sprintf("%s_%d", name, suffix)
 			}
 			names[node.Anchor] = true
+		}
+		if name != original {
+			warnings = append(warnings, fmt.Sprintf("YAML anchor %q repaired as %q", original, node.Anchor))
 		}
 		used[node.Anchor] = true
 	})
@@ -241,6 +286,7 @@ func normalizeAnchors(root *yaml.Node) {
 			node.Value = node.Alias.Anchor
 		}
 	})
+	return warnings
 }
 
 // Alias pointers may be recursive; only Content belongs to the document tree.

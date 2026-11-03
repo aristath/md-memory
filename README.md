@@ -41,12 +41,15 @@ derived using the same type. Markdown files are authoritative; `.index/` is disp
 - `Parse(data)` always returns the readable content, including damaged records.
 - `Document.Metadata()` reads fields independently. For example, numeric `3`
   works as the title `"3"`, and one invalid field does not hide other fields.
+  YAML merges supply inherited fields; explicit values take precedence. Reading
+  the metadata view preserves the source tree, and edits add explicit overrides.
 - `Document.Diagnostics()` reports unknown timestamps, unresolved relations,
   unparsed metadata, and other recoverable problems without failing the operation.
 - `Document.Set(name, value)` edits one field while preserving other YAML fields,
   including references to nested anchors in the replaced value. Colliding anchor
   names are resolved across the whole document, so saving and rereading preserve
-  the same values.
+  the same values. Invalid anchor names are repaired and reported on the edited
+  document while preserving their values and references.
 - `Document.Marshal()` serializes the document without rejecting damaged metadata.
 
 Unknown values remain in the YAML tree. Missing timestamps stay unknown rather
