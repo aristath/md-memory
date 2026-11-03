@@ -75,19 +75,22 @@ func TestStoreCreatesAndReadsAllDestinations(t *testing.T) {
 			t.Fatal(err)
 		}
 		prefix, _ := destination.prefix()
-		if !strings.HasPrefix(metadata.ID, prefix) || !ValidID(metadata.ID) {
-			t.Fatalf("wrong ID for %s: %q", destination, metadata.ID)
+		if !strings.HasPrefix(doc.ID, prefix) || !ValidID(doc.ID) {
+			t.Fatalf("wrong ID for %s: %q", destination, doc.ID)
 		}
 		if metadata.CreatedAt.Before(before) || metadata.CreatedAt.After(time.Now()) || !metadata.CreatedAt.Equal(metadata.UpdatedAt) || metadata.CreatedAt.Location() != time.UTC {
 			t.Fatalf("timestamps were not engine-assigned in UTC: %+v", metadata)
 		}
-		stored, err := os.ReadFile(filepath.Join(path, string(destination), metadata.ID+".md"))
+		stored, err := os.ReadFile(filepath.Join(path, string(destination), doc.ID+".md"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		read, err := store.Read(metadata.ID)
+		read, err := store.Read(doc.ID)
 		if err != nil || read.Body != body {
 			t.Fatalf("read failed or body changed: %v", err)
+		}
+		if read.ID != doc.ID {
+			t.Fatalf("filename ID changed on read: got %q, want %q", read.ID, doc.ID)
 		}
 		readBytes, err := read.Marshal()
 		if err != nil || !bytes.Equal(readBytes, stored) {
@@ -100,6 +103,9 @@ func TestStoreCreatesAndReadsAllDestinations(t *testing.T) {
 		var values map[string]yaml.Node
 		if err := read.Frontmatter.Decode(&values); err != nil {
 			t.Fatal(err)
+		}
+		if _, exists := values["id"]; exists {
+			t.Fatal("creation wrote an ID into YAML metadata")
 		}
 		actual = values["custom"]
 		got, _ := yaml.Marshal(&actual)
@@ -122,17 +128,15 @@ func TestStoreReadsSameSuffixInDifferentDestinations(t *testing.T) {
 	for _, destination := range []Destination{Memories, Entities, Topics, Stories} {
 		prefix, _ := destination.prefix()
 		id := prefix + "7k3m9x2q6v4c"
-		data := strings.Replace(sample, "id: m_7k3m9x2q6v4c", "id: "+id, 1)
-		if err := os.WriteFile(filepath.Join(path, string(destination), id+".md"), []byte(data), 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(path, string(destination), id+".md"), []byte(sample), 0600); err != nil {
 			t.Fatal(err)
 		}
 		read, err := store.Read(id)
 		if err != nil {
 			t.Fatal(err)
 		}
-		metadata, _ := read.Metadata()
-		if metadata.ID != id {
-			t.Fatalf("wrong record for %s: %s", destination, metadata.ID)
+		if read.ID != id {
+			t.Fatalf("wrong record for %s: %s", destination, read.ID)
 		}
 	}
 }
@@ -151,11 +155,10 @@ func TestStoreWorksWithoutDerivedIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	metadata, _ := doc.Metadata()
 	if err := os.RemoveAll(filepath.Join(path, ".index")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Read(metadata.ID); err != nil {
+	if _, err := store.Read(doc.ID); err != nil {
 		t.Fatalf("read depended on index: %v", err)
 	}
 	if _, err := store.Create(Entities, nil, "Entity"); err != nil {
@@ -196,7 +199,7 @@ func TestStoreRejectsInvalidInputAndIsolatesDamagedRecords(t *testing.T) {
 	if _, err := store.Read("m_000000000000"); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("missing record did not retain ErrNotExist: %v", err)
 	}
-	for _, content := range []string{"---\nid: [broken\n---\nOriginal text", strings.Replace(sample, "id: m_7k3m9x2q6v4c", "id: m_b8r5n2w9d4hx", 1)} {
+	for _, content := range []string{"---\ntitle: [broken\n---\nOriginal text", strings.Replace(sample, "created_at: 2026-11-03T10:00:00Z", "created_at: invalid", 1)} {
 		name := filepath.Join(path, "memories", "m_7k3m9x2q6v4c.md")
 		if err := os.WriteFile(name, []byte(content), 0600); err != nil {
 			t.Fatal(err)
@@ -212,8 +215,7 @@ func TestStoreRejectsInvalidInputAndIsolatesDamagedRecords(t *testing.T) {
 		if err != nil {
 			t.Fatalf("damaged record blocked healthy creation: %v", err)
 		}
-		metadata, _ := healthy.Metadata()
-		if _, err := store.Read(metadata.ID); err != nil {
+		if _, err := store.Read(healthy.ID); err != nil {
 			t.Fatalf("damaged record blocked healthy reading: %v", err)
 		}
 	}

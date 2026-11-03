@@ -24,11 +24,7 @@ func ExampleStore() {
 	if err != nil {
 		panic(err)
 	}
-	metadata, err := created.Metadata()
-	if err != nil {
-		panic(err)
-	}
-	read, err := store.Read(metadata.ID)
+	read, err := store.Read(created.ID)
 	if err != nil {
 		panic(err)
 	}

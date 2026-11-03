@@ -21,11 +21,11 @@ memory-store/
 IDs consist of a type prefix (`m_`, `e_`, `t_`, or `s_`) followed by 12 random
 lowercase letters or digits. The prefix is part of the ID, including in references.
 The same suffix in different record types produces distinct IDs.
-The filename is `<id>.md`. Each file has YAML frontmatter and a Markdown body:
+The filename is `<id>.md` and is the sole source of record identity. IDs are not
+stored in YAML metadata. Each file has YAML frontmatter and a Markdown body:
 
 ```markdown
 ---
-id: m_7k3m9x2q6v4c
 title: Example
 created_at: 2026-11-03T10:00:00Z
 updated_at: 2026-11-03T10:00:00Z
@@ -50,6 +50,7 @@ The document codec and ID generation are available independently of storage:
 
 - `NewID("m_")` and `ValidID` generate and validate prefixed record IDs.
 - `Parse` reads frontmatter and preserves the Markdown body.
+- Standalone documents have no ID until the store assigns one from a filename.
 - `Document.Metadata` reads the core fields; `Document.Set` edits a metadata field.
 - `Document.Marshal` preserves additional YAML fields and the exact body, while
   allowing YAML formatting to change.
@@ -60,12 +61,14 @@ The document codec and ID generation are available independently of storage:
 - `Store.Create(destination, fields, body)` creates a record in an explicit
   destination: `Memories`, `Entities`, `Topics`, or `Stories`. Fields are a
   `map[string]any` containing YAML metadata.
-- `Store.Read(id)` resolves the prefixed ID directly to its file and checks that
-  the metadata ID matches the filename.
+- `Store.Read(id)` resolves the prefixed ID directly to its file and returns that
+  filename's ID as `Document.ID`.
 
-Creation assigns the ID and both UTC timestamps, overriding any supplied values
-for those fields. Additional metadata and the body are preserved. See the
-[executable example](example_test.go) for the complete create/read sequence.
+Creation assigns the filename ID and both UTC timestamps. A supplied `id` metadata
+field is ignored, and supplied timestamps are overridden. Both creation and reading
+return `Document.ID`; document serialization does not include it. Additional
+metadata and the body are preserved. See the [executable example](example_test.go)
+for the complete create/read sequence.
 
 Engine processes coordinate through an OS-backed `.lock` file at the store root.
 It remains separate from the disposable `.index/` directory and must stay in place
@@ -80,9 +83,9 @@ failed; callers should use that ID to inspect the existing record before retryin
 The storage layer requires a local filesystem supporting hard links, advisory
 locking, and directory syncing.
 
-Malformed files and filename/metadata mismatches return errors identifying the
-affected path and remain unchanged. Other records remain readable and new records
-can still be created. Staging files left by process interruption remain hidden;
+Malformed files return errors identifying the affected path and remain unchanged.
+Other records remain readable and new records can still be created. Staging files
+left by process interruption remain hidden;
 they are not returned as records or overwritten by new creations.
 
 Updates, deletion, malformed-file recovery, target-existence checks, and index

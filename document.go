@@ -19,7 +19,6 @@ type Relation struct {
 
 // Metadata is a view of the core fields. Additional fields remain in Frontmatter.
 type Metadata struct {
-	ID        string     `yaml:"id"`
 	Title     string     `yaml:"title"`
 	CreatedAt time.Time  `yaml:"created_at"`
 	UpdatedAt time.Time  `yaml:"updated_at"`
@@ -29,6 +28,9 @@ type Metadata struct {
 // Document retains the YAML syntax tree and the exact Markdown body.
 // Keeping the tree avoids discarding metadata, tags, aliases, and comments.
 type Document struct {
+	// ID is assigned by the store from the filename, without the .md extension.
+	// Standalone parsing does not assign an ID, and Marshal does not serialize it.
+	ID          string `yaml:"-"`
 	Frontmatter yaml.Node
 	Body        string
 }
@@ -92,9 +94,6 @@ func (d *Document) Metadata() (Metadata, error) {
 	}
 	if err := d.Frontmatter.Decode(&metadata); err != nil {
 		return metadata, fmt.Errorf("frontmatter: %w", err)
-	}
-	if !ValidID(metadata.ID) {
-		return metadata, errors.New("id must use m_, e_, t_, or s_ followed by 12 lowercase letters or digits")
 	}
 	if metadata.CreatedAt.IsZero() || metadata.UpdatedAt.IsZero() {
 		return metadata, errors.New("created_at and updated_at must be timestamps")

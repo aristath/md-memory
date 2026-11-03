@@ -116,7 +116,8 @@ func Open(path string) (*Store, error) {
 }
 
 // Create saves a new record in an explicit destination. The engine overrides
-// supplied id/created_at/updated_at fields and preserves other YAML metadata.
+// supplied timestamps and ignores a supplied id field. The generated ID is only
+// stored in the filename and returned as Document.ID. Other metadata is preserved.
 // A non-nil document alongside an error means publication succeeded but final
 // syncing, staging cleanup, or lock cleanup failed; its ID identifies that record.
 func (s *Store) Create(destination Destination, fields map[string]any, body string) (*Document, error) {
@@ -124,11 +125,14 @@ func (s *Store) Create(destination Destination, fields map[string]any, body stri
 	if err != nil {
 		return nil, err
 	}
-	if fields == nil {
-		fields = map[string]any{}
+	metadataFields := make(map[string]any, len(fields))
+	for name, value := range fields {
+		if name != "id" {
+			metadataFields[name] = value
+		}
 	}
 	document := &Document{Body: body}
-	if err := document.Frontmatter.Encode(fields); err != nil {
+	if err := document.Frontmatter.Encode(metadataFields); err != nil {
 		return nil, fmt.Errorf("metadata: %w", err)
 	}
 	if _, exists := fields["title"]; !exists {
@@ -149,9 +153,7 @@ func (s *Store) Create(destination Destination, fields map[string]any, body stri
 			if err != nil {
 				return err
 			}
-			if err := document.Set("id", id); err != nil {
-				return err
-			}
+			document.ID = id
 			data, err := document.Marshal()
 			if err != nil {
 				return err
@@ -170,8 +172,8 @@ func (s *Store) Create(destination Destination, fields map[string]any, body stri
 	return saved, err
 }
 
-// Read resolves a prefixed ID directly to its directory, checking the stored ID
-// against its filename. Errors retain the affected path; files are never repaired
+// Read resolves a prefixed ID directly to its directory and derives Document.ID
+// from the filename. Errors retain the affected path; files are never repaired
 // or rewritten implicitly by this operation.
 func (s *Store) Read(id string) (*Document, error) {
 	if !ValidID(id) {
@@ -199,14 +201,7 @@ func (s *Store) Read(id string) (*Document, error) {
 		if err != nil {
 			return err
 		}
-		metadata, err := document.Metadata()
-		if err != nil {
-			return err
-		}
-		if metadata.ID != id {
-			document = nil
-			return fmt.Errorf("metadata ID %q does not match filename ID %q", metadata.ID, id)
-		}
+		document.ID = id
 		return nil
 	})
 	if err != nil {

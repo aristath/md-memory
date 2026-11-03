@@ -8,7 +8,6 @@ import (
 )
 
 const sample = `---
-id: m_7k3m9x2q6v4c
 title: Example
 created_at: 2026-11-03T10:00:00Z
 updated_at: 2026-11-03T10:00:00Z
@@ -110,11 +109,10 @@ func TestEditingAnchoredFieldPreservesReferences(t *testing.T) {
 func TestRejectsMalformedDocumentsWithoutChangingInput(t *testing.T) {
 	for name, input := range map[string]string{
 		"no header":       "# Plain Markdown",
-		"unclosed header": "---\nid: m_7k3m9x2q6v4c\n",
+		"unclosed header": "---\ntitle: Example\n",
 		"invalid YAML":    "---\na: [\n---\n",
 		"non-mapping":     "---\n- value\n---\n",
-		"duplicate ID":    strings.Replace(sample, "title: Example", "id: m_b8r5n2w9d4hx", 1),
-		"invalid ID":      strings.Replace(sample, "m_7k3m9x2q6v4c", "../bad", 1),
+		"duplicate title": strings.Replace(sample, "title: Example", "title: Example\ntitle: Duplicate", 1),
 		"missing time":    strings.Replace(sample, "created_at: 2026-11-03T10:00:00Z\n", "", 1),
 		"invalid target":  strings.Replace(sample, "m_b8r5n2w9d4hx", "missing", 1),
 		"empty type":      strings.Replace(sample, "type: motivated_by", "type: ''", 1),
@@ -133,7 +131,7 @@ func TestRejectsMalformedDocumentsWithoutChangingInput(t *testing.T) {
 
 func TestNewDocumentAndValidationBeforeMarshal(t *testing.T) {
 	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.FixedZone("example", 7200))
-	doc, err := NewDocument(Metadata{ID: "m_7k3m9x2q6v4c", Title: "Example", CreatedAt: now, UpdatedAt: now}, "Body")
+	doc, err := NewDocument(Metadata{Title: "Example", CreatedAt: now, UpdatedAt: now}, "Body")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,11 +139,37 @@ func TestNewDocumentAndValidationBeforeMarshal(t *testing.T) {
 	if err != nil || !bytes.Contains(data, []byte("2026-11-03T10:00:00Z")) {
 		t.Fatalf("timestamps were not written in UTC: %s, %v", data, err)
 	}
-	if err := doc.Set("id", "invalid"); err != nil {
+	if err := doc.Set("created_at", "invalid"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := doc.Marshal(); err == nil {
 		t.Fatal("invalid document was serialized")
+	}
+}
+
+func TestDocumentIDIsNotSerializedOrInferredFromContent(t *testing.T) {
+	doc, err := Parse([]byte(sample))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.ID != "" {
+		t.Fatalf("standalone parsing invented an ID: %q", doc.ID)
+	}
+	doc.ID = "m_7k3m9x2q6v4c"
+	encoded, err := doc.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reparsed, err := Parse(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := reparsed.Frontmatter.Decode(&fields); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := fields["id"]; exists || reparsed.ID != "" {
+		t.Fatal("document identity was serialized into the file")
 	}
 }
 
