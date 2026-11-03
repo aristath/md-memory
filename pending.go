@@ -105,6 +105,14 @@ func (s *Store) complete(root *os.Root, name string) (bool, error) {
 	if err := prepare(root, name, temporary, data); err != nil {
 		return false, err
 	}
+	return s.publish(root, name, data)
+}
+
+// Both a new write and recovered work arrive here with verified, synced staging
+// data. A new hard link reuses that synced inode. An existing final file is
+// checked and synced before its staged copy is removed.
+func (s *Store) publish(root *os.Root, name string, data []byte) (bool, error) {
+	temporary := temporaryName(name, data)
 	if err := root.Link(temporary, name); err != nil {
 		if !errors.Is(err, fs.ErrExist) {
 			return false, err
@@ -113,18 +121,15 @@ func (s *Store) complete(root *os.Root, name string) (bool, error) {
 		if readErr != nil || !bytes.Equal(data, existing) {
 			return false, fmt.Errorf("pending data conflicts with %s: %w", name, fs.ErrExist)
 		}
-	}
-	for _, path := range []string{name, filepath.Dir(name)} {
-		if err := syncPath(root, path); err != nil {
+		if err := syncPath(root, name); err != nil {
 			return false, err
 		}
 	}
-	// Publication is durable. Cleanup problems are diagnostics, never failed saves.
-	source, _ := root.Lstat(temporary)
-	final, _ := root.Lstat(name)
-	if source != nil && final != nil && os.SameFile(source, final) {
-		s.note(temporary, root.Remove(temporary))
+	if err := syncPath(root, filepath.Dir(name)); err != nil {
+		return false, err
 	}
+	// Publication is durable. Cleanup problems are diagnostics, never failed saves.
+	s.note(temporary, root.Remove(temporary))
 	s.note(pendingName(name), root.Remove(pendingName(name)))
 	s.note(name+".cleanup", syncPath(root, filepath.Dir(name)))
 	return true, nil

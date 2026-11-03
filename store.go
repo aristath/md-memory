@@ -236,15 +236,15 @@ func (s *Store) Create(destination Destination, fields map[string]any, body stri
 				}
 				return err
 			}
-			published, err := s.complete(root, name)
+			published, err := s.publish(root, name, data)
 			d.Pending = !published
 			s.note(name, err)
 			if err != nil {
 				d.warnings = append(d.warnings, err.Error())
 			}
-			if errors.Is(err, fs.ErrExist) || errors.Is(err, errUnverifiedPending) {
+			if errors.Is(err, fs.ErrExist) {
 				return err
-			} // Conflicting or changed data cannot confirm this save.
+			} // Conflicting data cannot confirm this save.
 			return nil // The synced pending record remains readable even if publication is blocked.
 		}
 	})
@@ -368,7 +368,6 @@ func (s *Store) locked(wait bool, operation func(*os.Root) error) error {
 	}
 	s.note("initialization", nil)
 	s.note("write coordination", nil)
-	s.note("recovery", nil)
 	return operation(root)
 }
 

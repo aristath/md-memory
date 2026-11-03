@@ -199,14 +199,56 @@ func (d *Document) Set(name string, value any) (err error) {
 	node := encodeValue(value)
 	if previous := field(&d.Frontmatter, name); previous != nil {
 		preserveAliases(&d.Frontmatter, previous)
-		node.Anchor, node.HeadComment = previous.Anchor, previous.HeadComment
+		if previous.Anchor != "" {
+			node.Anchor = previous.Anchor
+		}
+		node.HeadComment = previous.HeadComment
 		node.LineComment, node.FootComment = previous.LineComment, previous.FootComment
-		*previous = node
+		walkNodes(node, func(child *yaml.Node) {
+			if child.Kind == yaml.AliasNode && child.Alias == node {
+				child.Alias = previous
+			}
+		})
+		*previous = *node
 	} else {
 		d.Frontmatter.Kind, d.Frontmatter.Tag = yaml.MappingNode, "!!map"
-		d.Frontmatter.Content = append(d.Frontmatter.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: name}, &node)
+		d.Frontmatter.Content = append(d.Frontmatter.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: name}, node)
 	}
+	normalizeAnchors(&d.Frontmatter)
 	return nil
+}
+
+// References follow node identity. Give definitions unique names across the
+// whole document, then update their aliases to match before YAML is emitted.
+func normalizeAnchors(root *yaml.Node) {
+	names, used := map[string]bool{}, map[string]bool{}
+	walkNodes(root, func(node *yaml.Node) { names[node.Anchor] = true })
+	walkNodes(root, func(node *yaml.Node) {
+		if node.Anchor == "" {
+			return
+		}
+		name := node.Anchor
+		if used[name] {
+			for suffix := 1; names[node.Anchor]; suffix++ {
+				node.Anchor = fmt.Sprintf("%s_%d", name, suffix)
+			}
+			names[node.Anchor] = true
+		}
+		used[node.Anchor] = true
+	})
+	walkNodes(root, func(node *yaml.Node) {
+		if node.Kind == yaml.AliasNode && node.Alias != nil {
+			node.Value = node.Alias.Anchor
+		}
+	})
+}
+
+// Alias pointers may be recursive; only Content belongs to the document tree.
+func walkNodes(node *yaml.Node, visit func(*yaml.Node)) {
+	visit(node)
+	for _, child := range node.Content {
+		walkNodes(child, visit)
+	}
 }
 
 // Move a removed nested anchor to its first surviving reference. Other aliases
@@ -227,29 +269,6 @@ func preserveAliases(root, replaced *yaml.Node) {
 	}
 	if len(removed) == 0 {
 		return
-	}
-	// A moved definition must not shadow a different definition with the same
-	// name. Reserve all names before assigning unique ones to removed anchors.
-	names := map[string]int{}
-	var count func(*yaml.Node)
-	count = func(node *yaml.Node) {
-		if node.Anchor != "" {
-			names[node.Anchor]++
-		}
-		for _, child := range node.Content {
-			count(child)
-		}
-	}
-	count(root)
-	for node := range removed {
-		if names[node.Anchor] < 2 {
-			continue
-		}
-		name := node.Anchor
-		for suffix := 1; names[node.Anchor] != 0; suffix++ {
-			node.Anchor = fmt.Sprintf("%s_%d", name, suffix)
-		}
-		names[node.Anchor] = 1
 	}
 	var visit func(*yaml.Node) *yaml.Node
 	visit = func(node *yaml.Node) *yaml.Node {

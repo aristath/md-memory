@@ -17,7 +17,7 @@ func issueValue(message string) *yaml.Node {
 
 // Normalize data, never arbitrary Go encoding callbacks. An unsupported leaf is
 // kept as a tagged diagnostic while its understandable neighbours survive.
-func encodeValue(value any) yaml.Node {
+func encodeValue(value any) *yaml.Node {
 	type reference struct {
 		typeOf  reflect.Type
 		pointer uintptr
@@ -70,9 +70,6 @@ func encodeValue(value any) yaml.Node {
 				if source.Kind == yaml.DocumentNode && len(source.Content) == 1 {
 					return walk(reflect.ValueOf(source.Content[0]))
 				}
-				if source.Kind == yaml.MappingNode && len(source.Content)%2 != 0 {
-					return issueValue("incomplete YAML mapping retained as an issue")
-				}
 				if source.Kind != yaml.ScalarNode && source.Kind != yaml.AliasNode && source.Kind != yaml.MappingNode && source.Kind != yaml.SequenceNode {
 					return issueValue(fmt.Sprintf("unrecognized YAML node %d: %q", source.Kind, source.Value))
 				}
@@ -81,6 +78,9 @@ func encodeValue(value any) yaml.Node {
 				copy.Alias = nil
 				for _, child := range source.Content {
 					copy.Content = append(copy.Content, walk(reflect.ValueOf(child)))
+				}
+				if copy.Kind == yaml.MappingNode && len(copy.Content)%2 != 0 {
+					copy.Content = append(copy.Content, issueValue("missing YAML mapping value"))
 				}
 				return &copy
 			}
@@ -146,7 +146,7 @@ func encodeValue(value any) yaml.Node {
 		}
 	}
 	bind(node)
-	return *node
+	return node
 }
 
 func valueIssues(node *yaml.Node, path string) []string {

@@ -45,7 +45,8 @@ derived using the same type. Markdown files are authoritative; `.index/` is disp
   unparsed metadata, and other recoverable problems without failing the operation.
 - `Document.Set(name, value)` edits one field while preserving other YAML fields,
   including references to nested anchors in the replaced value. Colliding anchor
-  names are renamed when needed to preserve their original values.
+  names are resolved across the whole document, so saving and rereading preserve
+  the same values.
 - `Document.Marshal()` serializes the document without rejecting damaged metadata.
 
 Unknown values remain in the YAML tree. Missing timestamps stay unknown rather
@@ -66,6 +67,8 @@ An unsupported value or cyclic reference becomes a `!md-memory/issue` scalar at
 that location. Healthy siblings and the body remain usable. The issue is saved
 with the record, so `Diagnostics()` still reports it, with its metadata path,
 after reopening. Ordinary shared values and YAML aliases remain supported.
+An incomplete raw YAML mapping retains its healthy entries and unfinished key;
+only the missing value becomes an issue scalar.
 New Go maps use lexical key ordering. Parsed YAML retains its existing ordering.
 YAML nodes inside a list or map share the field's anchor scope. Encoding copies
 the supplied nodes, including aliases and comments, so later caller edits cannot
@@ -84,6 +87,7 @@ change the document.
   when the committed record is unavailable.
 - `Store.Recover()` retries outstanding work when the lock is available.
   Individual failures are isolated; successful recovery clears the deferred status.
+  Saving an unrelated record does not clear deferred recovery.
 - `Store.Diagnostics()` reports directory and recovery issues safely across goroutines.
   Successful directory scans clear obsolete file issues and report remaining
   damage again; failed scans retain earlier issues.
@@ -116,8 +120,11 @@ its ID. This requires no scan of other records. Inside it, a file named
 `<sha256>.tmp` holds the data and records its expected checksum. The file, staging
 directory, and destination directory are synced before publication. Recovery
 verifies the checksum, then hard-links the data to the final `<id>.md` name
-without replacing existing files. The final file and destination directory are
-synced before staging cleanup begins.
+without replacing existing files. New saves reuse their already-synced staging
+data for this publication step. The destination directory is synced before
+staging cleanup begins. If the final file already exists with identical bytes,
+it is also synced before the redundant staged copy is removed, even when the
+two paths refer to separate files.
 
 A failure never deletes the staged data. Complete writes recover automatically on
 open, read, or explicit recovery. Empty reservations, ambiguous candidates,

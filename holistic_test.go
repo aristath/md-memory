@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gofrs/flock"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -21,10 +22,14 @@ func TestHealthyMetadataSurvivesDamagedLeavesAndReread(t *testing.T) {
 	cycle := map[string]any{"fact": "Keep cyclic neighbour"}
 	cycle["self"] = cycle
 	doc, err := store.Create(Memories, map[string]any{
-		"title":       3,
-		"details":     map[string]any{"fact": "Keep fact", "bad": func() {}, "list": []any{"Keep item", make(chan int)}},
-		"cycle":       cycle,
-		"broken_node": &yaml.Node{Kind: yaml.MappingNode, Content: []*yaml.Node{{Kind: yaml.ScalarNode, Value: "missing value"}}},
+		"title":   3,
+		"details": map[string]any{"fact": "Keep fact", "bad": func() {}, "list": []any{"Keep item", make(chan int)}},
+		"cycle":   cycle,
+		"broken_node": &yaml.Node{Kind: yaml.MappingNode, Content: []*yaml.Node{
+			{Kind: yaml.ScalarNode, Tag: "!!str", Value: "fact"},
+			{Kind: yaml.ScalarNode, Tag: "!!str", Value: "Keep damaged neighbour"},
+			{Kind: yaml.ScalarNode, Tag: "!!str", Value: "missing value"},
+		}},
 	}, "Original body")
 	if err != nil {
 		t.Fatal(err)
@@ -47,6 +52,9 @@ func TestHealthyMetadataSurvivesDamagedLeavesAndReread(t *testing.T) {
 	details := fields["details"].(map[string]any)
 	if details["fact"] != "Keep fact" || details["list"].([]any)[0] != "Keep item" || fields["cycle"].(map[string]any)["fact"] != "Keep cyclic neighbour" {
 		t.Fatalf("healthy neighbours were discarded: %v", fields)
+	}
+	if fields["broken_node"].(map[string]any)["fact"] != "Keep damaged neighbour" {
+		t.Fatal("an unfinished YAML entry discarded healthy pairs")
 	}
 	if read.Body != "Original body" || read.Metadata().Title != "3" || len(read.Diagnostics()) != 4 {
 		t.Fatalf("content or persistent issues changed: %v", read.Diagnostics())
@@ -75,11 +83,93 @@ func TestCreateRetriesItsOwnUnfinishedInitialization(t *testing.T) {
 		t.Fatal(err)
 	}
 	doc, err := store.Create(Memories, nil, "Recovered without reopening")
-	if err != nil || doc.Pending || len(store.Diagnostics()) != 0 {
+	if err != nil || doc.Pending {
 		t.Fatalf("same-handle retry failed: %v, %v", err, store.Diagnostics())
 	}
 	if read, err := store.Read(doc.ID); err != nil || read.Body != doc.Body {
 		t.Fatalf("recovered write unavailable: %v", err)
+	}
+	// The save repaired initialization, but it did not scan outstanding work.
+	if err := store.Recover(); err != nil || len(store.Diagnostics()) != 0 {
+		t.Fatalf("recovery did not finish initialization: %v, %v", err, store.Diagnostics())
+	}
+}
+
+func TestUnrelatedSaveDoesNotClearDeferredRecovery(t *testing.T) {
+	path := t.TempDir()
+	if _, err := Open(path); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	id := "m_000000000000"
+	name := filepath.Join("memories", id+".md")
+	if _, err := stage(root, name, []byte(sample)); err != nil {
+		t.Fatal(err)
+	}
+	lock := flock.New(filepath.Join(path, ".lock"))
+	if err := lock.Lock(); err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	store, err := Open(path)
+	if err != nil || len(store.Diagnostics()) == 0 {
+		t.Fatalf("recovery was not deferred: %v", err)
+	}
+	if err := lock.Unlock(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create(Entities, nil, "Unrelated save"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := root.Lstat(name); !errors.Is(err, fs.ErrNotExist) || len(store.Diagnostics()) == 0 {
+		t.Fatal("unrelated save hid unfinished recovery")
+	}
+	if err := store.Recover(); err != nil || len(store.Diagnostics()) != 0 {
+		t.Fatalf("actual recovery did not clear deferred status: %v, %v", err, store.Diagnostics())
+	}
+	if doc, err := store.Read(id); err != nil || doc.Pending || doc.Body != Parse([]byte(sample)).Body {
+		t.Fatalf("retained work did not recover: %v", err)
+	}
+}
+
+func TestRecoveryCleansIdenticalIndependentCopies(t *testing.T) {
+	path := t.TempDir()
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	id := "m_000000000000"
+	name := filepath.Join("memories", id+".md")
+	if _, err := stage(root, name, []byte(sample)); err != nil {
+		t.Fatal(err)
+	}
+	// A restore or an editor's atomic save can replace the canonical inode while
+	// retaining the exact same content as staging.
+	if err := root.WriteFile(name, []byte(sample), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := store.Recover(); err != nil || len(store.Diagnostics()) != 0 {
+			t.Fatalf("matching restored data remained stuck: %v, %v", err, store.Diagnostics())
+		}
+	}
+	if _, err := root.Lstat(pendingName(name)); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal("redundant staging was not removed")
+	}
+	if data, err := root.ReadFile(name); err != nil || string(data) != sample {
+		t.Fatal("cleanup changed the committed record")
+	}
+	if doc, err := store.Read(id); err != nil || doc.Pending || len(doc.Diagnostics()) != 0 {
+		t.Fatalf("restored record unavailable or still awaiting cleanup: %v", err)
 	}
 }
 
@@ -188,5 +278,54 @@ func TestRecoveryFinishesInterruptedStagingCleanup(t *testing.T) {
 	}
 	if read, err := store.Read("m_000000000000"); err != nil || read.Body != Parse(data).Body || read.Pending {
 		t.Fatalf("cleanup harmed the committed record: %v", err)
+	}
+}
+
+func TestPublicationKeepsStagingWhenDirectorySyncFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permissions")
+	}
+	path := t.TempDir()
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	name := "memories/m_000000000000.md"
+	data := []byte(sample)
+	if _, err := stage(root, name, data); err != nil {
+		t.Fatal(err)
+	}
+	publicationRoot, err := os.OpenRoot(filepath.Join(path, "memories"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer publicationRoot.Close()
+	// Linking is permitted, but opening the directory to sync publication fails.
+	if err := root.Chmod("memories", 0300); err != nil {
+		t.Fatal(err)
+	}
+	defer root.Chmod("memories", 0700)
+	if published, err := store.publish(publicationRoot, filepath.Base(name), data); published || err == nil {
+		t.Fatal("claimed publication without syncing the final name")
+	}
+	if err := root.Chmod("memories", 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := root.Lstat(name); err != nil {
+		t.Fatalf("test did not reach publication: %v", err)
+	}
+	if retained, err := root.ReadFile(temporaryName(name, data)); err != nil || !bytes.Equal(retained, data) {
+		t.Fatal("failed publication discarded durable staging")
+	}
+	if err := store.Recover(); err != nil || len(store.Diagnostics()) != 0 {
+		t.Fatalf("publication did not resume after repair: %v, %v", err, store.Diagnostics())
+	}
+	if doc, err := store.Read("m_000000000000"); err != nil || doc.Pending || doc.Body != Parse(data).Body {
+		t.Fatalf("recovered record unavailable: %v", err)
 	}
 }

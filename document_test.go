@@ -2,9 +2,12 @@ package memory
 
 import (
 	"bytes"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"go.yaml.in/yaml/v3"
 )
 
 const sample = `---
@@ -88,6 +91,67 @@ func TestEditingAnchoredFieldPreservesReferences(t *testing.T) {
 	}
 	if !bytes.Contains(encoded, []byte("# Keep this comment")) {
 		t.Fatal("field comment was lost")
+	}
+}
+
+func TestIncomingAnchorsDoNotChangeOtherFields(t *testing.T) {
+	for _, edit := range []string{"middle", "added"} {
+		t.Run(edit, func(t *testing.T) {
+			doc := Parse([]byte("---\noriginal: &shared Keep original\nmiddle: Old\nreserved: &shared_1 Keep reserved\ncopy: *shared\nreserved_copy: *shared_1\n---\nBody"))
+			var incoming yaml.Node
+			if err := yaml.Unmarshal([]byte("[&shared Changed, *shared]"), &incoming); err != nil {
+				t.Fatal(err)
+			}
+			if err := doc.Set(edit, &incoming); err != nil {
+				t.Fatal(err)
+			}
+			var before, after map[string]any
+			if err := doc.Frontmatter.Decode(&before); err != nil {
+				t.Fatal(err)
+			}
+			encoded, err := doc.Marshal()
+			if err != nil {
+				t.Fatal(err)
+			}
+			read := Parse(encoded)
+			if err := read.Frontmatter.Decode(&after); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(before, after) || after["copy"] != "Keep original" || after["reserved_copy"] != "Keep reserved" || !reflect.DeepEqual(after[edit], []any{"Changed", "Changed"}) {
+				t.Fatalf("an edit changed unrelated metadata after serialization:\nbefore: %v\nafter: %v", before, after)
+			}
+		})
+	}
+}
+
+func TestReplacingFieldKeepsIncomingRootReferences(t *testing.T) {
+	for _, anchor := range []string{"", "&existing "} {
+		t.Run(anchor, func(t *testing.T) {
+			copy := ""
+			if anchor != "" {
+				copy = "copy: *existing\n"
+			}
+			doc := Parse([]byte("---\nmiddle: " + anchor + "Old\n" + copy + "---\nBody"))
+			var incoming yaml.Node
+			if err := yaml.Unmarshal([]byte("&incoming {label: Keep, self: *incoming}"), &incoming); err != nil {
+				t.Fatal(err)
+			}
+			if err := doc.Set("middle", &incoming); err != nil {
+				t.Fatal(err)
+			}
+			encoded, err := doc.Marshal()
+			if err != nil {
+				t.Fatal(err)
+			}
+			read := Parse(encoded)
+			middle := field(&read.Frontmatter, "middle")
+			if middle == nil || middle.Kind != yaml.MappingNode || field(middle, "self").Alias != middle || field(middle, "label").Value != "Keep" {
+				t.Fatalf("incoming recursive reference was broken:\n%s", encoded)
+			}
+			if anchor != "" && field(&read.Frontmatter, "copy").Alias != middle {
+				t.Fatal("existing reference no longer follows the edited field")
+			}
+		})
 	}
 }
 
