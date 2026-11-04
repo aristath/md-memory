@@ -10,8 +10,8 @@ import (
 	"strings"
 	"syscall"
 
-	memory "github.com/aristath/md-memory"
-	"github.com/aristath/md-memory/mcpserver"
+	"github.com/aristath/songya"
+	"github.com/aristath/songya/mcpserver"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -27,7 +27,7 @@ func (r rootsFlag) Set(value string) error {
 	return nil
 }
 func main() {
-	flags := flag.NewFlagSet("md-memory-mcp", flag.ExitOnError)
+	flags := flag.NewFlagSet("songya-mcp", flag.ExitOnError)
 	flags.SetOutput(os.Stderr)
 	storePath := flags.String("store", "", "authoritative memory store directory (required)")
 	roots := rootsFlag{}
@@ -37,7 +37,7 @@ func main() {
 		flags.Usage()
 		os.Exit(2)
 	}
-	store, err := memory.Open(*storePath)
+	store, err := songya.Open(*storePath)
 	if err != nil {
 		log.Fatal(err)
 	}

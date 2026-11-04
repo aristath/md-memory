@@ -16,11 +16,11 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	memory "github.com/aristath/md-memory"
+	"github.com/aristath/songya"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const Guide = `md-memory stores authoritative Markdown records. Ordinary capture takes two tool calls:
+const Guide = `songya stores authoritative Markdown records. Ordinary capture takes two tool calls:
 1. prepare_memory(account) returns a request key, bounded candidates, revisions and ambiguities.
 2. save_memory(key, account, changes, stories) submits the whole related batch. Reuse the SAME key and arguments on retry; inspect memory_maintenance receipt after a lost response.
 New changes use kind memories/entities/topics/stories and optional ref labels. Existing changes require id and revision. Fields are open YAML metadata. Omit body to preserve it; append adds detail without replacing earlier text. add_relations appends edges while preserving old data. Use $ref values for newly created records. Story additions accept story IDs or $refs and an ordered members list. Story bodies use [[record_id]].
@@ -31,7 +31,7 @@ Tool results use structuredContent. Text content is a short status summary. Full
 // App keeps import access separate from record-store access. Import roots are
 // supplied by the process owner, never accepted as arbitrary client paths.
 type App struct {
-	Store       *memory.Store
+	Store       *songya.Store
 	ImportRoots map[string]string
 }
 
@@ -182,7 +182,7 @@ func tool[T any](server *mcp.Server, name, description string, input any, readOn
 
 func result(value any, err error) *mcp.CallToolResult {
 	summary := "ok"
-	if receipt, ok := value.(memory.Receipt); ok {
+	if receipt, ok := value.(songya.Receipt); ok {
 		if receipt.Status == "" {
 			receipt.Status = "not_accepted"
 		}
@@ -192,7 +192,7 @@ func result(value any, err error) *mcp.CallToolResult {
 	envelope := map[string]any{"status": "ok", "data": value}
 	if err != nil {
 		code := "blocked"
-		if errors.Is(err, memory.ErrConflict) {
+		if errors.Is(err, songya.ErrConflict) {
 			code = "conflict"
 		}
 		envelope["status"] = code
@@ -298,7 +298,7 @@ func (a *App) read(ctx context.Context, input pageInput) (any, error) {
 		parts := strings.Split(input.Source, "/")
 		if len(parts) == 2 && strings.HasSuffix(parts[1], ".md") {
 			id := strings.TrimSuffix(parts[1], ".md")
-			if memory.ValidID(id) && string(kindFor(id)) == parts[0] {
+			if songya.ValidID(id) && string(kindFor(id)) == parts[0] {
 				input.ID = id
 				input.View = "source"
 			}
@@ -361,22 +361,22 @@ func (a *App) read(ctx context.Context, input pageInput) (any, error) {
 	}
 	return page, nil
 }
-func kindFor(id string) memory.Destination {
+func kindFor(id string) songya.Destination {
 	switch id[:2] {
 	case "m_":
-		return memory.Memories
+		return songya.Memories
 	case "e_":
-		return memory.Entities
+		return songya.Entities
 	case "t_":
-		return memory.Topics
+		return songya.Topics
 	default:
-		return memory.Stories
+		return songya.Stories
 	}
 }
 
-func New(lifetime context.Context, store *memory.Store, roots map[string]string) *mcp.Server {
+func New(lifetime context.Context, store *songya.Store, roots map[string]string) *mcp.Server {
 	app := &App{Store: store, ImportRoots: roots}
-	server := mcp.NewServer(&mcp.Implementation{Name: "md-memory", Version: "0.1.0"}, &mcp.ServerOptions{Instructions: Guide})
+	server := mcp.NewServer(&mcp.Implementation{Name: "songya", Version: "0.1.0"}, &mcp.ServerOptions{Instructions: Guide})
 	// The SDK keeps request contexts independent of Run's context. Propagate our
 	// process lifetime explicitly so shutdown cancels unaccepted lock waiters.
 	server.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
@@ -400,18 +400,18 @@ func New(lifetime context.Context, store *memory.Store, roots map[string]string)
 	edge := schema(map[string]any{"type": str("Open relationship name"), "target": str("Record ID or $local_ref")}, "type", "target")
 	change := schema(map[string]any{"ref": str("Local name for a new record"), "id": str("Existing record ID; omit to create"), "kind": str("memories, entities, topics or stories; default memories"), "revision": str("Revision from retrieval, required for updates"), "fields": object(), "body": str("Explicit replacement body; omit to preserve"), "append": str("Append detail without replacing existing narrative"), "add_relations": array(edge)})
 	story := schema(map[string]any{"story": str("Story ID or $local_ref"), "revision": str("Existing story revision"), "members": array(str("Record ID or $local_ref"))}, "story", "members")
-	tool(server, "save_memory", "Durably apply one related batch. Reuse the same key and arguments after interruption. Use refs/$refs for new identities and topics; append enriches existing memories safely.", schema(map[string]any{"key": str("Stable request key from preparation"), "account": str("Original account to preserve"), "changes": array(change), "stories": array(story)}, "key", "changes"), false, func(ctx context.Context, input memory.BatchRequest) (any, error) { return store.ApplyBatch(ctx, input) })
+	tool(server, "save_memory", "Durably apply one related batch. Reuse the same key and arguments after interruption. Use refs/$refs for new identities and topics; append enriches existing memories safely.", schema(map[string]any{"key": str("Stable request key from preparation"), "account": str("Original account to preserve"), "changes": array(change), "stories": array(story)}, "key", "changes"), false, func(ctx context.Context, input songya.BatchRequest) (any, error) { return store.ApplyBatch(ctx, input) })
 	querySchema := schema(map[string]any{"text": str("Lexical search; omit to list"), "kind": str("Optional record directory"), "related_to": str("Optional outgoing target ID"), "relation_type": str("Optional relationship type"), "include_retired": map[string]any{"type": "boolean"}, "offset": count(), "limit": count()})
-	tool(server, "search_memory", "Bounded lexical retrieval across names, aliases, descriptions, prose and episode time. Direct file edits are refreshed automatically.", querySchema, true, func(ctx context.Context, input memory.Query) (any, error) {
+	tool(server, "search_memory", "Bounded lexical retrieval across names, aliases, descriptions, prose and episode time. Direct file edits are refreshed automatically.", querySchema, true, func(ctx context.Context, input songya.Query) (any, error) {
 		input.Limit = limit(input.Limit, 8, 8)
 		return store.Search(ctx, input)
 	})
 	tool(server, "read_memory", "Read a bounded body page by ID, raw store source, or configured import root. Body reads carry committed file revisions; pending and unconfirmed snapshots are marked. Source/archive pages identify their returned bytes. Use next when truncated.", schema(map[string]any{"id": str("Record ID"), "source": str("Relative source path"), "root": str("Configured import root name; omitted for the store"), "key": str("Retained batch key for proposed, before or account views"), "archive": str("Preserved import archive checksum"), "view": str("body (default) or source; with key use proposed, before or account"), "offset": count(), "limit": count()}), true, app.read)
-	tool(server, "explore_memory", "Outgoing links, derived backlinks and bounded traversal. Split redirects remain ambiguous instead of selecting one replacement.", schema(map[string]any{"id": str("Starting ID; omit for paged edges"), "direction": str("incoming, outgoing or both"), "type": str("Optional edge type"), "depth": count(), "offset": count(), "limit": count()}), true, func(ctx context.Context, input memory.GraphQuery) (any, error) {
+	tool(server, "explore_memory", "Outgoing links, derived backlinks and bounded traversal. Split redirects remain ambiguous instead of selecting one replacement.", schema(map[string]any{"id": str("Starting ID; omit for paged edges"), "direction": str("incoming, outgoing or both"), "type": str("Optional edge type"), "depth": count(), "offset": count(), "limit": count()}), true, func(ctx context.Context, input songya.GraphQuery) (any, error) {
 		input.Limit = limit(input.Limit, 20, 10)
 		return store.Graph(ctx, input)
 	})
-	tool(server, "memory_timeline", "Partial chronology from stated bounds and before/after relations. Unknown order remains unknown; contradictory constraints are diagnosed.", querySchema, true, func(ctx context.Context, input memory.Query) (any, error) {
+	tool(server, "memory_timeline", "Partial chronology from stated bounds and before/after relations. Unknown order remains unknown; contradictory constraints are diagnosed.", querySchema, true, func(ctx context.Context, input songya.Query) (any, error) {
 		input.Limit = limit(input.Limit, 8, 8)
 		return store.Timeline(ctx, input)
 	})
@@ -421,21 +421,21 @@ func New(lifetime context.Context, store *memory.Store, roots map[string]string)
 	type organization struct {
 		Action  string             `json:"action"`
 		Key     string             `json:"key"`
-		Sources []memory.Version   `json:"sources"`
-		Source  memory.Version     `json:"source"`
-		Kind    memory.Destination `json:"kind"`
+		Sources []songya.Version   `json:"sources"`
+		Source  songya.Version     `json:"source"`
+		Kind    songya.Destination `json:"kind"`
 		Fields  map[string]any     `json:"fields"`
 		Body    *string            `json:"body"`
-		Parts   []memory.Part      `json:"parts"`
+		Parts   []songya.Part      `json:"parts"`
 	}
 	version := schema(map[string]any{"id": str("Source ID"), "revision": str("Reviewed source revision")}, "id", "revision")
 	part := schema(map[string]any{"kind": str("Optional directory"), "fields": object(), "body": str("Reviewed part narrative")}, "body")
 	tool(server, "organize_memory", "Explicit reviewed merge or split. Original narratives remain readable under retired IDs. Every source requires its revision; requests are retry-safe.", schema(map[string]any{"action": str("merge or split"), "key": str("Stable operation key"), "sources": array(version), "source": version, "kind": str("Optional canonical directory"), "fields": object(), "body": str("Optional reviewed merge narrative"), "parts": array(part)}, "action", "key"), false, func(ctx context.Context, input organization) (any, error) {
 		switch input.Action {
 		case "merge":
-			return store.Merge(ctx, memory.MergeRequest{Key: input.Key, Sources: input.Sources, Kind: input.Kind, Fields: input.Fields, Body: input.Body})
+			return store.Merge(ctx, songya.MergeRequest{Key: input.Key, Sources: input.Sources, Kind: input.Kind, Fields: input.Fields, Body: input.Body})
 		case "split":
-			return store.Split(ctx, memory.SplitRequest{Key: input.Key, Source: input.Source, Parts: input.Parts})
+			return store.Split(ctx, songya.SplitRequest{Key: input.Key, Source: input.Source, Parts: input.Parts})
 		default:
 			return nil, fmt.Errorf("choose merge or split")
 		}
@@ -443,7 +443,7 @@ func New(lifetime context.Context, store *memory.Store, roots map[string]string)
 	type reviewedPart struct {
 		Start  *int               `json:"start"`
 		End    *int               `json:"end"`
-		Kind   memory.Destination `json:"kind"`
+		Kind   songya.Destination `json:"kind"`
 		Fields map[string]any     `json:"fields"`
 	}
 	type importInput struct {
@@ -465,14 +465,14 @@ func New(lifetime context.Context, store *memory.Store, roots map[string]string)
 		case "preview":
 			return store.PreviewImports(ctx, root, input.Offset, limit(input.Limit, 8, 8))
 		case "apply":
-			parts := []memory.ImportPart{}
+			parts := []songya.ImportPart{}
 			for _, part := range input.Parts {
 				if part.Start == nil || part.End == nil {
 					return nil, fmt.Errorf("each reviewed import part needs start and end byte offsets; omit parts to import the whole source")
 				}
-				parts = append(parts, memory.ImportPart{Start: *part.Start, End: *part.End, Kind: part.Kind, Fields: part.Fields})
+				parts = append(parts, songya.ImportPart{Start: *part.Start, End: *part.End, Kind: part.Kind, Fields: part.Fields})
 			}
-			mapping, err := store.Import(ctx, root, memory.ImportRequest{Path: input.Path, Revision: input.Revision, Parts: parts})
+			mapping, err := store.Import(ctx, root, songya.ImportRequest{Path: input.Path, Revision: input.Revision, Parts: parts})
 			return importPage(mapping, input.Offset, limit(input.Limit, 20, 10)), err
 		default:
 			return nil, fmt.Errorf("choose preview or apply")
@@ -558,7 +558,7 @@ func rootNames(roots map[string]string) []string {
 	sort.Strings(names)
 	return names
 }
-func receiptPage(receipt memory.Receipt, offset, size int) any {
+func receiptPage(receipt songya.Receipt, offset, size int) any {
 	if offset < 0 {
 		offset = 0
 	}
@@ -593,7 +593,7 @@ func receiptPage(receipt memory.Receipt, offset, size int) any {
 	return value
 }
 
-func importPage(mapping memory.ImportMapping, offset, size int) any {
+func importPage(mapping songya.ImportMapping, offset, size int) any {
 	if offset < 0 {
 		offset = 0
 	}

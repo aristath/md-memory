@@ -15,17 +15,17 @@ import (
 	"testing"
 	"time"
 
-	memory "github.com/aristath/md-memory"
+	"github.com/aristath/songya"
 	"github.com/gofrs/flock"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func binary(t *testing.T) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "md-memory-mcp")
+	path := filepath.Join(t.TempDir(), "songya-mcp")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	command := exec.CommandContext(ctx, "go", "build", "-o", path, "../cmd/md-memory-mcp")
+	command := exec.CommandContext(ctx, "go", "build", "-o", path, "../cmd/songya-mcp")
 	if data, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, data)
 	}
@@ -81,6 +81,9 @@ func TestActualStdioCaptureRetrievalOrganizationAndRestart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	session := connect(t, ctx, bin, store, source)
+	if info := session.InitializeResult().ServerInfo; info == nil || info.Name != "songya" {
+		t.Fatalf("server identity: %+v", info)
+	}
 	tools, err := session.ListTools(ctx, &mcp.ListToolsParams{})
 	if err != nil || len(tools.Tools) != 10 {
 		t.Fatalf("tool discovery: %+v %v", tools, err)
@@ -177,11 +180,11 @@ func TestActualStdioCaptureRetrievalOrganizationAndRestart(t *testing.T) {
 func TestStdioCancellationAndEOFDoNotPublishWaitingRequests(t *testing.T) {
 	bin := binary(t)
 	path := t.TempDir()
-	store, err := memory.Open(path)
+	store, err := songya.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	original, err := store.Create(memory.Memories, nil, "Keep")
+	original, err := store.Create(songya.Memories, nil, "Keep")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +208,7 @@ func TestStdioCancellationAndEOFDoNotPublishWaitingRequests(t *testing.T) {
 	if err := lock.Unlock(); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := memory.Open(path)
+	reopened, err := songya.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,11 +221,11 @@ func TestStdioCancellationAndEOFDoNotPublishWaitingRequests(t *testing.T) {
 func TestEquivalentScalarArgumentsAndBinaryPages(t *testing.T) {
 	bin := binary(t)
 	path := t.TempDir()
-	store, err := memory.Open(path)
+	store, err := songya.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	doc, err := store.Create(memory.Memories, nil, string([]byte{255, 254, 0}))
+	doc, err := store.Create(songya.Memories, nil, string([]byte{255, 254, 0}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +290,7 @@ func TestLargeStdioReceiptsRemainBoundedAndFullyInspectable(t *testing.T) {
 		}
 		offset = int(page["next"].(float64))
 	}
-	var full memory.Receipt
+	var full songya.Receipt
 	if err := json.Unmarshal([]byte(whole.String()), &full); err != nil {
 		t.Fatal(err)
 	}
@@ -314,11 +317,11 @@ func TestStdioShutdownCancelsUnacceptedWaitingWrite(t *testing.T) {
 	for _, shutdown := range []string{"signal", "eof"} {
 		t.Run(shutdown, func(t *testing.T) {
 			path := t.TempDir()
-			store, err := memory.Open(path)
+			store, err := songya.Open(path)
 			if err != nil {
 				t.Fatal(err)
 			}
-			doc, err := store.Create(memory.Memories, nil, "Keep")
+			doc, err := store.Create(songya.Memories, nil, "Keep")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -455,7 +458,7 @@ func TestStdioGraphChronologyMergeSplitAndMaintenance(t *testing.T) {
 func TestStdioResourcesAndErrorsStayWithinBudget(t *testing.T) {
 	bin := binary(t)
 	path := t.TempDir()
-	if _, err := memory.Open(path); err != nil {
+	if _, err := songya.Open(path); err != nil {
 		t.Fatal(err)
 	}
 	id := "m_000000000000"
@@ -489,7 +492,7 @@ func TestStdioResourcesAndErrorsStayWithinBudget(t *testing.T) {
 func TestStdioRetainedSingleCreationRemainsSearchableAndReadable(t *testing.T) {
 	bin := binary(t)
 	path := t.TempDir()
-	if _, err := memory.Open(path); err != nil {
+	if _, err := songya.Open(path); err != nil {
 		t.Fatal(err)
 	}
 	id := "m_000000000000"
@@ -566,7 +569,7 @@ func TestStdioImportRequiresUnambiguousReviewedBounds(t *testing.T) {
 func TestStdioUnconfirmedSnapshotIsReadableWithoutACommittedRevision(t *testing.T) {
 	bin := binary(t)
 	path := t.TempDir()
-	if _, err := memory.Open(path); err != nil {
+	if _, err := songya.Open(path); err != nil {
 		t.Fatal(err)
 	}
 	id := "m_000000000000"

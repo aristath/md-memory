@@ -2,7 +2,7 @@
 
 [Getting started](../README.md) · [MCP guide](mcp.md)
 
-The Go package is `github.com/aristath/md-memory`, imported as `memory`.
+The Go package is `github.com/aristath/songya`, imported as `songya`.
 This reference describes the stored format, public operations, and durability
 limits. For executable Go examples, see [example_test.go](../example_test.go).
 
@@ -85,7 +85,7 @@ these values, named scalar types, `time.Time`, `time.Duration`, `Relation`,
 custom encoding callbacks belong outside the engine; callers can convert such
 values to a YAML node first.
 
-An unsupported value or cyclic Go reference becomes a `!md-memory/issue` scalar at
+An unsupported value or cyclic Go reference becomes a `!songya/issue` scalar at
 that location. Healthy siblings and the body remain usable. The issue is saved
 with the record, so `Diagnostics()` still reports it, with its metadata path,
 after reopening. Ordinary shared values and YAML aliases remain supported.
@@ -161,7 +161,7 @@ returns the new revision; use it for the next update.
 
 An update checks the base revision before staging and again immediately before
 replacement, while engine writers coordinate through `.lock`. A stale revision
-returns `ErrConflict`; use `errors.Is(err, memory.ErrConflict)` to identify it.
+returns `ErrConflict`; use `errors.Is(err, songya.ErrConflict)` to identify it.
 Read the current record and resolve the conflicting edits before submitting a new
 update. Retrying an old revision cannot overwrite a newer committed version.
 

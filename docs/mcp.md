@@ -2,7 +2,7 @@
 
 [Getting started](../README.md) · [Engine reference](engine.md)
 
-The `md-memory-mcp` executable uses the official Go MCP SDK and stdio transport.
+The `songya-mcp` executable uses the official Go MCP SDK and stdio transport.
 Install it and configure your client using the [quickstart](../README.md#start-with-mcp).
 Only protocol messages go to stdout; flags and errors go to stderr. The process
 handles EOF, SIGINT, SIGTERM, and request cancellation.

@@ -1,4 +1,4 @@
-package memory
+package songya
 
 import (
 	"bufio"
@@ -332,7 +332,7 @@ func helperProcess(t *testing.T, role, path string) *exec.Cmd {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	t.Cleanup(cancel)
 	command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestStoreProcess$")
-	command.Env = append(os.Environ(), "MD_MEMORY_TEST_ROLE="+role, "MD_MEMORY_TEST_PATH="+path, "GORACE=atexit_sleep_ms=0")
+	command.Env = append(os.Environ(), "SONGYA_TEST_ROLE="+role, "SONGYA_TEST_PATH="+path, "GORACE=atexit_sleep_ms=0")
 	return command
 }
 
@@ -470,7 +470,7 @@ func TestStoreLockIsReleasedWhenWriterProcessDies(t *testing.T) {
 
 // TestStoreProcess is a subprocess entry point, not an additional public API.
 func TestStoreProcess(t *testing.T) {
-	role, path := os.Getenv("MD_MEMORY_TEST_ROLE"), os.Getenv("MD_MEMORY_TEST_PATH")
+	role, path := os.Getenv("SONGYA_TEST_ROLE"), os.Getenv("SONGYA_TEST_PATH")
 	if role == "" {
 		return
 	}

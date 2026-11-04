@@ -1,24 +1,24 @@
-package memory_test
+package songya_test
 
 import (
 	"context"
 	"fmt"
 	"os"
 
-	memory "github.com/aristath/md-memory"
+	"github.com/aristath/songya"
 )
 
 func ExampleStore() {
-	path, err := os.MkdirTemp("", "md-memory-example-")
+	path, err := os.MkdirTemp("", "songya-example-")
 	if err != nil {
 		panic(err)
 	}
 	defer os.RemoveAll(path)
-	store, err := memory.Open(path)
+	store, err := songya.Open(path)
 	if err != nil {
 		panic(err)
 	}
-	created, err := store.Create(memory.Memories, map[string]any{
+	created, err := store.Create(songya.Memories, map[string]any{
 		"title":  "Example",
 		"custom": map[string]any{"labels": []string{"one", "two"}},
 	}, "Markdown body.")
@@ -41,12 +41,12 @@ func ExampleStore() {
 }
 
 func ExampleStore_ApplyBatch() {
-	path, err := os.MkdirTemp("", "md-memory-capture-")
+	path, err := os.MkdirTemp("", "songya-capture-")
 	if err != nil {
 		panic(err)
 	}
 	defer os.RemoveAll(path)
-	store, err := memory.Open(path)
+	store, err := songya.Open(path)
 	if err != nil {
 		panic(err)
 	}
@@ -56,9 +56,9 @@ func ExampleStore_ApplyBatch() {
 		panic(err)
 	}
 	body := "I met John for coffee."
-	receipt, err := store.ApplyBatch(ctx, memory.BatchRequest{Key: prepared.Key, Account: body, Changes: []memory.Change{
-		{Ref: "john", Kind: memory.Entities, Fields: map[string]any{"name": "John"}},
-		{Ref: "episode", Fields: map[string]any{"relations": []memory.Relation{{Type: "with", Target: "$john"}}}, Body: &body},
+	receipt, err := store.ApplyBatch(ctx, songya.BatchRequest{Key: prepared.Key, Account: body, Changes: []songya.Change{
+		{Ref: "john", Kind: songya.Entities, Fields: map[string]any{"name": "John"}},
+		{Ref: "episode", Fields: map[string]any{"relations": []songya.Relation{{Type: "with", Target: "$john"}}}, Body: &body},
 	}})
 	if err != nil {
 		panic(err)

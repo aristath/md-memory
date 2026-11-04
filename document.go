@@ -1,5 +1,5 @@
-// Package memory stores connected Markdown records.
-package memory
+// Package songya stores connected Markdown records.
+package songya
 
 import (
 	"bytes"

@@ -1,4 +1,4 @@
-package memory
+package songya
 
 import (
 	"encoding/json"
@@ -11,7 +11,7 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-const issueTag = "!md-memory/issue"
+const issueTag = "!songya/issue"
 
 func issueValue(message string) *yaml.Node {
 	return &yaml.Node{Kind: yaml.ScalarNode, Tag: issueTag, Value: message}

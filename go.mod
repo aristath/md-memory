@@ -1,4 +1,4 @@
-module github.com/aristath/md-memory
+module github.com/aristath/songya
 
 go 1.27.3
 

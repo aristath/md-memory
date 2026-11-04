@@ -8,8 +8,8 @@ Durability comes first: preserve original content, recover interrupted writes,
 and keep healthy records usable when something else is damaged. Search, graph
 traversal, partial timelines, and story composition run locally without a model.
 
-The repository is `aristath/songya`; the Go module remains
-`github.com/aristath/md-memory` and the MCP executable is `md-memory-mcp`.
+The repository and Go module use `github.com/aristath/songya`; the MCP
+executable is `songya-mcp`.
 There is no Clara dependency or integration.
 
 ## Start with MCP
@@ -21,7 +21,7 @@ filesystem with hard links, advisory locks, and directory syncing.
 ```sh
 git clone https://github.com/aristath/songya.git
 cd songya
-go install ./cmd/md-memory-mcp
+go install ./cmd/songya-mcp
 ```
 
 Go puts the executable in `GOBIN` when configured, otherwise in `bin` under the
@@ -39,7 +39,7 @@ locations; this is the common `mcpServers` shape:
 {
   "mcpServers": {
     "songya": {
-      "command": "/absolute/path/to/md-memory-mcp",
+      "command": "/absolute/path/to/songya-mcp",
       "args": ["--store", "/absolute/path/to/memory-store"]
     }
   }
@@ -65,7 +65,7 @@ From your application's Go module (for a new module, run
 `go mod init example.com/songya-example` first):
 
 ```sh
-go get github.com/aristath/md-memory
+go get github.com/aristath/songya
 ```
 
 Save this as `main.go` and run `go run .`:
@@ -77,15 +77,15 @@ import (
 	"fmt"
 	"log"
 
-	memory "github.com/aristath/md-memory"
+	"github.com/aristath/songya"
 )
 
 func main() {
-	store, err := memory.Open("./memory-store")
+	store, err := songya.Open("./memory-store")
 	if err != nil {
 		log.Fatal(err)
 	}
-	saved, err := store.Create(memory.Memories,
+	saved, err := store.Create(songya.Memories,
 		map[string]any{"title": "Coffee with John"}, "I had coffee with John.")
 	if err != nil {
 		log.Fatal(err)
@@ -130,8 +130,8 @@ From the repository root:
 ```sh
 go test -race -count=1 ./...
 go vet ./...
-go build -o /tmp/md-memory-mcp ./cmd/md-memory-mcp
-/tmp/md-memory-mcp --help
+go build -o /tmp/songya-mcp ./cmd/songya-mcp
+/tmp/songya-mcp --help
 ```
 
 The stdio tests build and launch the real server with the official MCP client.

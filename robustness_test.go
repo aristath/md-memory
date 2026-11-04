@@ -1,4 +1,4 @@
-package memory
+package songya
 
 import (
 	"bytes"
@@ -328,7 +328,7 @@ func TestMetadataRepairsRemainIndependent(t *testing.T) {
 	if len(doc.Diagnostics()) != 0 {
 		t.Fatalf("empty optional relations were marked broken: %v", doc.Diagnostics())
 	}
-	doc = Parse([]byte("---\nkey: &name actual_field\n*name: !md-memory/issue Keep\n---\nBody"))
+	doc = Parse([]byte("---\nkey: &name actual_field\n*name: !songya/issue Keep\n---\nBody"))
 	if !strings.Contains(strings.Join(doc.Diagnostics(), "\n"), "metadata.actual_field: Keep") {
 		t.Fatal("issue path used the anchor name")
 	}

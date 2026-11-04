@@ -1,4 +1,4 @@
-package memory
+package songya
 
 import (
 	"bufio"
@@ -370,7 +370,7 @@ func TestConcurrentUpdateProcessesChooseOneRevision(t *testing.T) {
 	results := make(chan string, 4)
 	for range 4 {
 		command := helperProcess(t, "update-writer", store.path)
-		command.Env = append(command.Env, "MD_MEMORY_TEST_REVISION="+base)
+		command.Env = append(command.Env, "SONGYA_TEST_REVISION="+base)
 		go func() {
 			out, err := command.CombinedOutput()
 			if err != nil {
@@ -452,7 +452,7 @@ func testUpdateProcess(t *testing.T, role, path string) {
 		return
 	}
 	if role == "update-writer" {
-		_, err := store.Update(id, os.Getenv("MD_MEMORY_TEST_REVISION"), nil, fmt.Sprintf("Writer %d", os.Getpid()))
+		_, err := store.Update(id, os.Getenv("SONGYA_TEST_REVISION"), nil, fmt.Sprintf("Writer %d", os.Getpid()))
 		if errors.Is(err, ErrConflict) {
 			fmt.Println("conflict")
 		} else if err != nil {
