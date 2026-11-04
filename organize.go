@@ -90,7 +90,8 @@ func (s *Store) Merge(ctx context.Context, request MergeRequest) (Receipt, error
 	ids := []string{}
 	bodies := []string{}
 	changes := []Change{}
-	for _, source := range request.Sources {
+	user, sameUser := "", true
+	for index, source := range request.Sources {
 		if err := ctx.Err(); err != nil {
 			return Receipt{}, err
 		}
@@ -105,6 +106,10 @@ func (s *Store) Merge(ctx context.Context, request MergeRequest) (Receipt, error
 			return Receipt{}, fmt.Errorf("%s is retired; resolve its replacements first", source.ID)
 		}
 		r := recordFromDocument("", doc, kindOf(source.ID))
+		if index == 0 {
+			user = r.User
+		}
+		sameUser = sameUser && userOwned(r.Kind) && r.User == user
 		if title == "" {
 			title = r.Title
 		}
@@ -126,6 +131,9 @@ func (s *Store) Merge(ctx context.Context, request MergeRequest) (Receipt, error
 	}
 	if request.Kind == "" {
 		request.Kind = kindOf(ids[0])
+	}
+	if _, supplied := fields["user"]; !supplied && userOwned(request.Kind) && sameUser {
+		fields["user"] = user
 	}
 	if _, exists := fields["title"]; !exists {
 		fields["title"] = title
@@ -172,6 +180,9 @@ func (s *Store) Split(ctx context.Context, request SplitRequest) (Receipt, error
 		if kind == "" {
 			kind = kindOf(original.ID)
 		}
+		if _, supplied := fields["user"]; !supplied && userOwned(kind) {
+			fields["user"] = documentUser(original)
+		}
 		changes = append(changes, Change{Ref: ref, Kind: kind, Fields: fields, Body: textValue(part.Body)})
 		redirects = append(redirects, "$"+ref)
 	}
@@ -198,11 +209,12 @@ type Preparation struct {
 
 // Prepare performs deterministic local retrieval. The caller interprets the
 // shortlist and submits one complete ApplyBatch request; no inference is hidden.
-func (s *Store) Prepare(ctx context.Context, account string, limit int) (Preparation, error) {
+func (s *Store) Prepare(ctx context.Context, account, user string, limit int) (Preparation, error) {
 	catalog, err := s.Scan(ctx)
 	if err != nil {
 		return Preparation{}, err
 	}
+	catalog = userCatalog(catalog, user)
 	matches := searchCatalog(catalog, Query{Text: account, Limit: limit})
 	var random [12]byte
 	if _, err := rand.Read(random[:]); err != nil {

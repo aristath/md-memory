@@ -14,6 +14,7 @@ type Edge struct {
 	DetailsTruncated bool   `json:"details_truncated,omitempty"`
 }
 type GraphQuery struct {
+	User      string `json:"user,omitempty"`
 	ID        string `json:"id"`
 	Direction string `json:"direction,omitempty"`
 	Type      string `json:"type,omitempty"`
@@ -135,6 +136,7 @@ func graphEdges(records map[string]Record) []Edge {
 }
 func graphFromCatalog(c Catalog, q GraphQuery) GraphResult {
 	records := catalogMap(c)
+	visible := catalogMap(userCatalog(c, q.User))
 	all := graphEdges(records)
 	diagnostics := append([]Diagnostic{}, c.Diagnostics...)
 	var resolved *Resolution
@@ -165,6 +167,9 @@ func graphFromCatalog(c Catalog, q GraphQuery) GraphResult {
 	for level := 0; level < depth; level++ {
 		next := map[string]bool{}
 		for _, edge := range all {
+			if _, included := visible[edge.Source]; !included {
+				continue
+			}
 			if q.Type != "" && edge.Type != q.Type {
 				continue
 			}

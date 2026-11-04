@@ -86,7 +86,7 @@ func main() {
 		log.Fatal(err)
 	}
 	saved, err := store.Create(songya.Memories,
-		map[string]any{"title": "Coffee with John"}, "I had coffee with John.")
+		map[string]any{"user": "ari", "title": "Coffee with John"}, "I had coffee with John.")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -108,6 +108,9 @@ Records live in `memories/`, `entities/`, `topics/`, and `stories/`. Each Markdo
 filename is its identity: a type prefix (`m_`, `e_`, `t_`, or `s_`) plus 12 random
 lowercase letters or digits. Metadata is YAML frontmatter; the body is Markdown.
 The engine assigns IDs and timestamps. No duplicate ID field is needed in YAML.
+Memories and stories require a `user` field. Entities and topics are shared.
+Select a user when searching, or use `user:all` to query everyone; this is grouping,
+with no access restrictions. See [users](docs/engine.md#users).
 
 Back up the **whole store**, including hidden files and directories. `.batches/`
 retains transaction journals, original accounts, and before/proposed bytes;

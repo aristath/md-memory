@@ -219,6 +219,9 @@ func (s *Store) Create(destination Destination, fields map[string]any, body stri
 	node, warnings := encodeValue(values)
 	d := &Document{Body: body, warnings: warnings}
 	assignNode(&d.Frontmatter, node)
+	if err := requireUser(d, destination); err != nil {
+		return d, err
+	}
 	data, err := d.Marshal()
 	if err != nil {
 		return d, err

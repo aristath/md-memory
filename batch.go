@@ -34,6 +34,7 @@ type StoryAddition struct {
 	Members  []string `json:"members"`
 }
 type BatchRequest struct {
+	User    string          `json:"user,omitempty"`
 	Key     string          `json:"key"`
 	Account string          `json:"account,omitempty"`
 	Changes []Change        `json:"changes"`
@@ -198,10 +199,11 @@ func requestRevision(ctx context.Context, request BatchRequest) (string, error) 
 		intents = append(intents, item)
 	}
 	payload, err := json.Marshal(struct {
+		User    []byte
 		Account []byte
 		Changes []intent
 		Stories []StoryAddition
-	}{[]byte(request.Account), intents, request.Stories})
+	}{[]byte(request.User), []byte(request.Account), intents, request.Stories})
 	if err != nil {
 		return "", err
 	}
@@ -389,6 +391,13 @@ func prepareBatch(ctx context.Context, root *os.Root, request BatchRequest, revi
 			doc = &Document{}
 		}
 		fields := batchFields(change.Fields, journal.Refs)
+		if userOwned(kindOf(change.ID)) {
+			if user, supplied := change.Fields["user"]; supplied {
+				fields["user"] = user // User IDs are not request-local record references.
+			} else if base == "" && request.User != "" {
+				fields["user"] = request.User
+			}
+		}
 		body := doc.Body
 		if change.Body != nil {
 			body = *change.Body
@@ -439,6 +448,9 @@ func prepareBatch(ctx context.Context, root *os.Root, request BatchRequest, revi
 				accountsNode.Content = append(accountsNode.Content, value)
 				_ = doc.Set("original_accounts", accountsNode)
 			}
+		}
+		if err := requireUser(doc, kindOf(change.ID)); err != nil {
+			return journal, fmt.Errorf("%s: %w", change.ID, err)
 		}
 		data, err := doc.Marshal()
 		if err != nil {

@@ -20,7 +20,7 @@ import (
 	"time"
 )
 
-const indexFormat = 1
+const indexFormat = 2
 
 // Diagnostic identifies a recoverable problem without hiding healthy records.
 type Diagnostic struct {
@@ -35,6 +35,7 @@ type EpisodeTime struct {
 
 // Record is the derived search/graph view. Source Markdown is authoritative.
 type Record struct {
+	User        string      `json:"user,omitempty"`
 	ID          string      `json:"id"`
 	Source      string      `json:"source"`
 	Kind        Destination `json:"kind"`
@@ -86,6 +87,9 @@ func stringsFromNode(node *yaml.Node) []string {
 func recordFromDocument(source string, d *Document, kind Destination) Record {
 	metadata := d.Metadata()
 	r := Record{ID: d.ID, Source: source, Kind: kind, Revision: d.Revision, Pending: d.Pending, Unconfirmed: d.Unconfirmed, Title: metadata.Title, Body: d.Body, Relations: metadata.Relations, Diagnostics: d.Diagnostics()}
+	if userOwned(kind) {
+		r.User = metadata.User
+	}
 	if r.Title == "" {
 		r.Title = strings.Join(nodeStrings("name", d), " ")
 	}
@@ -280,6 +284,7 @@ func clip(value string, maximum int) string {
 }
 
 type Query struct {
+	User           string      `json:"user,omitempty"`
 	Text           string      `json:"text,omitempty"`
 	Kind           Destination `json:"kind,omitempty"`
 	RelatedTo      string      `json:"related_to,omitempty"`
@@ -289,6 +294,7 @@ type Query struct {
 	Limit          int         `json:"limit,omitempty"`
 }
 type Match struct {
+	User             string      `json:"user,omitempty"`
 	ID               string      `json:"id,omitempty"`
 	Source           string      `json:"source"`
 	Kind             Destination `json:"kind"`
@@ -342,6 +348,7 @@ func boundedDiagnostics(diagnostics []Diagnostic) []Diagnostic {
 }
 
 func searchCatalog(c Catalog, q Query) SearchResult {
+	c = userCatalog(c, q.User)
 	matches := []Match{}
 	normalizedText := " " + strings.Join(words(q.Text), " ") + " "
 	tokens := words(q.Text)
@@ -416,7 +423,7 @@ func searchCatalog(c Catalog, q Query) SearchResult {
 		for _, warning := range r.Diagnostics[:min(4, len(r.Diagnostics))] {
 			warnings = append(warnings, clip(warning, 512))
 		}
-		matches = append(matches, Match{ID: r.ID, Source: r.Source, Kind: r.Kind, Revision: r.Revision, Pending: r.Pending, Unconfirmed: r.Unconfirmed, Title: clip(r.Title, 160), Aliases: aliases, Excerpt: clip(excerpt, 512), Redirects: redirects, Score: score, Reasons: reasons, Diagnostics: warnings, DetailsTruncated: detailsTruncated})
+		matches = append(matches, Match{User: clip(r.User, 160), ID: r.ID, Source: r.Source, Kind: r.Kind, Revision: r.Revision, Pending: r.Pending, Unconfirmed: r.Unconfirmed, Title: clip(r.Title, 160), Aliases: aliases, Excerpt: clip(excerpt, 512), Redirects: redirects, Score: score, Reasons: reasons, Diagnostics: warnings, DetailsTruncated: detailsTruncated || len(r.User) > 160})
 	}
 	sort.Slice(matches, func(i, j int) bool {
 		if matches[i].Score != matches[j].Score {

@@ -38,6 +38,9 @@ func (s *Store) Update(id, revision string, fields map[string]any, body string) 
 		return doc, fmt.Errorf("update %s: %w", id, ErrConflict)
 	}
 	applyFields(doc, fields, body)
+	if err := requireUser(doc, kindOf(id)); err != nil {
+		return doc, err
+	}
 	data, err := doc.Marshal()
 	if err != nil {
 		return doc, err

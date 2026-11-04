@@ -12,15 +12,17 @@ import (
 var storyReference = regexp.MustCompile(`\[\[([mets]_[0-9a-z]{12})\]\]`)
 
 type StoryPage struct {
-	ID          string       `json:"id"`
-	Revision    string       `json:"revision"`
-	Text        string       `json:"text,omitempty"`
-	Base64      string       `json:"base64,omitempty"`
-	Offset      int          `json:"offset"`
-	Next        int          `json:"next,omitempty"`
-	Truncated   bool         `json:"truncated"`
-	Unconfirmed bool         `json:"unconfirmed,omitempty"`
-	Diagnostics []Diagnostic `json:"diagnostics,omitempty"`
+	User          string       `json:"user,omitempty"`
+	UserTruncated bool         `json:"user_truncated,omitempty"`
+	ID            string       `json:"id"`
+	Revision      string       `json:"revision"`
+	Text          string       `json:"text,omitempty"`
+	Base64        string       `json:"base64,omitempty"`
+	Offset        int          `json:"offset"`
+	Next          int          `json:"next,omitempty"`
+	Truncated     bool         `json:"truncated"`
+	Unconfirmed   bool         `json:"unconfirmed,omitempty"`
+	Diagnostics   []Diagnostic `json:"diagnostics,omitempty"`
 }
 
 // Compose expands exact [[record_id]] references in stories. Referenced memory
@@ -179,7 +181,7 @@ func (s *Store) Compose(ctx context.Context, id string, offset, limit int) (Stor
 	if end > int(^uint(0)>>1)-offset {
 		return StoryPage{}, fmt.Errorf("composed offset exceeds the byte range; retrieve a nested story separately")
 	}
-	page := StoryPage{ID: id, Revision: original.Revision, Text: text[start:end], Offset: offset + start, Truncated: end < len(text), Unconfirmed: unconfirmed, Diagnostics: boundedDiagnostics(diagnostics)}
+	page := StoryPage{User: clip(original.User, 160), UserTruncated: len(original.User) > 160, ID: id, Revision: original.Revision, Text: text[start:end], Offset: offset + start, Truncated: end < len(text), Unconfirmed: unconfirmed, Diagnostics: boundedDiagnostics(diagnostics)}
 	if !utf8.ValidString(page.Text) {
 		page.Base64 = base64.StdEncoding.EncodeToString([]byte(page.Text))
 		page.Text = ""

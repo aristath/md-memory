@@ -13,6 +13,7 @@ type TemporalConstraint struct {
 	Reason string `json:"reason,omitempty"`
 }
 type TemporalRecord struct {
+	User             string      `json:"user,omitempty"`
 	ID               string      `json:"id"`
 	Title            string      `json:"title"`
 	Time             EpisodeTime `json:"time"`
@@ -94,6 +95,7 @@ func (s *Store) Timeline(ctx context.Context, q Query) (Timeline, error) {
 	if err != nil {
 		return Timeline{}, err
 	}
+	c = userCatalog(c, q.User)
 	records := catalogMap(c)
 	diagnostics := append([]Diagnostic{}, c.Diagnostics...)
 	ids := []string{}
@@ -257,7 +259,7 @@ func (s *Store) Timeline(ctx context.Context, q Query) (Timeline, error) {
 		episode.Description = clip(episode.Description, 512)
 		episode.Earliest = clip(episode.Earliest, 96)
 		episode.Latest = clip(episode.Latest, 96)
-		result.Records = append(result.Records, TemporalRecord{ID: r.ID, Title: clip(r.Title, 160), Time: episode, Unordered: !related[r.ID], Unconfirmed: r.Unconfirmed, DetailsTruncated: episode != r.Time || len(r.Title) > 160})
+		result.Records = append(result.Records, TemporalRecord{User: clip(r.User, 160), ID: r.ID, Title: clip(r.Title, 160), Time: episode, Unordered: !related[r.ID], Unconfirmed: r.Unconfirmed, DetailsTruncated: episode != r.Time || len(r.Title) > 160 || len(r.User) > 160})
 		displayed[r.ID] = true
 	}
 	for _, a := range result.Records {

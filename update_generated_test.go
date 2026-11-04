@@ -19,8 +19,8 @@ func TestGeneratedUpdateSequencesPreserveIndependentData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expected := map[string]any{"title": "Start", "untouched": map[string]any{"literal": "000123"}}
-	doc, err := store.Create(Memories, expected, "Start body")
+	expected := map[string]any{"user": "test", "title": "Start", "untouched": map[string]any{"literal": "000123"}}
+	doc, err := store.Create(Memories, testUserFields(Memories, expected), "Start body")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestUpdatesRetainUnreadableHeadersAndBodies(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		updated, err := store.Update(id, original.Revision, map[string]any{"title": 3}, original.Body)
+		updated, err := store.Update(id, original.Revision, map[string]any{"user": "test", "title": 3}, original.Body)
 		if err != nil {
 			t.Fatal(err)
 		}

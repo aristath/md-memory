@@ -17,6 +17,7 @@ type Relation struct {
 }
 
 type Metadata struct {
+	User      string     `yaml:"user,omitempty"`
 	Title     string     `yaml:"title"`
 	CreatedAt time.Time  `yaml:"created_at"`
 	UpdatedAt time.Time  `yaml:"updated_at"`
@@ -224,6 +225,7 @@ func duplicateFields(node *yaml.Node) []string {
 }
 
 func (d *Document) metadata() (m Metadata, warnings []string) {
+	m.User = documentUser(d)
 	for _, err := range []error{
 		decodeField(&d.Frontmatter, "title", &m.Title),
 		decodeField(&d.Frontmatter, "created_at", &m.CreatedAt),
@@ -277,7 +279,10 @@ func (d *Document) Metadata() Metadata {
 }
 
 func (d *Document) Diagnostics() []string {
-	_, warnings := d.metadata()
+	metadata, warnings := d.metadata()
+	if userOwned(kindOf(d.ID)) && (metadata.User == "" || metadata.User == "all") {
+		warnings = append(warnings, "user field is missing or invalid; original content retained")
+	}
 	warnings = append(warnings, valueIssues(&d.Frontmatter, "metadata")...)
 	if field(&d.Frontmatter, "unparsed_frontmatter") != nil {
 		warnings = append(warnings, "Original unparsed frontmatter is retained")

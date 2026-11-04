@@ -8,6 +8,7 @@ Only protocol messages go to stdout; flags and errors go to stderr. The process
 handles EOF, SIGINT, SIGTERM, and request cancellation.
 
 - [Tools and resources](#tools-and-resources)
+- [Users](#users)
 - [Prepare and save](#prepare-and-save)
 - [Search, read, and update](#search-read-and-update)
 - [Relationships, timelines, and stories](#relationships-timelines-and-stories)
@@ -20,15 +21,15 @@ handles EOF, SIGINT, SIGTERM, and request cancellation.
 
 | Tool | Inputs and purpose |
 | --- | --- |
-| `prepare_memory` | `account`, optional `limit`: find candidates and ambiguities; return a fresh request key |
-| `save_memory` | `key`, `changes`, optional `account` and `stories`: apply a complete related batch |
-| `search_memory` | Optional `text`, `kind`, `related_to`, `relation_type`, `include_retired`, `offset`, `limit`: search or list |
+| `prepare_memory` | `account`, optional `user`, `limit`: find candidates and ambiguities; return a fresh request key |
+| `save_memory` | `key`, `changes`, optional `user`, `account`, `stories`: apply a complete related batch |
+| `search_memory` | Optional `user`, `text`, `kind`, `related_to`, `relation_type`, `include_retired`, `offset`, `limit`: search or list |
 | `read_memory` | `id`, or `source`, or configured `root` plus `source`, or `archive`, or `key` plus `view`; optional `offset`, `limit`: read byte pages |
-| `explore_memory` | Optional `id`, `direction`, `type`, `depth`, `offset`, `limit`: outgoing links, backlinks, or traversal |
+| `explore_memory` | Optional `user`, `id`, `direction`, `type`, `depth`, `offset`, `limit`: outgoing links, backlinks, or traversal |
 | `memory_timeline` | Same filters as search: partial chronology and constraint diagnostics |
 | `compose_story` | `id`, optional `offset`, `limit`: expand canonical story references |
 | `organize_memory` | `action`, `key`, and reviewed `sources` for merge or `source` and `parts` for split |
-| `import_memories` | `action`, configured `root`; apply also takes `path`, `revision`, optional `parts`; `offset`, `limit` page results |
+| `import_memories` | `action`, configured `root`; apply also takes `path`, `revision`, optional `user`, `parts`; `offset`, `limit` page results |
 | `memory_maintenance` | `action`: `status`, `receipt`, `recover`, `abandon`, or `rebuild`; receipt/abandon use `key` |
 
 Initialization supplies server instructions and capabilities. Clients discover
@@ -46,12 +47,36 @@ Replace uppercase placeholders with returned IDs, keys, and revisions. Response
 examples show selected fields from `structuredContent`; other fields are omitted
 for readability. Text content contains a short status summary.
 
+## Users
+
+Memories and stories require a `user`; entities and topics are shared. The
+`save_memory` argument `user` supplies the default for new memories/stories, and
+an individual change's `fields.user` can override it. Updating an existing record
+keeps its user unless explicitly changed. A missing, empty, or `all` owner cannot
+be saved.
+
+`prepare_memory`, `search_memory`, `explore_memory`, and `memory_timeline` accept
+`user` as a filter. A concrete user selects their memories/stories plus shared
+entities/topics. `user:"all"`, or omitting the filter, selects everyone. Any caller
+can choose any user or `all`; there is no access-control layer. Direct ID reads,
+retained receipts, and explicit story compositions remain unrestricted.
+
+Search/timeline summaries and canonical body/source pages identify the owning
+user. A composed story's `user` identifies the story's owner; explicit references
+may include other users' memories. Long display labels are abbreviated with
+truncation flags; source pages retain the complete metadata.
+
+Splits inherit the source user unless a part's fields override it. Merges inherit
+it when all sources share a user; cross-user merges need an explicit `fields.user`.
+Imports use top-level `user` as the default; part `fields.user` can override it.
+No user is inferred from the text or assigned to existing files automatically.
+
 ## Prepare and save
 
 Start by checking existing records:
 
 ```json
-{"name":"prepare_memory","arguments":{"account":"I had coffee with John."}}
+{"name":"prepare_memory","arguments":{"account":"I had coffee with John.","user":"ari"}}
 ```
 
 Read `data.matches`, `data.ambiguities`, and `data.possible_duplicates`. They are
@@ -63,6 +88,7 @@ capture. If John is genuinely new, submit the related records together:
   "name": "save_memory",
   "arguments": {
     "key": "CAPTURE_KEY",
+    "user": "ari",
     "account": "I had coffee with John.",
     "changes": [
       {"ref":"john","kind":"entities","fields":{"name":"John"}},
@@ -112,7 +138,7 @@ remain in durable journals; affected memories also retain `original_accounts`.
 Search by words, or omit `text` to list records. `kind` uses directory names:
 
 ```json
-{"name":"search_memory","arguments":{"text":"coffee","kind":"memories","limit":8}}
+{"name":"search_memory","arguments":{"user":"ari","text":"coffee","kind":"memories","limit":8}}
 ```
 
 Results are in `data.matches`, with IDs, revisions, excerpts, and diagnostics.
@@ -173,7 +199,7 @@ new reviewed request under a fresh key. If it was accepted, follow
 Find incoming and outgoing connections, including derived story membership:
 
 ```json
-{"name":"explore_memory","arguments":{"id":"EPISODE_ID","direction":"both","depth":1}}
+{"name":"explore_memory","arguments":{"user":"ari","id":"EPISODE_ID","direction":"both","depth":1}}
 ```
 
 `data.edges` contains `source`, `type`, `target`, and `resolved`. Directions are
@@ -182,7 +208,7 @@ the target is available, not that the relationship is true. Split redirects can
 remain ambiguous; no inverse relationship or symmetry is invented.
 
 ```json
-{"name":"memory_timeline","arguments":{"kind":"memories","text":"coffee"}}
+{"name":"memory_timeline","arguments":{"user":"ari","kind":"memories","text":"coffee"}}
 ```
 
 The result has `data.records` and `data.constraints`. Only `before`/`after`
@@ -286,7 +312,7 @@ Preview, then read the selected file using `path` and `revision` from `data.file
 After reviewing all source pages, import the whole file verbatim:
 
 ```json
-{"name":"import_memories","arguments":{"action":"apply","root":"notes","path":"old.md","revision":"IMPORT_REVISION"}}
+{"name":"import_memories","arguments":{"action":"apply","user":"ari","root":"notes","path":"old.md","revision":"IMPORT_REVISION"}}
 ```
 
 Or, as an **alternative** to whole-file import, supply reviewed parts. For a file
@@ -296,7 +322,7 @@ whose exact bytes are `First.\nSecond.\n`, a complete partition is:
 {
   "name":"import_memories",
   "arguments": {
-    "action":"apply","root":"notes","path":"old.md","revision":"IMPORT_REVISION",
+    "action":"apply","user":"ari","root":"notes","path":"old.md","revision":"IMPORT_REVISION",
     "parts":[
       {"start":0,"end":7,"fields":{"title":"First"}},
       {"start":7,"end":15,"fields":{"title":"Second"}}

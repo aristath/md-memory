@@ -49,6 +49,11 @@ func connect(t *testing.T, ctx context.Context, bin, store, source string) *mcp.
 }
 func invoke(t *testing.T, ctx context.Context, session *mcp.ClientSession, name string, args any) (map[string]any, *mcp.CallToolResult) {
 	t.Helper()
+	if input, ok := args.(map[string]any); ok && (name == "save_memory" || name == "import_memories") {
+		if _, supplied := input["user"]; !supplied {
+			input["user"] = "test"
+		}
+	}
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: args})
 	if err != nil {
 		t.Fatal(err)
@@ -70,6 +75,55 @@ func payload(t *testing.T, envelope map[string]any) map[string]any {
 		t.Fatalf("missing structured result: %+v", envelope)
 	}
 	return data
+}
+
+func TestStdioUserFiltersKeepEntitiesSharedAndRequireOwnedWrites(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	session := connect(t, ctx, binary(t), t.TempDir(), "")
+	envelope, result := invoke(t, ctx, session, "save_memory", map[string]any{
+		"user": "ari", "key": "ari-capture", "changes": []any{
+			map[string]any{"ref": "john", "kind": "entities", "fields": map[string]any{"name": "John"}},
+			map[string]any{"ref": "episode", "fields": map[string]any{"title": "Coffee with John"}, "body": "Ari's account"},
+			map[string]any{"ref": "story", "kind": "stories", "fields": map[string]any{"title": "Coffee story"}},
+		}, "stories": []any{map[string]any{"story": "$story", "members": []any{"$episode"}}},
+	})
+	if result.IsError || payload(t, envelope)["status"] != "committed" {
+		t.Fatal(envelope)
+	}
+	refs := payload(t, envelope)["refs"].(map[string]any)
+	for _, user := range []any{"bob", 3} {
+		envelope, result = invoke(t, ctx, session, "save_memory", map[string]any{
+			"user": user, "key": fmt.Sprint(user), "changes": []any{map[string]any{"body": "Another user's coffee"}},
+		})
+		if result.IsError {
+			t.Fatal(envelope)
+		}
+	}
+	for user, count := range map[string]int{"ari": 3, "bob": 2, "3": 2, "all": 5} {
+		envelope, result = invoke(t, ctx, session, "search_memory", map[string]any{"user": user})
+		if result.IsError || len(payload(t, envelope)["matches"].([]any)) != count {
+			t.Fatalf("scope %s: %+v", user, envelope)
+		}
+	}
+	envelope, result = invoke(t, ctx, session, "prepare_memory", map[string]any{"account": "coffee John", "user": "bob"})
+	if result.IsError || len(payload(t, envelope)["matches"].([]any)) != 2 {
+		t.Fatal("preparation did not combine scoped memories and shared identities", envelope)
+	}
+	envelope, result = invoke(t, ctx, session, "read_memory", map[string]any{"id": refs["story"], "view": "source"})
+	if result.IsError || !strings.Contains(payload(t, envelope)["text"].(string), "user: ari") {
+		t.Fatal("story did not persist the user", envelope)
+	}
+	envelope, result = invoke(t, ctx, session, "read_memory", map[string]any{"id": refs["john"], "view": "source"})
+	if result.IsError || strings.Contains(payload(t, envelope)["text"].(string), "user:") {
+		t.Fatal("shared entity received an owner", envelope)
+	}
+	envelope, result = invoke(t, ctx, session, "save_memory", map[string]any{
+		"user": "", "key": "missing-user", "changes": []any{map[string]any{"body": "Not yet attributable"}},
+	})
+	if !result.IsError || payload(t, envelope)["status"] != "not_accepted" {
+		t.Fatal("missing ownership was accepted", envelope)
+	}
 }
 
 func TestActualStdioCaptureRetrievalOrganizationAndRestart(t *testing.T) {
@@ -184,7 +238,7 @@ func TestStdioCancellationAndEOFDoNotPublishWaitingRequests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	original, err := store.Create(songya.Memories, nil, "Keep")
+	original, err := store.Create(songya.Memories, map[string]any{"user": "test"}, "Keep")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +279,7 @@ func TestEquivalentScalarArgumentsAndBinaryPages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	doc, err := store.Create(songya.Memories, nil, string([]byte{255, 254, 0}))
+	doc, err := store.Create(songya.Memories, map[string]any{"user": "test"}, string([]byte{255, 254, 0}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -321,7 +375,7 @@ func TestStdioShutdownCancelsUnacceptedWaitingWrite(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			doc, err := store.Create(songya.Memories, nil, "Keep")
+			doc, err := store.Create(songya.Memories, map[string]any{"user": "test"}, "Keep")
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -7,6 +7,7 @@ This reference describes the stored format, public operations, and durability
 limits. For executable Go examples, see [example_test.go](../example_test.go).
 
 - [Files](#files)
+- [Users](#users)
 - [Documents](#documents)
 - [Store](#store)
 - [Updates](#updates)
@@ -37,6 +38,7 @@ an `id` metadata field. A record contains YAML frontmatter and a Markdown body:
 ```markdown
 ---
 title: Example
+user: ari
 created_at: 2026-11-03T10:00:00Z
 updated_at: 2026-11-03T10:00:00Z
 relations:
@@ -50,6 +52,43 @@ Markdown body.
 Metadata is open-ended, including lists and nested mappings. Relation types are
 open-ended too. Relations live in their source file; reverse connections are
 derived using the same type. Markdown files are authoritative; `.index/` is disposable.
+
+## Users
+
+One store contains records for every user. Memories and stories **must** have a
+nonempty `user` field identifying one user; `all` is reserved for queries. Numeric
+scalar values such as `3` normalize to the string `"3"`. Entities and topics are
+shared and do not receive an owner automatically.
+
+`Query.User` filters search and timelines. `Prepare(ctx, account, user, limit)`
+uses the same scope for candidates, duplicate suggestions, and ambiguities.
+`GraphQuery.User` selects edge sources for traversal and backlinks; shared source
+records remain available, and references still report their actual target
+availability. A specific user sees their memories/stories and shared entities and
+topics. `"all"`, or an omitted filter, selects everyone. Pagination follows this
+filtered view.
+
+This is selection, not authorization. Anyone can select another user or `all`,
+read an exact record ID, compose an explicitly selected story, or change a record's
+user. There are no administrator checks or ownership permissions.
+
+`Create` requires `fields["user"]` for memories/stories. Updates preserve the
+current user when omitted, and cannot clear it. `BatchRequest.User` supplies a
+default for newly created memories/stories; each change's explicit `fields.user`
+takes precedence. User IDs are literal values, not `$ref` record references.
+Shared entity/topic changes are unaffected. Ownership is part
+of the accepted batch intent, so changing it under an accepted key is blocked.
+
+Splits inherit the source user unless a part explicitly supplies another one.
+Merges inherit the user when every source has that user; a cross-user merge needs
+an explicit `fields.user`. `ImportRequest.User` provides the default for imported
+memories/stories; reviewed part fields can override it. Imported originals are
+preserved verbatim.
+
+Required ownership is checked before new writes are accepted. If an external edit
+or damaged file removes the field, the original remains readable with diagnostics;
+reads never invent an owner or rewrite the source. Updating it needs an explicit
+valid user. No existing records are migrated or assigned automatically.
 
 ## Documents
 
@@ -109,7 +148,8 @@ encoded once and referenced with aliases rather than expanded repeatedly.
   opening a reader does not wait for that writer.
 - `Store.Create(destination, fields, body)` saves a new record. Choose `Memories`,
   `Entities`, `Topics`, or `Stories`; fields are YAML metadata as `map[string]any`.
-  The engine generates the ID and both UTC timestamps. A supplied `id` is ignored.
+  The engine generates the ID and both UTC timestamps. Memories/stories require
+  `fields.user`; entities/topics are shared. A supplied `id` is ignored.
   Metadata is encoded before acquiring the write lock. A failed save returns an
   ID only when this operation has reserved it; a collision never claims another
   write's ID.
@@ -309,7 +349,7 @@ These display limits never change authoritative content or relationship semantic
 
 ## Related changes and retry safety
 
-`Prepare(ctx, account, limit)` searches all record types together and returns a
+`Prepare(ctx, account, user, limit)` searches all record types together and returns a
 fresh request key, shortlists, possible duplicate names, and identity ambiguities.
 It uses deterministic lexical matching, with no LLM calls. A shortlist is evidence
 to review, not an automatic identity assignment.

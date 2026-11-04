@@ -24,7 +24,7 @@ func TestUpdatesPreserveRecordsAndRevisions(t *testing.T) {
 	}
 	for _, destination := range destinations {
 		t.Run(string(destination), func(t *testing.T) {
-			original, err := store.Create(destination, map[string]any{"title": "Before", "unknown": map[string]any{"keep": "Value"}}, "Body\r\n")
+			original, err := store.Create(destination, testUserFields(destination, map[string]any{"title": "Before", "unknown": map[string]any{"keep": "Value"}}), "Body\r\n")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -78,7 +78,7 @@ func TestUpdatesPreserveDamagedAndAliasedCreationTimes(t *testing.T) {
 			}
 			id := "m_000000000000"
 			name, _ := recordName(id)
-			if err := os.WriteFile(filepath.Join(path, name), []byte("---\n"+header+"---\nBody"), 0600); err != nil {
+			if err := os.WriteFile(filepath.Join(path, name), []byte("---\nuser: test\n"+header+"---\nBody"), 0600); err != nil {
 				t.Fatal(err)
 			}
 			original, err := store.Read(id)
@@ -129,7 +129,7 @@ func TestUpdatesProtectUserEditsAndMissingRecords(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	doc, err := store.Create(Memories, nil, "Before")
+	doc, err := store.Create(Memories, testUserFields(Memories, nil), "Before")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,7 +317,7 @@ func TestUpdateReadersSeeCompleteVersions(t *testing.T) {
 		t.Fatal(err)
 	}
 	a, b := strings.Repeat("A", 128*1024), strings.Repeat("B", 128*1024)
-	doc, err := store.Create(Memories, nil, a)
+	doc, err := store.Create(Memories, testUserFields(Memories, nil), a)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -445,7 +445,7 @@ func testUpdateProcess(t *testing.T, role, path string) {
 		previous := rand.Reader
 		rand.Reader = bytes.NewReader(append(make([]byte, IDSuffixLength), bytes.Repeat([]byte{1}, 512)...))
 		defer func() { rand.Reader = previous }()
-		doc, err := store.Create(Memories, nil, "New identity")
+		doc, err := store.Create(Memories, testUserFields(Memories, nil), "New identity")
 		if err != nil || doc.ID == id {
 			t.Fatalf("orphaned update lost its identity: %v", err)
 		}
@@ -625,7 +625,7 @@ func TestUntouchedCreationAliasesSurviveAnchorRepair(t *testing.T) {
 		}
 		id := "m_000000000000"
 		name, _ := recordName(id)
-		source := []byte("---\nother: &date First\ndate: &date " + value + "\ncreated_at: *date\n---\nBody")
+		source := []byte("---\nuser: test\nother: &date First\ndate: &date " + value + "\ncreated_at: *date\n---\nBody")
 		if err := os.WriteFile(filepath.Join(store.path, name), source, 0600); err != nil {
 			t.Fatal(err)
 		}

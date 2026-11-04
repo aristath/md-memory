@@ -23,6 +23,7 @@ import (
 const Guide = `songya stores authoritative Markdown records. Ordinary capture takes two tool calls:
 1. prepare_memory(account) returns a request key, bounded candidates, revisions and ambiguities.
 2. save_memory(key, account, changes, stories) submits the whole related batch. Reuse the SAME key and arguments on retry; inspect memory_maintenance receipt after a lost response.
+Memories and stories require a user field identifying one user. Entities and topics are shared. The user query filter selects memories/stories for that user plus shared entities/topics; all selects everyone. This is filtering, not access control.
 New changes use kind memories/entities/topics/stories and optional ref labels. Existing changes require id and revision. Fields are open YAML metadata. Omit body to preserve it; append adds detail without replacing earlier text. add_relations appends edges while preserving old data. Use $ref values for newly created records. Story additions accept story IDs or $refs and an ordered members list. Story bodies use [[record_id]].
 Keep identities unresolved when evidence is ambiguous. Relations are source-owned {type,target}; only before/after imply chronology. Episode time is time:{description,earliest,latest}; creation/update timestamps are not episode dates. Topics and entities use names/titles, aliases, descriptions and open metadata.
 Read tool data and diagnostics before resolving conflicts. A blocked accepted batch is retained; never manufacture a new key to retry it. Inspect proposed/before/account byte pages with read_memory(key,id,view). After review, memory_maintenance abandon deliberately withdraws an uncommitted batch, restores only its own published bytes, and preserves later user edits and all proposals. Abandonment is terminal: retrying its key never publishes it again. Unconfirmed snapshots remain readable with no committed revision; repair their retained batch coordination before updating them. Markdown and preserved originals remain available. Search/list, graph, timelines and stories are paged. Follow next when truncated. Imported parts are reviewed exact byte ranges; no inference or automatic splitting occurs.
@@ -46,17 +47,19 @@ type pageInput struct {
 	Limit   int    `json:"limit,omitempty"`
 }
 type recordPage struct {
-	ID          string   `json:"id,omitempty"`
-	Source      string   `json:"source,omitempty"`
-	Revision    string   `json:"revision"`
-	Pending     bool     `json:"pending,omitempty"`
-	Unconfirmed bool     `json:"unconfirmed,omitempty"`
-	Text        string   `json:"text,omitempty"`
-	Base64      string   `json:"base64,omitempty"`
-	Offset      int      `json:"offset"`
-	Next        int      `json:"next,omitempty"`
-	Truncated   bool     `json:"truncated"`
-	Diagnostics []string `json:"diagnostics,omitempty"`
+	User          string   `json:"user,omitempty"`
+	UserTruncated bool     `json:"user_truncated,omitempty"`
+	ID            string   `json:"id,omitempty"`
+	Source        string   `json:"source,omitempty"`
+	Revision      string   `json:"revision"`
+	Pending       bool     `json:"pending,omitempty"`
+	Unconfirmed   bool     `json:"unconfirmed,omitempty"`
+	Text          string   `json:"text,omitempty"`
+	Base64        string   `json:"base64,omitempty"`
+	Offset        int      `json:"offset"`
+	Next          int      `json:"next,omitempty"`
+	Truncated     bool     `json:"truncated"`
+	Diagnostics   []string `json:"diagnostics,omitempty"`
 }
 
 func normalize(value any, key string) any {
@@ -113,7 +116,7 @@ func normalize(value any, key string) any {
 			}
 			return int(n)
 		}
-	case "key", "account", "id", "revision", "kind", "ref", "body", "append", "story", "text", "direction", "type", "related_to", "action", "root", "path", "source", "view", "archive", "relation_type", "target":
+	case "user", "key", "account", "id", "revision", "kind", "ref", "body", "append", "story", "text", "direction", "type", "related_to", "action", "root", "path", "source", "view", "archive", "relation_type", "target":
 		switch v := value.(type) {
 		case bool:
 			return strconv.FormatBool(v)
@@ -306,6 +309,7 @@ func (a *App) read(ctx context.Context, input pageInput) (any, error) {
 	}
 	var data []byte
 	var err error
+	user := ""
 	revision := ""
 	pending := false
 	unconfirmed := false
@@ -333,9 +337,16 @@ func (a *App) read(ctx context.Context, input pageInput) (any, error) {
 		pending = doc.Pending
 		unconfirmed = doc.Unconfirmed
 		diagnostics = doc.Diagnostics()
+		owned := kindFor(input.ID) == songya.Memories || kindFor(input.ID) == songya.Stories
+		if owned {
+			user = doc.Metadata().User
+		}
 		if input.View == "source" {
 			source := string(kindFor(input.ID)) + "/" + input.ID + ".md"
 			data, err = a.Store.ReadSource(source)
+			if err == nil && owned {
+				user = songya.Parse(data).Metadata().User
+			}
 			if err == nil && !pending && !unconfirmed {
 				revision = memoryRevision(data)
 			}
@@ -352,6 +363,11 @@ func (a *App) read(ctx context.Context, input pageInput) (any, error) {
 		revision = memoryRevision(data)
 	}
 	page := bytePage(data, input.Offset, input.Limit)
+	page.UserTruncated = len(user) > 160
+	if page.UserTruncated {
+		user = user[:160]
+	}
+	page.User = user
 	page.ID, page.Source, page.Revision, page.Pending, page.Unconfirmed = input.ID, input.Source, revision, pending, unconfirmed
 	for _, warning := range diagnostics {
 		if len(page.Diagnostics) == 4 {
@@ -391,23 +407,24 @@ func New(lifetime context.Context, store *songya.Store, roots map[string]string)
 			return next(ctx, method, request)
 		}
 	})
-	tool(server, "prepare_memory", "Search relevant memories, identities, topics and stories together. Returns a fresh key, revisions and explicit ambiguities for one save_memory call.", schema(map[string]any{"account": str("Original account; not rewritten by the server"), "limit": count()}, "account"), true, func(ctx context.Context, input struct {
+	tool(server, "prepare_memory", "Search relevant memories, identities, topics and stories together. Returns a fresh key, revisions and explicit ambiguities for one save_memory call.", schema(map[string]any{"account": str("Original account; not rewritten by the server"), "user": str("User filter; all or omitted selects everyone. Entities and topics are shared."), "limit": count()}, "account"), true, func(ctx context.Context, input struct {
 		Account string `json:"account"`
+		User    string `json:"user"`
 		Limit   int    `json:"limit"`
 	}) (any, error) {
-		return store.Prepare(ctx, input.Account, limit(input.Limit, 8, 8))
+		return store.Prepare(ctx, input.Account, input.User, limit(input.Limit, 8, 8))
 	})
 	edge := schema(map[string]any{"type": str("Open relationship name"), "target": str("Record ID or $local_ref")}, "type", "target")
 	change := schema(map[string]any{"ref": str("Local name for a new record"), "id": str("Existing record ID; omit to create"), "kind": str("memories, entities, topics or stories; default memories"), "revision": str("Revision from retrieval, required for updates"), "fields": object(), "body": str("Explicit replacement body; omit to preserve"), "append": str("Append detail without replacing existing narrative"), "add_relations": array(edge)})
 	story := schema(map[string]any{"story": str("Story ID or $local_ref"), "revision": str("Existing story revision"), "members": array(str("Record ID or $local_ref"))}, "story", "members")
-	tool(server, "save_memory", "Durably apply one related batch. Reuse the same key and arguments after interruption. Use refs/$refs for new identities and topics; append enriches existing memories safely.", schema(map[string]any{"key": str("Stable request key from preparation"), "account": str("Original account to preserve"), "changes": array(change), "stories": array(story)}, "key", "changes"), false, func(ctx context.Context, input songya.BatchRequest) (any, error) { return store.ApplyBatch(ctx, input) })
-	querySchema := schema(map[string]any{"text": str("Lexical search; omit to list"), "kind": str("Optional record directory"), "related_to": str("Optional outgoing target ID"), "relation_type": str("Optional relationship type"), "include_retired": map[string]any{"type": "boolean"}, "offset": count(), "limit": count()})
+	tool(server, "save_memory", "Durably apply one related batch. Reuse the same key and arguments after interruption. Use refs/$refs for new identities and topics; append enriches existing memories safely.", schema(map[string]any{"user": str("Default owner for new memories/stories; fields.user can specify a different user. all is only a query selector."), "key": str("Stable request key from preparation"), "account": str("Original account to preserve"), "changes": array(change), "stories": array(story)}, "key", "changes"), false, func(ctx context.Context, input songya.BatchRequest) (any, error) { return store.ApplyBatch(ctx, input) })
+	querySchema := schema(map[string]any{"user": str("User filter; all or omitted selects everyone. Entities and topics are shared."), "text": str("Lexical search; omit to list"), "kind": str("Optional record directory"), "related_to": str("Optional outgoing target ID"), "relation_type": str("Optional relationship type"), "include_retired": map[string]any{"type": "boolean"}, "offset": count(), "limit": count()})
 	tool(server, "search_memory", "Bounded lexical retrieval across names, aliases, descriptions, prose and episode time. Direct file edits are refreshed automatically.", querySchema, true, func(ctx context.Context, input songya.Query) (any, error) {
 		input.Limit = limit(input.Limit, 8, 8)
 		return store.Search(ctx, input)
 	})
 	tool(server, "read_memory", "Read a bounded body page by ID, raw store source, or configured import root. Body reads carry committed file revisions; pending and unconfirmed snapshots are marked. Source/archive pages identify their returned bytes. Use next when truncated.", schema(map[string]any{"id": str("Record ID"), "source": str("Relative source path"), "root": str("Configured import root name; omitted for the store"), "key": str("Retained batch key for proposed, before or account views"), "archive": str("Preserved import archive checksum"), "view": str("body (default) or source; with key use proposed, before or account"), "offset": count(), "limit": count()}), true, app.read)
-	tool(server, "explore_memory", "Outgoing links, derived backlinks and bounded traversal. Split redirects remain ambiguous instead of selecting one replacement.", schema(map[string]any{"id": str("Starting ID; omit for paged edges"), "direction": str("incoming, outgoing or both"), "type": str("Optional edge type"), "depth": count(), "offset": count(), "limit": count()}), true, func(ctx context.Context, input songya.GraphQuery) (any, error) {
+	tool(server, "explore_memory", "Outgoing links, derived backlinks and bounded traversal. Split redirects remain ambiguous instead of selecting one replacement.", schema(map[string]any{"user": str("User filter; all or omitted selects everyone. Entities and topics are shared."), "id": str("Starting ID; omit for paged edges"), "direction": str("incoming, outgoing or both"), "type": str("Optional edge type"), "depth": count(), "offset": count(), "limit": count()}), true, func(ctx context.Context, input songya.GraphQuery) (any, error) {
 		input.Limit = limit(input.Limit, 20, 10)
 		return store.Graph(ctx, input)
 	})
@@ -447,6 +464,7 @@ func New(lifetime context.Context, store *songya.Store, roots map[string]string)
 		Fields map[string]any     `json:"fields"`
 	}
 	type importInput struct {
+		User     string         `json:"user"`
 		Action   string         `json:"action"`
 		Root     string         `json:"root"`
 		Path     string         `json:"path"`
@@ -456,7 +474,7 @@ func New(lifetime context.Context, store *songya.Store, roots map[string]string)
 		Limit    int            `json:"limit"`
 	}
 	importPart := schema(map[string]any{"start": count(), "end": count(), "kind": str("Optional directory"), "fields": object()}, "start", "end")
-	tool(server, "import_memories", "Preview or apply imports from an explicitly configured root. Parts are exact reviewed byte ranges; omitting parts preserves a whole file. Originals, mappings and coverage are retained.", schema(map[string]any{"action": str("preview or apply"), "root": str("Configured root name"), "path": str("Relative source file"), "revision": str("Source revision from preview/read"), "parts": array(importPart), "offset": count(), "limit": count()}, "action", "root"), false, func(ctx context.Context, input importInput) (any, error) {
+	tool(server, "import_memories", "Preview or apply imports from an explicitly configured root. Parts are exact reviewed byte ranges; omitting parts preserves a whole file. Originals, mappings and coverage are retained.", schema(map[string]any{"user": str("Default owner for imported memories/stories; part fields.user can override it."), "action": str("preview or apply"), "root": str("Configured root name"), "path": str("Relative source file"), "revision": str("Source revision from preview/read"), "parts": array(importPart), "offset": count(), "limit": count()}, "action", "root"), false, func(ctx context.Context, input importInput) (any, error) {
 		root, ok := roots[input.Root]
 		if !ok {
 			return nil, fmt.Errorf("import root %q is not configured", input.Root)
@@ -472,7 +490,7 @@ func New(lifetime context.Context, store *songya.Store, roots map[string]string)
 				}
 				parts = append(parts, songya.ImportPart{Start: *part.Start, End: *part.End, Kind: part.Kind, Fields: part.Fields})
 			}
-			mapping, err := store.Import(ctx, root, songya.ImportRequest{Path: input.Path, Revision: input.Revision, Parts: parts})
+			mapping, err := store.Import(ctx, root, songya.ImportRequest{User: input.User, Path: input.Path, Revision: input.Revision, Parts: parts})
 			return importPage(mapping, input.Offset, limit(input.Limit, 20, 10)), err
 		default:
 			return nil, fmt.Errorf("choose preview or apply")
