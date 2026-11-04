@@ -13,6 +13,7 @@ limits. For executable Go examples, see [example_test.go](../example_test.go).
 - [Updates](#updates)
 - [Durable writes and recovery](#durable-writes-and-recovery)
 - [Discovery and search](#discovery-and-search)
+- [Connected recall](#connected-recall)
 - [Graph, episode time, and stories](#graph-episode-time-and-stories)
 - [Related changes and retry safety](#related-changes-and-retry-safety)
 - [Organization and import](#organization-and-import)
@@ -294,6 +295,19 @@ source paths, revisions, excerpts, and diagnostics. Engine list/search/graph pag
 default to 10 items and cap at 50; follow `next` while `truncated` is true.
 Pagination is over the current view. A direct edit between pages can change that
 view, so refresh rather than treating offsets as a permanent snapshot.
+
+## Connected recall
+
+`Store.Recall(ctx, RecallQuery{Text: "John", User: "ari"})` returns labelled
+canonical prose for a name, subject or record ID. Matching identities lead to
+their linked accounts; enclosing stories provide context. Subject queries fall
+back to lexical retrieval. Stories retain narrative order and references to
+repeated records. This creates no summaries or changes to stored records.
+
+`Offset` and `Next` are byte positions in the labelled narrative. `Limit` defaults
+to the 16 KiB maximum. Follow `Next` with the same query and user while
+`Truncated` is true. Concurrent record edits can change the narrative; start again
+to read the new version. Invalid UTF-8 pages retain their bytes in `Base64`.
 
 ## Graph, episode time, and stories
 

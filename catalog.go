@@ -20,7 +20,7 @@ import (
 	"time"
 )
 
-const indexFormat = 2
+const indexFormat = 3
 
 // Diagnostic identifies a recoverable problem without hiding healthy records.
 type Diagnostic struct {
@@ -49,6 +49,7 @@ type Record struct {
 	Redirects   []string    `json:"redirects,omitempty"`
 	Time        EpisodeTime `json:"time"`
 	Body        string      `json:"body"`
+	Context     string      `json:"context,omitempty"`
 	Diagnostics []string    `json:"diagnostics,omitempty"`
 }
 type Catalog struct {
@@ -93,6 +94,7 @@ func recordFromDocument(source string, d *Document, kind Destination) Record {
 	if r.Title == "" {
 		r.Title = strings.Join(nodeStrings("name", d), " ")
 	}
+	r.Context = recallContext(d)
 	r.Aliases = nodeStrings("aliases", d)
 	r.Description = strings.Join(nodeStrings("description", d), " ")
 	r.Redirects = nodeStrings("redirects", d)
@@ -347,7 +349,7 @@ func boundedDiagnostics(diagnostics []Diagnostic) []Diagnostic {
 	return diagnostics
 }
 
-func searchCatalog(c Catalog, q Query) SearchResult {
+func rankMatches(c Catalog, q Query) []Match {
 	c = userCatalog(c, q.User)
 	matches := []Match{}
 	normalizedText := " " + strings.Join(words(q.Text), " ") + " "
@@ -431,6 +433,11 @@ func searchCatalog(c Catalog, q Query) SearchResult {
 		}
 		return matches[i].Source < matches[j].Source
 	})
+	return matches
+}
+
+func searchCatalog(c Catalog, q Query) SearchResult {
+	matches := rankMatches(c, q)
 	start, end := pageRange(q.Offset, q.Limit, len(matches))
 	result := SearchResult{Matches: append([]Match{}, matches[start:end]...), Truncated: end < len(matches), Diagnostics: boundedDiagnostics(c.Diagnostics)}
 	if result.Truncated {

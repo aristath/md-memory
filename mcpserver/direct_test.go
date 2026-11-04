@@ -40,7 +40,7 @@ func TestDirectGuideCapture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(listed.Tools) != 13 {
+	if len(listed.Tools) != 14 {
 		t.Fatal("missing dedicated tools", len(listed.Tools))
 	}
 	for _, tool := range listed.Tools {

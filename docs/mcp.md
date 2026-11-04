@@ -100,6 +100,25 @@ record's `id`, `operation_id`, saved prose/time/relations, connected entities an
 topics, and diagnostics. `status:"committed"` confirms publication. Long returned
 prose sets `text_truncated`; read the record for its full contents.
 
+Start with `recall_memory` for a person, place or subject. It resolves names and
+aliases and returns connected accounts with record IDs, event times and semantic
+metadata such as emotions and uncertainty. Enclosing stories supply surrounding
+context; several stories may contribute. Prose is
+preserved, with repeated records referenced by ID. Story order is narrative order.
+
+```json
+{"name":"recall_memory","arguments":{"text":"Sam Lee","user":"ari"}}
+{"name":"recall_memory","arguments":{"text":"Sam Lee","user":"ari","offset":16384}}
+```
+
+Follow the returned `next` as `offset`, keeping `text` and `user` unchanged. Recall
+returns up to 16 KiB of narrative by default (also the maximum); JSON escaping can
+shorten a page. Offsets count bytes in the labelled narrative. Concurrent edits
+can change that narrative; restart from offset zero to read its current version.
+Missing or damaged records produce diagnostics while readable accounts continue.
+
+For focused inspection:
+
 ```json
 {"name":"prepare_memory","arguments":{"text":"Sam Lee","user":"ari"}}
 {"name":"search_memory","arguments":{"text":"Sam","kind":"entities"}}
@@ -112,9 +131,10 @@ prose sets `text_truncated`; read the record for its full contents.
 
 Preparation is optional: it finds candidates, ambiguities and possible duplicate
 names. Its `query` identifies what was searched. Search without text lists records.
-Ordinary reads return metadata and Markdown; `view:"body"` selects prose only.
-Graph directions are `incoming`, `outgoing` or `both`. Timelines use stated event
-bounds and `before`/`after` connections; uncertain order stays uncertain.
+Ordinary reads return prose; `view:"source"` selects original metadata and Markdown.
+Reads and story composition default to 8 KiB, up to 12 KiB per page.
+Graph directions are `incoming`, `outgoing` or `both`; edges include record titles.
+Timelines use stated event bounds and `before`/`after` connections; uncertain order stays uncertain.
 
 ## Organization and imports
 
@@ -155,6 +175,6 @@ uncommitted operation while retaining its proposed data. `read_memory` with `key
 `id` and `view:"proposed"`, `"before"` or `"original_text"` inspects retained data.
 These are recovery operations; ordinary saves handle their bookkeeping internally.
 
-Follow `next` when `truncated` is true. Text/source/story offsets count bytes;
+Follow `next` when `truncated` is true. Recall/text/source/story offsets count bytes;
 search, graph and timeline offsets count items. Numeric strings are accepted.
 `memory://records/{id}/{offset}` provides source pages; binary pages use `base64`.

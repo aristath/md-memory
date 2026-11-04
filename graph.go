@@ -7,6 +7,8 @@ import (
 
 type Edge struct {
 	Source           string `json:"source"`
+	SourceTitle      string `json:"source_title,omitempty"`
+	TargetTitle      string `json:"target_title,omitempty"`
 	Type             string `json:"type"`
 	Target           string `json:"target"`
 	Resolved         bool   `json:"resolved"`
@@ -199,9 +201,11 @@ func graphFromCatalog(c Catalog, q GraphQuery) GraphResult {
 		if !edge.Resolved {
 			diagnostics = append(diagnostics, Diagnostic{edge.Source, "unresolved relationship target retained; inspect the source record"})
 		}
+		result.Edges[i].SourceTitle = clip(visible[edge.Source].Title, 128)
+		result.Edges[i].TargetTitle = clip(visible[edge.Target].Title, 128)
 		result.Edges[i].Type = clip(edge.Type, 128)
 		result.Edges[i].Target = clip(edge.Target, 256)
-		result.Edges[i].DetailsTruncated = result.Edges[i].Type != edge.Type || result.Edges[i].Target != edge.Target
+		result.Edges[i].DetailsTruncated = result.Edges[i].Type != edge.Type || result.Edges[i].Target != edge.Target || len(visible[edge.Source].Title) > 128 || len(visible[edge.Target].Title) > 128
 	}
 	result.Diagnostics = boundedDiagnostics(diagnostics)
 	if result.Truncated {

@@ -50,7 +50,11 @@ The server creates missing store directories. Your client launches it over stdio
 it needs no network port, authentication service, or inference model. Running the
 executable directly waits for MCP protocol messages on stdin.
 
-After connecting, ask your client to prepare and save a memory, for example:
+After connecting, use `recall_memory({"text":"John"})` to retrieve connected
+accounts by name or subject. It includes surrounding story context and record
+references. Follow `next` as `offset` to continue larger accounts.
+
+Ask your client to save a memory, for example:
 
 > Remember that I had coffee with John today. Check existing records first and
 > preserve any uncertainty about which John I mean.

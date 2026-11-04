@@ -36,7 +36,9 @@ save_entity edits identity and a brief description; save_topic edits a subject; 
 
 Memories and stories require an owning user; integrations can supply the current user automatically. Entities and topics are shared. user filters queries; all selects everyone.
 
-search_memory(text,kind) searches; omit text to list. read_memory(id) returns prose and metadata. search_memory(kind=memories,related_to=ENTITY_ID) finds an entity’s memories. explore_memory(id) follows connections. Follow next when results are truncated.`
+recall_memory(text) returns connected accounts for a name, subject or record ID, including story context. Pass next as offset with the same text and user to continue. Stories preserve narrative order.
+
+search_memory(text,kind) finds record excerpts; omit text to list. read_memory(id) returns prose; view=source returns the original metadata and Markdown. search_memory(kind=memories,related_to=ENTITY_ID) finds an entity’s memories. explore_memory(id) follows connections. Follow next when results are truncated.`
 
 // App keeps import access separate from record-store access. Import roots are
 // supplied by the process owner, never accepted as arbitrary client paths.
@@ -242,6 +244,40 @@ func result(value any, err error) *mcp.CallToolResult {
 	_ = json.Unmarshal(payload, &bounded)
 	trimDiagnostics(bounded)
 	payload, _ = json.Marshal(bounded)
+	// Page by the encoded wire budget too: control characters may expand sixfold.
+	// Keep both prose and its continuation instead of replacing a readable page.
+	for len(payload) > 28*1024 {
+		data, ok := bounded["data"].(map[string]any)
+		if !ok {
+			break
+		}
+		offset, ok := data["offset"].(float64)
+		if !ok {
+			break
+		}
+		text, _ := data["text"].(string)
+		raw := []byte(text)
+		if encoded, ok := data["base64"].(string); ok {
+			raw, _ = base64.StdEncoding.DecodeString(encoded)
+		}
+		if len(raw) < 2 {
+			break
+		}
+		part := bytePage(raw, 0, len(raw)/2)
+		if !part.Truncated {
+			break
+		}
+		delete(data, "text")
+		delete(data, "base64")
+		if part.Base64 != "" {
+			data["base64"] = part.Base64
+		} else {
+			data["text"] = part.Text
+		}
+		data["next"] = offset + float64(part.Next)
+		data["truncated"] = true
+		payload, _ = json.Marshal(bounded)
+	}
 	if len(payload) > 28*1024 {
 		bounded = map[string]any{"status": envelope["status"], "data": map[string]any{"truncated": true, "message": "Result exceeds the response budget. Use a smaller limit or read the receipt with view=source. The durable outcome is unchanged."}}
 		if receipt, ok := value.(map[string]any); ok {
@@ -294,7 +330,7 @@ func bytePage(data []byte, offset, size int) recordPage {
 	if offset > len(data) {
 		offset = len(data)
 	}
-	size = limit(size, 4096, 2048)
+	size = limit(size, 12288, 8192)
 	if utf8.Valid(data) {
 		for offset > 0 && offset < len(data) && !utf8.RuneStart(data[offset]) {
 			offset--
@@ -375,7 +411,7 @@ func (a *App) read(ctx context.Context, input pageInput) (any, error) {
 		if owned {
 			user = doc.Metadata().User
 		}
-		if input.View == "source" || input.View == "" {
+		if input.View == "source" {
 			source := string(kindFor(input.ID)) + "/" + input.ID + ".md"
 			data, err = a.Store.ReadSource(source)
 			if err == nil && owned {
@@ -470,11 +506,16 @@ func New(lifetime context.Context, store *songya.Store, roots map[string]string)
 		return savedWrite(ctx, store, receipt, "story", err)
 	})
 	querySchema := schema(map[string]any{"user": str("User filter; all or omitted selects everyone. Entities and topics are shared."), "text": str("Lexical search; omit to list"), "kind": str("Record directory: memories, entities, topics or stories. Use entities for entity lookup."), "related_to": str("Optional outgoing target ID"), "relation_type": str("Optional relationship type"), "include_retired": map[string]any{"type": "boolean"}, "offset": count(), "limit": count()})
+	tool(server, "recall_memory", "Recall a person, place or subject by name or record ID. Returns connected prose with record IDs, event times and story context. Follow next as offset with the same text and user when truncated.", schema(map[string]any{"text": str("Name, subject or record ID to recall"), "user": str("User filter; all or omitted selects everyone"), "offset": count(), "limit": count()}, "text"), true, func(ctx context.Context, input songya.RecallQuery) (any, error) {
+		page, err := store.Recall(ctx, input)
+
+		return page, err
+	})
 	tool(server, "search_memory", "Bounded lexical retrieval across names, aliases, descriptions, prose and episode time. Find entities with kind=entities and a name or alias in text; omit text to list them. Direct file edits are refreshed automatically.", querySchema, true, func(ctx context.Context, input songya.Query) (any, error) {
 		input.Limit = limit(input.Limit, 8, 8)
 		return store.Search(ctx, input)
 	})
-	tool(server, "read_memory", "Read a record's metadata and Markdown by ID. Use view=body for prose only. Follow next when truncated.", schema(map[string]any{"id": str("Record ID"), "source": str("Relative source path"), "root": str("Configured import root name; omitted for the store"), "key": str("Saved request key for proposed, before or original_text views"), "archive": str("Preserved import archive checksum"), "view": str("source (default) or body; with key use proposed, before or original_text"), "offset": count(), "limit": count()}), true, app.read)
+	tool(server, "read_memory", "Read a record’s prose by ID. Use view=source for original metadata and Markdown. Follow next when truncated.", schema(map[string]any{"id": str("Record ID"), "source": str("Relative source path"), "root": str("Configured import root name; omitted for the store"), "key": str("Saved request key for proposed, before or original_text views"), "archive": str("Preserved import archive checksum"), "view": str("body (default) or source; with key use proposed, before or original_text"), "offset": count(), "limit": count()}), true, app.read)
 	tool(server, "explore_memory", "Outgoing links, derived backlinks and bounded traversal. Split redirects remain ambiguous instead of selecting one replacement.", schema(map[string]any{"user": str("User filter; all or omitted selects everyone. Entities and topics are shared."), "id": str("Starting ID; omit for paged edges"), "direction": str("incoming, outgoing or both"), "type": str("Optional edge type"), "depth": count(), "offset": count(), "limit": count()}), true, func(ctx context.Context, input songya.GraphQuery) (any, error) {
 		input.Limit = limit(input.Limit, 20, 10)
 		return store.Graph(ctx, input)
@@ -484,7 +525,7 @@ func New(lifetime context.Context, store *songya.Store, roots map[string]string)
 		return store.Timeline(ctx, input)
 	})
 	tool(server, "compose_story", "Expand canonical [[record_id]] references in narrative order, in bounded byte pages. Missing, recursive and split references remain explicit.", schema(map[string]any{"id": str("Story ID"), "offset": count(), "limit": count()}, "id"), true, func(ctx context.Context, input pageInput) (any, error) {
-		return store.Compose(ctx, input.ID, input.Offset, limit(input.Limit, 4096, 2048))
+		return store.Compose(ctx, input.ID, input.Offset, limit(input.Limit, 12288, 8192))
 	})
 	type organization struct {
 		Action   string             `json:"action"`
