@@ -66,7 +66,7 @@ func TestDirectGuideCapture(t *testing.T) {
 		t.Fatal(saved)
 	}
 	entities := saved["entities"].([]any)
-	if len(entities) != 2 {
+	if len(entities) != 3 {
 		t.Fatal("capture lost entities", saved)
 	}
 	id := saved["id"].(string)
@@ -75,7 +75,7 @@ func TestDirectGuideCapture(t *testing.T) {
 		t.Fatal(err)
 	}
 	doc := songya.Parse(data)
-	if doc.Body != args["text"] || doc.Metadata().User != "ari" || len(doc.Metadata().Relations) != 2 || !strings.Contains(string(data), "2025-07-31") {
+	if doc.Body != args["text"] || doc.Metadata().User != "ari" || len(doc.Metadata().Relations) != 3 {
 		t.Fatal("capture lost content", string(data))
 	}
 	for _, v := range entities {
@@ -84,14 +84,14 @@ func TestDirectGuideCapture(t *testing.T) {
 			t.Fatal("entity is not connected", entity)
 		}
 	}
-	for _, text := range []string{"John Pavlou", "Pizza AMI"} {
+	for _, text := range []string{"Alex Morgan", "Sam Lee", "Cedar Café"} {
 		found, r := invoke(t, ctx, session, "search_memory", map[string]any{"text": text, "user": "ari"})
 		if r.IsError || len(payload(t, found)["matches"].([]any)) != 2 {
 			t.Fatal("saved knowledge cannot be found", found)
 		}
 	}
-	prepared, r := invoke(t, ctx, session, "prepare_memory", map[string]any{"text": "John Pavlou", "user": "ari"})
-	if r.IsError || payload(t, prepared)["query"] != "John Pavlou" || payload(t, prepared)["key"] != nil {
+	prepared, r := invoke(t, ctx, session, "prepare_memory", map[string]any{"text": "Alex Morgan", "user": "ari"})
+	if r.IsError || payload(t, prepared)["query"] != "Alex Morgan" || payload(t, prepared)["key"] != nil {
 		t.Fatal(prepared)
 	}
 }
@@ -194,5 +194,65 @@ func TestIncompleteIdentityDoesNotDiscardCapture(t *testing.T) {
 	data, _ := os.ReadFile(filepath.Join(path, "memories", saved["id"].(string)+".md"))
 	if !strings.Contains(string(data), "unresolved_connections") || !strings.Contains(string(data), "John") || songya.Parse(data).Body != "Dinner with John at Pizza AMI" {
 		t.Fatal(string(data))
+	}
+}
+
+func TestMCPRelationsCanBeCorrectedByName(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	session := connect(t, ctx, binary(t), t.TempDir(), "")
+	first := keyed(t, ctx, session, "save_entity", "venue", map[string]any{"name": "Cedar Café", "relations": []any{map[string]any{"type": "liked_by", "target": "e_sam"}}})
+	corrected := keyed(t, ctx, session, "save_entity", "repair", map[string]any{"id": first["id"], "relations": []any{map[string]any{"type": "liked_by", "target": "Sam Lee"}}})
+	relations := corrected["relations"].([]any)
+	if len(relations) != 1 || !songya.ValidID(relations[0].(map[string]any)["target"].(string)) || len(corrected["diagnostics"].([]any)) != 0 {
+		t.Fatal(corrected)
+	}
+	preserved := keyed(t, ctx, session, "save_entity", "append", map[string]any{"id": first["id"], "append": "A café."})
+	if len(preserved["relations"].([]any)) != 1 {
+		t.Fatal(preserved)
+	}
+	cleared := keyed(t, ctx, session, "save_entity", "clear", map[string]any{"id": first["id"], "relations": []any{}})
+	if v, ok := cleared["relations"].([]any); ok && len(v) != 0 {
+		t.Fatal(cleared)
+	}
+	people, r := invoke(t, ctx, session, "search_memory", map[string]any{"kind": "entities", "text": "Sam Lee"})
+	if r.IsError || len(payload(t, people)["matches"].([]any)) != 1 {
+		t.Fatal(people)
+	}
+}
+
+func TestLongSharedMemoryIsEnrichedWithoutGrowingItsEntities(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	path := t.TempDir()
+	session := connect(t, ctx, binary(t), path, "")
+	text := "Ari and Daphne enjoy Pizza AMI's soup.\n" + strings.Repeat("Their shared history is recorded here.\n", 2000)
+	saved := keyed(t, ctx, session, "save_memory", "history", map[string]any{"user": "ari", "text": text, "entities": []any{map[string]any{"name": "Ari", "type": "person", "relation": "about"}, map[string]any{"name": "Daphne", "type": "person", "relation": "about"}, map[string]any{"name": "Pizza AMI", "type": "place", "relation": "at"}}})
+	if saved["text_truncated"] != true || len(saved["entities"].([]any)) != 3 {
+		t.Fatal(saved)
+	}
+	updated := keyed(t, ctx, session, "save_memory", "enrich-history", map[string]any{"id": saved["id"], "append": "They also enjoy the salad."})
+	if updated["id"] != saved["id"] || len(updated["entities"].([]any)) != 3 {
+		t.Fatal(updated)
+	}
+	data, err := os.ReadFile(filepath.Join(path, "memories", saved["id"].(string)+".md"))
+	if err != nil || songya.Parse(data).Body != text+"\n\nThey also enjoy the salad." {
+		t.Fatal("long memory lost prose", err)
+	}
+	for _, item := range saved["entities"].([]any) {
+		entity := item.(map[string]any)
+		id := entity["id"].(string)
+		data, err := os.ReadFile(filepath.Join(path, "entities", id+".md"))
+		if err != nil || songya.Parse(data).Body != "" {
+			t.Fatal("history leaked into identity", id, err)
+		}
+		graph, r := invoke(t, ctx, session, "explore_memory", map[string]any{"id": id, "direction": "incoming"})
+		if r.IsError || len(payload(t, graph)["edges"].([]any)) != 1 {
+			t.Fatal("memory missing from participant", graph)
+		}
+		found, r := invoke(t, ctx, session, "search_memory", map[string]any{"kind": "memories", "related_to": id, "user": "ari"})
+		if r.IsError || len(payload(t, found)["matches"].([]any)) != 1 || payload(t, found)["matches"].([]any)[0].(map[string]any)["id"] != saved["id"] {
+			t.Fatal("history cannot be queried through its entity", found)
+		}
 	}
 }

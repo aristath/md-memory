@@ -94,15 +94,21 @@ func clipText(text string, n int) string {
 
 func memorySchema() map[string]any {
 	return schema(map[string]any{
-		"id": str("Existing memory ID to update; omit for a new memory"), "user": str("Owner of a new memory"), "title": str("Optional title"), "text": str("The memory in the user's own words; replaces prose when supplied"), "append": str("Add detail to an existing memory"),
+		"id": str("Existing memory ID to update; omit for a new memory"), "user": str("Owner of a new memory"), "title": str("Optional title"), "text": str("The memory in the user's own words; replaces prose when supplied"), "append": str("Enrich this memory with more detail; existing prose and links stay intact"),
 		"time":     map[string]any{"description": "When the event happened: ordinary words or known date bounds", "anyOf": []any{str("Approximate time in ordinary words"), schema(map[string]any{"description": str("When it happened"), "earliest": str("Earliest known date"), "latest": str("Latest known date")})}},
-		"entities": array(namedSchema(true)), "topics": array(namedSchema(false)), "metadata": object(), "relations": array(schema(map[string]any{"type": str("Relationship"), "target": str("Existing record ID")}, "type", "target")),
+		"entities": array(namedSchema(true)), "topics": array(namedSchema(false)), "metadata": object(), "relations": relationsSchema(),
 	})
 }
 func namedSchema(entity bool) map[string]any {
-	fields := map[string]any{"id": str("Existing ID; omit to reuse a unique matching name or create a record"), "name": str("Name, e.g. John Pavlou or Pizza AMI"), "aliases": array(str("Other known name")), "description": str("Known facts about this person, place or subject"), "append": str("Add facts to an existing description"), "relation": str("How this relates to the memory, e.g. with or at"), "metadata": object(), "relations": array(schema(map[string]any{"type": str("Relationship"), "target": str("Existing record ID")}, "type", "target"))}
+	fields := map[string]any{"id": str("Existing ID; omit to reuse a unique matching name or create a record"), "name": str("Name, e.g. Alex Morgan or Cedar Café"), "aliases": array(str("Other known name")), "description": str("Brief identifying description; experiences, preferences and history belong in linked memories"), "append": str("Add a brief identifying detail"), "relation": str("This entity’s role in the memory: e.g. with, at, about"), "metadata": object(), "relations": relationsSchema()}
 	if entity {
 		fields["type"] = str("Free-form type, e.g. person, place or organization")
 	}
 	return schema(fields)
+}
+
+func relationsSchema() map[string]any {
+	value := array(schema(map[string]any{"type": str("This record's relationship to the target"), "target": str("Existing record ID or entity name; names are created or reused automatically")}, "type", "target"))
+	value["description"] = "Supplied list replaces explicit relations; omit to preserve, [] to clear"
+	return value
 }

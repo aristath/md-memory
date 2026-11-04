@@ -353,8 +353,11 @@ These display limits never change authoritative content or relationship semantic
 unique exact names/aliases and creates missing identities under the same store
 lock as the durable related write. Explicit IDs select known records. Ambiguous
 or unavailable connections remain in `unresolved_connections`; the memory and
-healthy connections still save. Entity descriptions gain supplied facts without
-replacing earlier knowledge.
+healthy connections still save. Entity descriptions briefly identify their
+subjects. Experiences, preferences and growing histories belong in memories linked
+to every relevant entity. Use an existing memory ID and `Append` to enrich its
+prose while preserving its connections; full prose is retained independently of
+bounded MCP previews.
 
 `SaveNamed(ctx, Entities|Topics, NamedInput)` creates or updates a named record.
 `SaveStory(ctx, StoryInput)` creates or updates a story with ordered members.
@@ -362,6 +365,12 @@ Supplied members replace membership; omission preserves it. Supplied text replac
 prose; `Append` adds detail. `Metadata` is open data. A supplied internal `Key`
 binds a retry to the same intent; omitting it starts an independent operation.
 These methods use the same batch journals and recovery as the lower-level API.
+Their `Relations` field replaces explicit links when supplied; nil preserves them
+and an empty slice clears them. Targets accept canonical IDs or entity names;
+unique names are reused and missing entities are created under the write lock.
+Unresolved targets remain intact with diagnostics. Capture `Entities` and `Topics`
+add participant links to the memory. Lower-level `Change.AddRelations` remains
+explicitly additive.
 
 ## Related changes and retry safety
 

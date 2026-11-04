@@ -76,7 +76,10 @@ func (s *Store) SaveMemory(ctx context.Context, input MemoryInput) (Receipt, err
 		request.Account = *input.Text
 	}
 	request.prepare = func(root *os.Root) ([]Change, []StoryAddition, error) {
-		memory := Change{Ref: "memory", ID: input.ID, Kind: Memories, Fields: fields, Body: input.Text, Append: input.Append, AddRelations: append([]Relation{}, input.Relations...)}
+		memory := Change{Ref: "memory", ID: input.ID, Kind: Memories, Fields: fields, Body: input.Text, Append: input.Append}
+		if input.Relations != nil {
+			memory.Fields["relations"] = input.Relations
+		}
 		changes := []Change{}
 		unresolved := []any{}
 		for _, group := range []struct {
@@ -115,7 +118,9 @@ func (s *Store) SaveMemory(ctx context.Context, input MemoryInput) (Receipt, err
 			}
 			memory.Fields["unresolved_connections"] = node
 		}
-		return append([]Change{memory}, changes...), nil, nil
+		changes = append([]Change{memory}, changes...)
+		err := resolveConnections(ctx, root, &changes)
+		return changes, nil, err
 	}
 	return s.ApplyBatch(ctx, request)
 }
@@ -206,7 +211,10 @@ func namedChange(kind Destination, input NamedInput) Change {
 	if input.Aliases != nil {
 		fields["aliases"] = input.Aliases
 	}
-	return Change{ID: input.ID, Kind: kind, Fields: fields, Body: input.Description, Append: input.Append, AddRelations: input.Relations}
+	if input.Relations != nil {
+		fields["relations"] = input.Relations
+	}
+	return Change{ID: input.ID, Kind: kind, Fields: fields, Body: input.Description, Append: input.Append}
 }
 func relatedRecord(ctx context.Context, root *os.Root, kind Destination, input NamedInput, changes *[]Change) (string, error) {
 	// Repeated participants in one capture share one record.
@@ -284,7 +292,9 @@ func (s *Store) SaveNamed(ctx context.Context, kind Destination, input NamedInpu
 				change.Fields["name"] = doc.Record(kind).Title
 			}
 		}
-		return []Change{change}, nil, nil
+		changes := []Change{change}
+		err = resolveConnections(ctx, root, &changes)
+		return changes, nil, err
 	}
 	return s.ApplyBatch(ctx, request)
 }
@@ -299,7 +309,10 @@ func (s *Store) SaveStory(ctx context.Context, input StoryInput) (Receipt, error
 	intent := map[string]any{"metadata": fields, "members": input.Members}
 	request := BatchRequest{Key: writeKey(input.Key), User: input.User, Changes: []Change{{ID: input.ID, Kind: Stories, Fields: intent, Body: input.Text, Append: input.Append, AddRelations: input.Relations}}}
 	request.prepare = func(root *os.Root) ([]Change, []StoryAddition, error) {
-		change := Change{Ref: "story", ID: input.ID, Kind: Stories, Fields: fields, Body: input.Text, Append: input.Append, AddRelations: input.Relations}
+		change := Change{Ref: "story", ID: input.ID, Kind: Stories, Fields: fields, Body: input.Text, Append: input.Append}
+		if input.Relations != nil {
+			change.Fields["relations"] = input.Relations
+		}
 		members := input.Members
 		body := ""
 		if input.ID != "" {
@@ -329,7 +342,9 @@ func (s *Store) SaveStory(ctx context.Context, input StoryInput) (Receipt, error
 		if target == "" {
 			target = "$story"
 		}
-		return []Change{change}, []StoryAddition{{Story: target, Members: members}}, nil
+		changes := []Change{change}
+		err := resolveConnections(ctx, root, &changes)
+		return changes, []StoryAddition{{Story: target, Members: members}}, err
 	}
 	return s.ApplyBatch(ctx, request)
 }
@@ -383,7 +398,9 @@ func mergeParticipant(root *os.Root, change *Change, input NamedInput) {
 	if input.Type != "" {
 		change.Fields["type"] = input.Type
 	}
-	change.AddRelations = append(change.AddRelations, input.Relations...)
+	if input.Relations != nil {
+		change.Fields["relations"] = input.Relations
+	}
 	if input.Aliases != nil {
 		node, _ := encodeValue(change.Fields["aliases"])
 		change.Fields["aliases"] = appendAliases(node, input.Aliases)
@@ -391,7 +408,7 @@ func mergeParticipant(root *os.Root, change *Change, input NamedInput) {
 }
 
 func needsEnrichment(doc *Document, input NamedInput) bool {
-	if len(input.Metadata) > 0 || len(input.Relations) > 0 {
+	if len(input.Metadata) > 0 || input.Relations != nil {
 		return true
 	}
 	if input.Type != "" && !sameName(input.Type, strings.Join(stringsFromNode(metadataField(&doc.Frontmatter, "type")), "")) {
@@ -423,4 +440,32 @@ func needsEnrichment(doc *Document, input NamedInput) bool {
 		}
 	}
 	return false
+}
+
+// Relations supplied by a caller replace the list. Names are resolved under the
+// same lock as the main record; ambiguous targets remain visible and repairable.
+func resolveConnections(ctx context.Context, root *os.Root, changes *[]Change) error {
+	for i := 0; i < len(*changes); i++ {
+		relations, supplied := (*changes)[i].Fields["relations"].([]Relation)
+		if !supplied {
+			continue
+		}
+		relations = append([]Relation{}, relations...)
+		for j := range relations {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			target := relations[j].Target
+			if ValidID(target) || kindOf(target) != "" || strings.TrimSpace(target) == "" {
+				continue
+			}
+			if id, err := relatedRecord(ctx, root, Entities, NamedInput{Name: target}, changes); err == nil {
+				relations[j].Target = id
+			}
+			// Keep an unresolved name intact. Canonical diagnostics report the link,
+			// and supplying a corrected relations list can replace it normally.
+		}
+		(*changes)[i].Fields["relations"] = relations
+	}
+	return nil
 }

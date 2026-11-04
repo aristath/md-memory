@@ -190,3 +190,128 @@ func TestCaptureReusesIdentityWithoutRewritingAndKeepsCanonicalName(t *testing.T
 		t.Fatal("new known alias lost", doc)
 	}
 }
+
+func TestRelationsReplacePreserveClearAndResolveNames(t *testing.T) {
+	for _, kind := range []Destination{Memories, Entities, Topics, Stories} {
+		t.Run(string(kind), func(t *testing.T) {
+			store, err := Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			save := func(key, id string, relations []Relation) Receipt {
+				t.Helper()
+				var r Receipt
+				var err error
+				switch kind {
+				case Memories:
+					r, err = store.SaveMemory(context.Background(), MemoryInput{Key: key, ID: id, User: "ari", Text: textValue("A memory"), Relations: relations})
+				case Stories:
+					r, err = store.SaveStory(context.Background(), StoryInput{Key: key, ID: id, User: "ari", Text: textValue("A story"), Relations: relations})
+				default:
+					r, err = store.SaveNamed(context.Background(), kind, NamedInput{Key: key, ID: id, Name: "Cedar Café", Relations: relations})
+				}
+				if err != nil {
+					t.Fatal(r, err)
+				}
+				return r
+			}
+			r := save("create", "", []Relation{{Type: "liked_by", Target: "e_daphne"}})
+			id := r.Records[0].ID
+			input := []Relation{{Type: "liked_by", Target: "Sam Lee"}}
+			repaired := save("repair", id, input)
+			if input[0].Target != "Sam Lee" {
+				t.Fatal("caller input mutated", input)
+			}
+			if len(repaired.Diagnostics) > 0 {
+				t.Fatal(repaired.Diagnostics)
+			}
+			doc, _ := store.Read(id)
+			relations := doc.Metadata().Relations
+			if len(relations) != 1 || !ValidID(relations[0].Target) {
+				t.Fatal("wrong link not replaced", relations)
+			}
+			target := relations[0].Target
+			// The accepted request replays after reopening, without resolving a new identity.
+			store, err = Open(store.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			save("repair", id, input)
+			save("preserve", id, nil)
+			doc, _ = store.Read(id)
+			if len(doc.Metadata().Relations) != 1 || doc.Metadata().Relations[0].Target != target {
+				t.Fatal("omission lost links", doc)
+			}
+			save("clear", id, []Relation{})
+			doc, _ = store.Read(id)
+			if len(doc.Metadata().Relations) != 0 {
+				t.Fatal("empty list did not clear links", doc)
+			}
+		})
+	}
+}
+
+func TestLongMemoryEnrichmentKeepsHistoryOutOfEntities(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := strings.Repeat("Alex and Sam remember their school days together.\n", 3000)
+	created, err := store.SaveMemory(context.Background(), MemoryInput{Key: "long", User: "ari", Text: &body, Time: map[string]any{"earliest": "1995-01-01", "latest": "1998-12-31"}, Entities: []NamedInput{{Name: "Alex Morgan", Type: "person", Description: textValue("A person."), Relation: "about"}, {Name: "Sam Lee", Type: "person", Description: textValue("A school friend."), Relation: "about"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := created.Refs["memory"]
+	doc, _ := store.Read(id)
+	entities := doc.Metadata().Relations
+	before, _ := store.Read(entities[1].Target)
+	original, _ := before.Marshal()
+	if _, err := store.SaveMemory(context.Background(), MemoryInput{Key: "enrich", ID: id, Append: "They later met at Cedar Café.", Entities: []NamedInput{{Name: "Cedar Café", Type: "place", Relation: "at"}}}); err != nil {
+		t.Fatal(err)
+	}
+	doc, _ = store.Read(id)
+	if doc.Body != body+"\n\nThey later met at Cedar Café." || doc.Metadata().User != "ari" || len(doc.Metadata().Relations) != 3 {
+		t.Fatal("long memory or its participants changed", len(doc.Body), doc.Metadata())
+	}
+	after, _ := store.Read(entities[1].Target)
+	unchanged, _ := after.Marshal()
+	if string(original) != string(unchanged) {
+		t.Fatal("enriching the memory rewrote the identity")
+	}
+	graph, err := store.Graph(context.Background(), GraphQuery{ID: entities[1].Target, Direction: "incoming"})
+	if err != nil || len(graph.Edges) != 1 || graph.Edges[0].Source != id {
+		t.Fatal("history not reachable from entity", graph, err)
+	}
+	timeline, err := store.Timeline(context.Background(), Query{Kind: Memories, User: "ari"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(timeline.Records) != 1 || timeline.Records[0].ID != id {
+		t.Fatal("school history missing from timeline", timeline)
+	}
+	if doc.Record(Memories).Time.Earliest != "1995-01-01" || doc.Record(Memories).Time.Latest != "1998-12-31" {
+		t.Fatal("time span lost")
+	}
+}
+
+func TestAmbiguousNamedRelationSurvivesAndCanBeCorrected(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, _ := store.Create(Entities, map[string]any{"name": "Sam Lee"}, "One person")
+	store.Create(Entities, map[string]any{"name": "Sam Lee"}, "Another person")
+	r, err := store.SaveMemory(context.Background(), MemoryInput{Key: "ambiguous-target", User: "ari", Text: textValue("A shared preference"), Relations: []Relation{{Type: "about", Target: "Sam Lee"}}})
+	if err != nil || r.Status != "committed" || len(r.Diagnostics) == 0 {
+		t.Fatal("ambiguous connection blocked the memory or vanished", r, err)
+	}
+	id := r.Refs["memory"]
+	doc, _ := store.Read(id)
+	if len(doc.Metadata().Relations) != 1 || doc.Metadata().Relations[0].Target != "Sam Lee" {
+		t.Fatal("unresolved intent lost", doc)
+	}
+	r, err = store.SaveMemory(context.Background(), MemoryInput{Key: "correct-target", ID: id, Relations: []Relation{{Type: "about", Target: first.ID}}})
+	if err != nil || len(r.Diagnostics) > 0 {
+		t.Fatal("corrected relation still diagnosed as broken", r, err)
+	}
+}

@@ -7,38 +7,44 @@ compact agent instructions. Tool discovery describes each argument.
 
 ## Save a memory
 
-Describe the memory, its time, and its participants directly:
+Memories hold experiences, facts, preferences and history. Each memory links to
+all relevant entities, including the people whose experiences or preferences it
+describes. A memory can grow over time and connect to several people and places.
+Entity descriptions briefly identify who or what the entity is. Find its linked
+memories with `search_memory({"kind":"memories","related_to":"ENTITY_ID"})`.
 
 ```json
 {
-  "text": "Around June–July 2025 I had dinner with John Pavlou at Pizza AMI.",
+  "text": "Alex Morgan and Sam Lee enjoy the lentil soup at Cedar Café.",
   "user": "ari",
-  "time": {
-    "description": "Around June–July 2025",
-    "earliest": "2025-06-01",
-    "latest": "2025-07-31"
-  },
   "entities": [
-    {"name": "John Pavlou", "type": "person", "description": "An old friend.", "relation": "with"},
-    {"name": "Pizza AMI", "type": "place", "relation": "at"}
-  ],
-  "topics": [{"name": "Old friendships"}]
+    { "name": "Alex Morgan", "type": "person", "relation": "about" },
+    { "name": "Sam Lee", "type": "person", "relation": "about" },
+    { "name": "Cedar Café", "type": "place", "relation": "at" }
+  ]
 }
 ```
 
 Pass this object to `save_memory`. Songya creates the memory and its connections
-in one durable write. IDs, creation/update times and request bookkeeping are
-automatic. `title`, custom `metadata`, and existing-ID `relations` are optional.
-`time` also accepts ordinary wording such as `"last summer"`. Known exact dates
-use equal earliest/latest bounds.
+in one durable write. A unique exact name or alias reuses an existing entity;
+matching is case-insensitive. An `id` selects a specific existing entity. Simple
+lists such as `"entities":["Sam Lee"]` also work. Include `relation` to preserve
+the participant's role in the memory.
 
-Entities represent people, places, organizations or things. Topics represent
-subjects. A unique exact name or alias reuses an existing record; matching is
-case-insensitive. Supply `id` to select a particular existing entity/topic.
-Ambiguous or unavailable identities remain in the saved memory's
-`unresolved_connections`, with diagnostics. Healthy connections still save.
-Capture adds supplied descriptive facts while preserving existing descriptions.
-Simple lists such as `"entities":["John"]` and `"topics":["Gardening"]` also work.
+Save directly. Use `search_memory` or `prepare_memory` to find a record when
+needed. To enrich an existing memory, supply its `id` and `append`. Omitted
+entities and metadata stay intact. Long prose is preserved in full; returned
+previews are bounded and full reads are paged. The memory's linked entities
+remain brief identity records as its history grows.
+
+`time` describes when something happened. It accepts words such as `"last summer"`
+or an object with `description`, `earliest` and `latest`. Preserve approximate
+wording; known exact dates use equal bounds. IDs and creation/update times are
+automatic. `title`, custom `metadata` and `relations` are optional.
+
+Ambiguous or unavailable capture participants remain in `unresolved_connections`
+with their details. Unresolved relation targets remain in the relation list.
+Diagnostics explain incomplete connections while healthy work still saves.
 
 Memories and stories require an owning `user`. Integrations can fill it from the
 current user; Clara does this automatically. Entities and topics are shared.
@@ -47,27 +53,45 @@ selects everyone. Selection is unrestricted.
 
 ## Dedicated writes
 
-| Tool | Arguments |
-| --- | --- |
+| Tool          | Arguments                                                                                                                |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `save_memory` | `text`, optional `title`, `time`, `entities`, `topics`, `user`, `metadata`, `relations`; `id` updates an existing memory |
-| `save_entity` | `name`, optional `type`, `aliases`, `description`, `metadata`, `relations`; `id` selects an existing entity |
-| `save_topic` | `name`, optional `aliases`, `description`, `metadata`, `relations`; `id` selects an existing topic |
-| `save_story` | `title`, optional `text`, ordered `members`, `user`, `metadata`, `relations`; `id` updates an existing story |
+| `save_entity` | `name`, optional `type`, `aliases`, `description`, `metadata`, `relations`; `id` selects an existing entity              |
+| `save_topic`  | `name`, optional `aliases`, `description`, `metadata`, `relations`; `id` selects an existing topic                       |
+| `save_story`  | `title`, optional `text`, ordered `members`, `user`, `metadata`, `relations`; `id` updates an existing story             |
 
-All four support `append` to add prose. `text` or `description` replaces supplied
+All four support `append` to add prose. Entity prose is a brief identifying description. `text` or `description` replaces supplied
 prose; omission preserves it. Omitted metadata stays intact. Standalone entity
 and topic saves reuse unique matching names, or create a new record.
 
 ```json
-{"name":"save_entity","arguments":{"name":"John Pavlou","type":"person","description":"An old friend."}}
+{"name":"save_entity","arguments":{"name":"Sam Lee","type":"person","description":"A school friend."}}
 {"name":"save_topic","arguments":{"name":"Gardening","description":"Plants and gardens."}}
-{"name":"save_memory","arguments":{"id":"MEMORY_ID","append":"We talked about roses."}}
-{"name":"save_story","arguments":{"user":"ari","title":"Meetings with John","members":["FIRST_MEMORY_ID","SECOND_MEMORY_ID"]}}
+{"name":"save_memory","arguments":{"id":"MEMORY_ID","append":"They also enjoy the café’s salad."}}
+{"name":"save_story","arguments":{"user":"ari","title":"Visits with Sam","members":["FIRST_MEMORY_ID","SECOND_MEMORY_ID"]}}
 ```
 
 Supplied story `members` replace the ordered membership. Omitting them preserves
 existing membership, including when the narrative text is edited. Explicit `[]`
 clears membership. Original narratives remain available in retained write data.
+
+## Connections and corrections
+
+`relations` is the explicit connection list on each save tool. Omission preserves
+it; a supplied list replaces it; `[]` clears it. Targets accept existing record
+IDs or ordinary entity names. Names are resolved or created in the same durable
+write. Relationship labels describe the source record's connection to its target.
+For example, a café can be `liked_by` a person; a visit memory can be `with` a
+person and `at` a café.
+
+```json
+{"name":"save_entity","arguments":{"id":"CAFE_ID","relations":[{"type":"liked_by","target":"Sam Lee"}]}}
+{"name":"save_entity","arguments":{"id":"CAFE_ID","relations":[]}}
+```
+
+On memory updates, supplied `entities` and `topics` add connections while
+preserving existing links. A supplied `relations` list first replaces the
+explicit list; any participants supplied in the same call are then connected.
 
 ## Results and retrieval
 
@@ -77,8 +101,8 @@ topics, and diagnostics. `status:"committed"` confirms publication. Long returne
 prose sets `text_truncated`; read the record for its full contents.
 
 ```json
-{"name":"prepare_memory","arguments":{"text":"John Pavlou","user":"ari"}}
-{"name":"search_memory","arguments":{"text":"John","kind":"entities"}}
+{"name":"prepare_memory","arguments":{"text":"Sam Lee","user":"ari"}}
+{"name":"search_memory","arguments":{"text":"Sam","kind":"entities"}}
 {"name":"search_memory","arguments":{"kind":"topics"}}
 {"name":"read_memory","arguments":{"id":"MEMORY_ID"}}
 {"name":"explore_memory","arguments":{"id":"MEMORY_ID","direction":"both"}}

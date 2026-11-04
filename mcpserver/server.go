@@ -21,20 +21,22 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const Guide = `Songya saves connected memories in Markdown. IDs, timestamps and retry bookkeeping are automatic.
+const Guide = `Songya saves connected Markdown records. IDs, timestamps and retry bookkeeping are automatic.
 
-save_memory takes text, optional time, entities and topics. Each entity has name, optional type/description, and relation: how it connects to the memory. Songya creates missing entities and connects them automatically; a unique exact name or alias reuses an existing entity. Use an ID to select a specific existing record. Ambiguous identities remain in the memory as unresolved_connections.
+Memories hold experiences, facts, preferences and history. Link every relevant person, place or thing, including the speaker when the memory concerns them. Entity descriptions briefly identify who or what an entity is. Topics identify subjects; stories arrange memories into a narrative.
+
+Save directly with save_memory: text, entities and optional time. Named entities are created or reused by unique exact name/alias. Include relation to describe each entity's role, such as with, at or about. Use an existing memory's id and append to enrich it; text replaces its prose. Search or prepare_memory when you need to find an existing record.
 
 Example:
-save_memory({"text":"Around June–July 2025 I had dinner with John Pavlou at Pizza AMI.","time":{"description":"Around June–July 2025","earliest":"2025-06-01","latest":"2025-07-31"},"entities":[{"name":"John Pavlou","type":"person","relation":"with"},{"name":"Pizza AMI","type":"place","relation":"at"}]})
+save_memory({"text":"Alex Morgan and Sam Lee enjoy the lentil soup at Cedar Café.","entities":[{"name":"Alex Morgan","type":"person","relation":"about"},{"name":"Sam Lee","type":"person","relation":"about"},{"name":"Cedar Café","type":"place","relation":"at"}]})
 
-Time describes when the event happened. Ordinary wording is enough; add earliest/latest only when known. An exact day uses equal bounds.
+Time describes when something happened: ordinary words or known earliest/latest bounds. Preserve approximate wording; an exact day uses equal bounds.
 
-save_entity describes a person, place or thing. save_topic describes a subject. save_story takes a title, optional text and ordered member IDs. These tools create records or update a supplied ID. Text/description replaces prose; append adds detail. Omitted metadata and prose stay intact.
+save_entity edits identity and a brief description; save_topic edits a subject; save_story takes text and ordered members. Supplied relations replace explicit links; omit to preserve, [] to clear. A target is a record ID or entity name. Its type describes this record's connection to that target. Ambiguous names remain unresolved with diagnostics.
 
-Saving memories and stories requires a user; clients may fill it automatically. Entities and topics are shared. user filters queries; all selects everyone. Custom metadata is open.
+Memories and stories require an owning user; integrations can supply the current user automatically. Entities and topics are shared. user filters queries; all selects everyone.
 
-Search with search_memory(text,kind); omit text to list. prepare_memory(text) finds related records across kinds. read_memory(id) returns metadata and prose; explore_memory(id) shows connections. Results describe what was saved. Follow next on paged results.`
+search_memory(text,kind) searches; omit text to list. read_memory(id) returns prose and metadata. search_memory(kind=memories,related_to=ENTITY_ID) finds an entity’s memories. explore_memory(id) follows connections. Follow next when results are truncated.`
 
 // App keeps import access separate from record-store access. Import roots are
 // supplied by the process owner, never accepted as arbitrary client paths.
@@ -441,7 +443,7 @@ func New(lifetime context.Context, store *songya.Store, roots map[string]string)
 		prepared, err := store.Prepare(ctx, input.Text, input.User, limit(input.Limit, 8, 8))
 		return map[string]any{"query": prepared.Query, "user": prepared.User, "matches": prepared.Matches, "ambiguities": prepared.Ambiguities, "possible_duplicates": prepared.PossibleDuplicates, "diagnostics": prepared.Diagnostics, "truncated": prepared.Truncated, "next": prepared.Next}, err
 	})
-	tool(server, "save_memory", "Save a memory from text, time and its entities/topics. Songya creates or reuses the related records and connects them. Supply an id to update a memory.", memorySchema(), false, func(ctx context.Context, input songya.MemoryInput) (any, error) {
+	tool(server, "save_memory", "Save experiences, facts, preferences or history as a memory linked to all relevant entities. Songya creates or reuses identities. Use id and append to enrich an existing memory.", memorySchema(), false, func(ctx context.Context, input songya.MemoryInput) (any, error) {
 		if input.ID == "" && input.Text == nil {
 			return nil, fmt.Errorf("provide the memory in text")
 		}
@@ -453,7 +455,7 @@ func New(lifetime context.Context, store *songya.Store, roots map[string]string)
 		name        string
 		kind        songya.Destination
 		description string
-	}{{"save_entity", songya.Entities, "Save a person, place or thing by name, type and description. Reuses a unique matching name; use id to update a specific entity."}, {"save_topic", songya.Topics, "Save a subject by name and description. Reuses a unique matching name; use id to update a specific topic."}} {
+	}{{"save_entity", songya.Entities, "Save a person, place or thing with a brief identifying description. Save its experiences, preferences and history as linked memories. Reuses a unique name; id selects an existing entity."}, {"save_topic", songya.Topics, "Save a subject by name and description. Reuses a unique matching name; use id to update a specific topic."}} {
 		inputSchema := namedSchema(item.kind == songya.Entities)
 		delete(inputSchema["properties"].(map[string]any), "relation")
 		tool(server, item.name, item.description, inputSchema, false, func(ctx context.Context, input songya.NamedInput) (any, error) {
@@ -462,7 +464,7 @@ func New(lifetime context.Context, store *songya.Store, roots map[string]string)
 			return savedWrite(ctx, store, receipt, "record", err)
 		})
 	}
-	tool(server, "save_story", "Save a narrative with ordered memory IDs in members. Use id to update an existing story.", schema(map[string]any{"id": str("Existing story ID; omit to create"), "user": str("Story owner"), "title": str("Story title"), "text": str("Narrative text"), "append": str("Add narrative text"), "members": array(str("Memory or story ID, in order; supplied members replace membership")), "metadata": object(), "relations": array(schema(map[string]any{"type": str("Relationship"), "target": str("Existing record ID")}, "type", "target"))}), false, func(ctx context.Context, input songya.StoryInput) (any, error) {
+	tool(server, "save_story", "Save a narrative with ordered memory IDs in members. Use id to update an existing story.", schema(map[string]any{"id": str("Existing story ID; omit to create"), "user": str("Story owner"), "title": str("Story title"), "text": str("Narrative text"), "append": str("Add narrative text"), "members": array(str("Memory or story ID, in order; supplied members replace membership")), "metadata": object(), "relations": relationsSchema()}), false, func(ctx context.Context, input songya.StoryInput) (any, error) {
 		input.Key = requestKey(ctx)
 		receipt, err := store.SaveStory(ctx, input)
 		return savedWrite(ctx, store, receipt, "story", err)
