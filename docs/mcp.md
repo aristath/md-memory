@@ -60,13 +60,13 @@ Use the returned key to save the related records together:
         "ref": "john",
         "kind": "entities",
         "fields": { "name": "John", "type": "person" },
-        "body": "My friend John."
+        "body": "John attended the dinner."
       },
       {
         "ref": "pizza",
         "kind": "entities",
         "fields": { "name": "Pizza AMI", "type": "place" },
-        "body": "A restaurant."
+        "body": "The dinner venue."
       },
       {
         "ref": "dinner",
