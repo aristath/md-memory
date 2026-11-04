@@ -8,8 +8,9 @@ Durability comes first: preserve original content, recover interrupted writes,
 and keep healthy records usable when something else is damaged. Search, graph
 traversal, partial timelines, and story composition run locally without a model.
 
-The repository and Go module are named `md-memory`; the MCP executable is
-`md-memory-mcp`. There is no Clara dependency or integration.
+The repository is `aristath/songya`; the Go module remains
+`github.com/aristath/md-memory` and the MCP executable is `md-memory-mcp`.
+There is no Clara dependency or integration.
 
 ## Start with MCP
 
@@ -18,8 +19,8 @@ toolchain selection can download the required version. The store needs a local
 filesystem with hard links, advisory locks, and directory syncing.
 
 ```sh
-git clone https://github.com/aristath/md-memory.git
-cd md-memory
+git clone https://github.com/aristath/songya.git
+cd songya
 go install ./cmd/md-memory-mcp
 ```
 
