@@ -284,6 +284,9 @@ func (d *Document) Diagnostics() []string {
 		warnings = append(warnings, "user field is missing or invalid; original content retained")
 	}
 	warnings = append(warnings, valueIssues(&d.Frontmatter, "metadata")...)
+	if unresolved := dereference(metadataField(&d.Frontmatter, "unresolved_connections")); unresolved != nil && len(unresolved.Content) > 0 {
+		warnings = append(warnings, fmt.Sprintf("%d connections need identity resolution; their details remain in unresolved_connections", len(unresolved.Content)))
+	}
 	if field(&d.Frontmatter, "unparsed_frontmatter") != nil {
 		warnings = append(warnings, "Original unparsed frontmatter is retained")
 	}
@@ -360,3 +363,6 @@ func (d *Document) Marshal() ([]byte, error) {
 	output.WriteString(d.Body)
 	return output.Bytes(), nil
 }
+
+// Record returns the same tolerant metadata view used by search and timelines.
+func (d *Document) Record(kind Destination) Record { return recordFromDocument("", d, kind) }

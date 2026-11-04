@@ -55,8 +55,8 @@ After connecting, ask your client to prepare and save a memory, for example:
 > Remember that I had coffee with John today. Check existing records first and
 > preserve any uncertainty about which John I mean.
 
-The normal capture flow uses `prepare_memory`, then `save_memory` with the returned
-key. Read the [MCP guide](docs/mcp.md) for the ten tools, concrete requests,
+Use `save_memory` with text, time, entities and topics. The engine creates and
+connects the records automatically. Read the [MCP guide](docs/mcp.md) for the tools, concrete requests,
 responses, retry handling, and optional imports.
 
 ## Use the Go library
@@ -123,7 +123,7 @@ filesystem, then open that directory with the library or `--store`; recovery run
 automatically. Keep `.lock` in place while a store is in use.
 
 See [durability and recovery](docs/engine.md#durable-writes-and-recovery) for what
-pending writes mean and [batch recovery](docs/mcp.md#retries-and-recovery) for
+pending writes mean and [batch recovery](docs/mcp.md#recovery-and-clients) for
 inspecting unfinished work.
 
 ## Development

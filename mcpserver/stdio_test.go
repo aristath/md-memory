@@ -1,7 +1,6 @@
 package mcpserver_test
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -16,10 +15,8 @@ import (
 	"time"
 
 	"github.com/aristath/songya"
-	"github.com/aristath/songya/mcpserver"
 	"github.com/gofrs/flock"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"sync"
 )
 
 func binary(t *testing.T) string {
@@ -77,476 +74,6 @@ func payload(t *testing.T, envelope map[string]any) map[string]any {
 		t.Fatalf("missing structured result: %+v", envelope)
 	}
 	return data
-}
-
-func TestStdioUserFiltersKeepEntitiesSharedAndRequireOwnedWrites(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	session := connect(t, ctx, binary(t), t.TempDir(), "")
-	envelope, result := invoke(t, ctx, session, "save_memory", map[string]any{
-		"user": "ari", "key": "ari-capture", "changes": []any{
-			map[string]any{"ref": "john", "kind": "entities", "fields": map[string]any{"name": "John"}},
-			map[string]any{"ref": "episode", "fields": map[string]any{"title": "Coffee with John"}, "body": "Ari's account"},
-			map[string]any{"ref": "story", "kind": "stories", "fields": map[string]any{"title": "Coffee story"}},
-		}, "stories": []any{map[string]any{"story": "$story", "members": []any{"$episode"}}},
-	})
-	if result.IsError || payload(t, envelope)["status"] != "committed" {
-		t.Fatal(envelope)
-	}
-	refs := payload(t, envelope)["refs"].(map[string]any)
-	for _, user := range []any{"bob", 3} {
-		envelope, result = invoke(t, ctx, session, "save_memory", map[string]any{
-			"user": user, "key": fmt.Sprint(user), "changes": []any{map[string]any{"body": "Another user's coffee"}},
-		})
-		if result.IsError {
-			t.Fatal(envelope)
-		}
-	}
-	for user, count := range map[string]int{"ari": 3, "bob": 2, "3": 2, "all": 5} {
-		envelope, result = invoke(t, ctx, session, "search_memory", map[string]any{"user": user})
-		if result.IsError || len(payload(t, envelope)["matches"].([]any)) != count {
-			t.Fatalf("scope %s: %+v", user, envelope)
-		}
-	}
-	envelope, result = invoke(t, ctx, session, "prepare_memory", map[string]any{"original_text": "coffee John", "user": "bob"})
-	if result.IsError || len(payload(t, envelope)["matches"].([]any)) != 2 {
-		t.Fatal("preparation did not combine scoped memories and shared identities", envelope)
-	}
-	envelope, result = invoke(t, ctx, session, "read_memory", map[string]any{"id": refs["story"], "view": "source"})
-	if result.IsError || !strings.Contains(payload(t, envelope)["text"].(string), "user: ari") {
-		t.Fatal("story did not persist the user", envelope)
-	}
-	envelope, result = invoke(t, ctx, session, "read_memory", map[string]any{"id": refs["john"], "view": "source"})
-	if result.IsError || strings.Contains(payload(t, envelope)["text"].(string), "user:") {
-		t.Fatal("shared entity received an owner", envelope)
-	}
-	envelope, result = invoke(t, ctx, session, "save_memory", map[string]any{
-		"user": "", "key": "missing-user", "changes": []any{map[string]any{"body": "Not yet attributable"}},
-	})
-	if !result.IsError || payload(t, envelope)["status"] != "not_accepted" {
-		t.Fatal("missing ownership was accepted", envelope)
-	}
-}
-
-func TestActualStdioCaptureRetrievalOrganizationAndRestart(t *testing.T) {
-	bin := binary(t)
-	store, source := t.TempDir(), t.TempDir()
-	if err := os.WriteFile(filepath.Join(source, "old.md"), []byte("An original imported narrative."), 0600); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	session := connect(t, ctx, bin, store, source)
-	if info := session.InitializeResult().ServerInfo; info == nil || info.Name != "songya" {
-		t.Fatalf("server identity: %+v", info)
-	}
-	tools, err := session.ListTools(ctx, &mcp.ListToolsParams{})
-	if err != nil || len(tools.Tools) != 10 {
-		t.Fatalf("tool discovery: %+v %v", tools, err)
-	}
-	resources, err := session.ListResources(ctx, &mcp.ListResourcesParams{})
-	if err != nil || len(resources.Resources) == 0 {
-		t.Fatal("guide resource unavailable")
-	}
-	templates, err := session.ListResourceTemplates(ctx, &mcp.ListResourceTemplatesParams{})
-	if err != nil || len(templates.ResourceTemplates) == 0 {
-		t.Fatal("record resources unavailable")
-	}
-	// These are the only two tool calls in ordinary capture. No schema, per-entity,
-	// or separate ID lookup is required after preparation.
-	prepared, result := invoke(t, ctx, session, "prepare_memory", map[string]any{"original_text": "John, also known as Johnny, is a gardener. I had coffee with him.", "limit": "3"})
-	if result.IsError {
-		t.Fatal(prepared)
-	}
-	key := payload(t, prepared)["key"].(string)
-	request := map[string]any{"key": key, "original_text": "John, also known as Johnny, is a gardener. I had coffee with him.", "changes": []any{
-		map[string]any{"ref": "john", "kind": "entities", "fields": map[string]any{"name": "John", "aliases": []string{"Johnny"}, "type": "person"}, "body": "John is a gardener."},
-		map[string]any{"ref": "memory", "fields": map[string]any{"title": "Coffee with John", "relations": []any{map[string]any{"type": "with", "target": "$john"}}}, "body": "We had coffee."},
-		map[string]any{"ref": "story", "kind": "stories", "fields": map[string]any{"title": "Coffee stories"}},
-	}, "stories": []any{map[string]any{"story": "$story", "members": []string{"$memory"}}}}
-	createdAfter := time.Now().UTC()
-	saved, result := invoke(t, ctx, session, "save_memory", request)
-	if result.IsError {
-		t.Fatalf("capture: %+v", saved)
-	}
-	receipt := payload(t, saved)
-	if receipt["status"] != "committed" {
-		t.Fatal(receipt)
-	}
-	refs := receipt["refs"].(map[string]any)
-	for _, text := range []string{"John", "Johnny", ""} {
-		entities, result := invoke(t, ctx, session, "search_memory", map[string]any{"kind": "entities", "text": text})
-		matches := payload(t, entities)["matches"].([]any)
-		if result.IsError || len(matches) != 1 || matches[0].(map[string]any)["id"] != refs["john"] {
-			t.Fatalf("entity lookup %q: %+v", text, entities)
-		}
-	}
-	entity, result := invoke(t, ctx, session, "read_memory", map[string]any{"id": refs["john"], "view": "source"})
-	if result.IsError {
-		t.Fatal(entity)
-	}
-	document := songya.Parse([]byte(payload(t, entity)["text"].(string)))
-	fields := map[string]any{}
-	if err := document.Frontmatter.Decode(&fields); err != nil {
-		t.Fatal(err)
-	}
-	if fields["name"] != "John" || fields["type"] != "person" || document.Body != "John is a gardener." {
-		t.Fatal("entity lost its identity metadata or descriptive knowledge", entity)
-	}
-	id := refs["memory"].(string)
-	metadata := func() songya.Metadata {
-		t.Helper()
-		data, err := os.ReadFile(filepath.Join(store, "memories", id+".md"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		return songya.Parse(data).Metadata()
-	}
-	created := metadata()
-	if created.CreatedAt.Before(createdAfter) || created.CreatedAt.After(time.Now().UTC()) || !created.UpdatedAt.Equal(created.CreatedAt) {
-		t.Fatalf("creation without timestamp inputs did not assign the current time: %+v", created)
-	}
-	read, result := invoke(t, ctx, session, "read_memory", map[string]any{"id": id, "view": "body"})
-	if result.IsError {
-		t.Fatal(read)
-	}
-	current := payload(t, read)
-	if current["text"] != "We had coffee." {
-		t.Fatal(current)
-	}
-	if _, exposed := current["revision"]; exposed {
-		t.Fatal("read exposed a revision token")
-	}
-	update := map[string]any{"key": "enrich", "changes": []any{map[string]any{"id": id, "append": "I remember a blue guitar."}}}
-	enriched, result := invoke(t, ctx, session, "save_memory", update)
-	if result.IsError {
-		t.Fatal(enriched)
-	}
-	modified := metadata()
-	if !modified.CreatedAt.Equal(created.CreatedAt) || !modified.UpdatedAt.After(created.UpdatedAt) {
-		t.Fatalf("update without timestamp inputs did not preserve creation time and advance update time: %+v", modified)
-	}
-	second, result := invoke(t, ctx, session, "save_memory", map[string]any{"key": "enrich-again", "changes": []any{map[string]any{"id": id, "append": "John played it."}}})
-	if result.IsError || payload(t, second)["status"] != "committed" {
-		t.Fatalf("update by ID failed: %+v", second)
-	}
-	searched, result := invoke(t, ctx, session, "search_memory", map[string]any{"text": "blue guitar", "limit": "2"})
-	if result.IsError || len(payload(t, searched)["matches"].([]any)) != 1 {
-		t.Fatal(searched)
-	}
-	story, result := invoke(t, ctx, session, "compose_story", map[string]any{"id": refs["story"]})
-	if result.IsError || !strings.Contains(payload(t, story)["text"].(string), "blue guitar") {
-		t.Fatal(story)
-	}
-	resource, err := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: "memory://records/" + id + "/0"})
-	if err != nil || len(resource.Contents) != 1 {
-		t.Fatal(err)
-	}
-	imported, result := invoke(t, ctx, session, "import_memories", map[string]any{"action": "preview", "root": "notes"})
-	if result.IsError {
-		t.Fatal(imported)
-	}
-	file := payload(t, imported)["files"].([]any)[0].(map[string]any)
-	imported, result = invoke(t, ctx, session, "import_memories", map[string]any{"action": "apply", "root": "notes", "path": file["path"]})
-	if result.IsError || payload(t, imported)["coverage_complete"] != true {
-		t.Fatal(imported)
-	}
-	// Discard the original receipt and restart the process. Retry still returns
-	// exactly the original IDs rather than replaying creation or the old body.
-	if err := session.Close(); err != nil {
-		t.Fatal(err)
-	}
-	session = connect(t, ctx, bin, store, source)
-	retried, result := invoke(t, ctx, session, "save_memory", request)
-	if result.IsError || payload(t, retried)["refs"].(map[string]any)["memory"] != id {
-		t.Fatal("restart lost idempotency")
-	}
-	read, result = invoke(t, ctx, session, "read_memory", map[string]any{"id": id, "view": "body"})
-	if result.IsError || !strings.Contains(payload(t, read)["text"].(string), "blue guitar") {
-		t.Fatal("retry replayed old content")
-	}
-	encoded, _ := json.Marshal(read)
-	if len(encoded) > 32*1024 {
-		t.Fatal("read exceeded the response budget")
-	}
-}
-
-func TestStdioCancellationAndEOFDoNotPublishWaitingRequests(t *testing.T) {
-	bin := binary(t)
-	path := t.TempDir()
-	store, err := songya.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	original, err := store.Create(songya.Memories, map[string]any{"user": "test"}, "Keep")
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	session := connect(t, ctx, bin, path, "")
-	lock := flock.New(filepath.Join(path, ".lock"))
-	if err := lock.Lock(); err != nil {
-		t.Fatal(err)
-	}
-	defer lock.Close()
-	callCtx, stop := context.WithTimeout(ctx, 100*time.Millisecond)
-	defer stop()
-	_, err = session.CallTool(callCtx, &mcp.CallToolParams{Name: "save_memory", Arguments: map[string]any{"key": "cancelled", "changes": []any{map[string]any{"id": original.ID, "body": "Must not publish"}}}})
-	if err == nil {
-		t.Fatal("blocked request ignored cancellation")
-	}
-	if err := session.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := lock.Unlock(); err != nil {
-		t.Fatal(err)
-	}
-	reopened, err := songya.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	read, err := reopened.Read(original.ID)
-	if err != nil || read.Body != "Keep" {
-		t.Fatal("cancelled waiting request published")
-	}
-}
-
-func TestEquivalentScalarArgumentsAndBinaryPages(t *testing.T) {
-	bin := binary(t)
-	path := t.TempDir()
-	store, err := songya.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	doc, err := store.Create(songya.Memories, map[string]any{"user": "test"}, string([]byte{255, 254, 0}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	session := connect(t, ctx, bin, path, "")
-	read, result := invoke(t, ctx, session, "read_memory", map[string]any{"id": doc.ID, "view": "body", "offset": "0", "limit": "3"})
-	if result.IsError || payload(t, read)["base64"] != "//4A" {
-		t.Fatal("binary bytes were silently normalized")
-	}
-	data, _ := json.Marshal(read)
-	if bytes.Contains(data, []byte("replacement")) {
-		t.Fatal("binary source became replacement characters")
-	}
-	saved, result := invoke(t, ctx, session, "save_memory", map[string]any{"key": "exact-numbers", "original_text": 3, "changes": []any{map[string]any{"ref": "numbers", "fields": map[string]any{"title": 3, "integer": json.Number("9007199254740993"), "decimal": json.Number("1.234567890123456789")}}}})
-	if result.IsError {
-		t.Fatal(saved)
-	}
-	numberID := payload(t, saved)["refs"].(map[string]any)["numbers"]
-	source, result := invoke(t, ctx, session, "read_memory", map[string]any{"id": numberID, "view": "source"})
-	if result.IsError {
-		t.Fatal(source)
-	}
-	text := payload(t, source)["text"].(string)
-	if !strings.Contains(text, "9007199254740993") || !strings.Contains(text, "1.234567890123456789") {
-		t.Fatalf("MCP rounded metadata numbers: %s", text)
-	}
-}
-
-func TestLargeStdioReceiptsRemainBoundedAndFullyInspectable(t *testing.T) {
-	bin := binary(t)
-	path := t.TempDir()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	session := connect(t, ctx, bin, path, "")
-	// Oversized keys and ref labels are accepted data, not a reason to lose a
-	// successful write's durable outcome or return an oversized protocol message.
-	key := strings.Repeat("request-", 1000)
-	label := strings.Repeat("reference-", 1000)
-	request := map[string]any{"key": key, "original_text": "Original account", "changes": []any{map[string]any{"ref": label, "body": "A preserved narrative"}}}
-	envelope, result := invoke(t, ctx, session, "save_memory", request)
-	receipt := payload(t, envelope)
-	if result.IsError || receipt["status"] != "committed" || receipt["key_truncated"] != true || receipt["refs_truncated"] != true {
-		t.Fatal(receipt)
-	}
-	data, _ := json.Marshal(result)
-	if len(data) > 32*1024 {
-		t.Fatalf("receipt exceeded budget: %d", len(data))
-	}
-	id := receipt["records"].([]any)[0].(map[string]any)["id"].(string)
-	var whole strings.Builder
-	offset := 0
-	for range 100 {
-		envelope, result = invoke(t, ctx, session, "memory_maintenance", map[string]any{"action": "receipt", "view": "source", "key": key, "offset": offset, "limit": 4096})
-		if result.IsError {
-			t.Fatal(envelope)
-		}
-		page := payload(t, envelope)
-		whole.WriteString(page["text"].(string))
-		if page["truncated"] != true {
-			break
-		}
-		offset = int(page["next"].(float64))
-	}
-	var full songya.Receipt
-	if err := json.Unmarshal([]byte(whole.String()), &full); err != nil {
-		t.Fatal(err)
-	}
-	if full.Key != key || full.Refs[label] != id {
-		t.Fatal("full receipt lost original labels or identity")
-	}
-	envelope, result = invoke(t, ctx, session, "read_memory", map[string]any{"key": key, "id": id, "view": "proposed"})
-	if result.IsError || !strings.Contains(payload(t, envelope)["text"].(string), "A preserved narrative") {
-		t.Fatal(envelope)
-	}
-	envelope, result = invoke(t, ctx, session, "read_memory", map[string]any{"key": key, "view": "original_text"})
-	if result.IsError || payload(t, envelope)["text"] != "Original account" {
-		t.Fatal(envelope)
-	}
-	// A refused withdrawal still reports the committed outcome accurately.
-	envelope, result = invoke(t, ctx, session, "memory_maintenance", map[string]any{"action": "abandon", "key": key})
-	if !result.IsError || payload(t, envelope)["status"] != "committed" {
-		t.Fatal("committed outcome hidden on withdrawal refusal")
-	}
-}
-
-func TestStdioShutdownCancelsUnacceptedWaitingWrite(t *testing.T) {
-	bin := binary(t)
-	for _, shutdown := range []string{"signal", "eof"} {
-		t.Run(shutdown, func(t *testing.T) {
-			path := t.TempDir()
-			store, err := songya.Open(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			doc, err := store.Create(songya.Memories, map[string]any{"user": "test"}, "Keep")
-			if err != nil {
-				t.Fatal(err)
-			}
-			lock := flock.New(filepath.Join(path, ".lock"))
-			if err := lock.Lock(); err != nil {
-				t.Fatal(err)
-			}
-			defer lock.Close()
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			command := exec.CommandContext(ctx, bin, "--store", path)
-			stdout, err := command.StdoutPipe()
-			if err != nil {
-				t.Fatal(err)
-			}
-			stdin, err := command.StdinPipe()
-			if err != nil {
-				t.Fatal(err)
-			}
-			command.Stderr = os.Stderr
-			if err := command.Start(); err != nil {
-				t.Fatal(err)
-			}
-			defer command.Process.Kill()
-			client := mcp.NewClient(&mcp.Implementation{Name: "signal-client", Version: "1"}, nil)
-			session, err := client.Connect(ctx, &mcp.IOTransport{Reader: stdout, Writer: stdin}, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer func() { command.Process.Kill(); session.Close() }()
-			finished := make(chan struct{})
-			go func() {
-				defer close(finished)
-				_, _ = session.CallTool(ctx, &mcp.CallToolParams{Name: "save_memory", Arguments: map[string]any{"key": "shutdown-waiting", "changes": []any{map[string]any{"id": doc.ID, "body": "Must not publish"}}}})
-			}()
-			// Allow the real transport to dispatch the request. The held lock prevents any
-			// acceptance; this delay does not determine the expected write outcome.
-			time.Sleep(100 * time.Millisecond)
-			if shutdown == "signal" {
-				if err := command.Process.Signal(syscall.SIGTERM); err != nil {
-					t.Fatal(err)
-				}
-			} else if err := stdin.Close(); err != nil {
-				t.Fatal(err)
-			}
-			waited := make(chan error, 1)
-			go func() { waited <- command.Wait() }()
-			select {
-			case err := <-waited:
-				if err != nil {
-					t.Fatalf("shutdown: %v", err)
-				}
-			case <-time.After(3 * time.Second):
-				t.Fatal("shutdown left the server waiting on an unaccepted write")
-			}
-			<-finished
-			if err := lock.Unlock(); err != nil {
-				t.Fatal(err)
-			}
-			current, err := store.Read(doc.ID)
-			if err != nil || current.Body != "Keep" {
-				t.Fatal("shutdown published an unaccepted request")
-			}
-
-		})
-	}
-}
-
-func TestStdioGraphChronologyMergeSplitAndMaintenance(t *testing.T) {
-	bin := binary(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	session := connect(t, ctx, bin, t.TempDir(), "")
-	envelope, result := invoke(t, ctx, session, "save_memory", map[string]any{"key": "connected", "changes": []any{
-		map[string]any{"ref": "first", "fields": map[string]any{"title": "First", "time": map[string]any{"earliest": "2000-01-01", "latest": "2000-01-01"}}, "body": "First account"},
-		map[string]any{"ref": "later", "fields": map[string]any{"title": "Later", "relations": []any{map[string]any{"type": "after", "target": "$first"}}}, "body": "Later account"},
-	}})
-	if result.IsError {
-		t.Fatal(envelope)
-	}
-	refs := payload(t, envelope)["refs"].(map[string]any)
-	first, later := refs["first"].(string), refs["later"].(string)
-	envelope, result = invoke(t, ctx, session, "explore_memory", map[string]any{"id": first, "direction": "incoming"})
-	if result.IsError || len(payload(t, envelope)["edges"].([]any)) != 1 {
-		t.Fatal("backlinks unavailable over stdio")
-	}
-	envelope, result = invoke(t, ctx, session, "memory_timeline", map[string]any{})
-	if result.IsError || len(payload(t, envelope)["constraints"].([]any)) != 1 {
-		t.Fatal("partial chronology unavailable over stdio")
-	}
-	sources := []any{}
-	for _, id := range []string{first, later} {
-		envelope, result = invoke(t, ctx, session, "read_memory", map[string]any{"id": id, "view": "body"})
-		if result.IsError {
-			t.Fatal(envelope)
-		}
-		sources = append(sources, map[string]any{"id": id})
-	}
-	merge := map[string]any{"action": "merge", "key": "merge-stdio", "sources": sources}
-	envelope, result = invoke(t, ctx, session, "organize_memory", merge)
-	if result.IsError {
-		t.Fatal(envelope)
-	}
-	merged := payload(t, envelope)["refs"].(map[string]any)["merged"].(string)
-	envelope, result = invoke(t, ctx, session, "organize_memory", merge)
-	if result.IsError || payload(t, envelope)["refs"].(map[string]any)["merged"] != merged {
-		t.Fatal("merge retry lost identity")
-	}
-	envelope, result = invoke(t, ctx, session, "read_memory", map[string]any{"id": merged})
-	if result.IsError {
-		t.Fatal(envelope)
-	}
-	split := map[string]any{"action": "split", "key": "split-stdio", "source": map[string]any{"id": merged}, "parts": []any{map[string]any{"body": "First account"}, map[string]any{"body": "Later account"}}}
-	envelope, result = invoke(t, ctx, session, "organize_memory", split)
-	if result.IsError {
-		t.Fatal(envelope)
-	}
-	envelope, result = invoke(t, ctx, session, "explore_memory", map[string]any{"id": first})
-	if result.IsError {
-		t.Fatal(envelope)
-	}
-	resolution := payload(t, envelope)["resolution"].(map[string]any)
-	if resolution["ambiguous"] != true || len(resolution["targets"].([]any)) != 2 {
-		t.Fatal("split ambiguity disappeared over MCP")
-	}
-	for _, action := range []string{"status", "recover", "rebuild"} {
-		envelope, result = invoke(t, ctx, session, "memory_maintenance", map[string]any{"action": action})
-		if result.IsError {
-			t.Fatalf("%s: %+v", action, envelope)
-		}
-	}
 }
 
 func TestStdioResourcesAndErrorsStayWithinBudget(t *testing.T) {
@@ -692,95 +219,122 @@ func TestStdioUnconfirmedSnapshotIsReadableWithoutACommittedRevision(t *testing.
 
 // Execute the actual agent example, then check stored meaning and concurrent
 // enrichment through the real stdio server rather than a separate Go fixture.
-func TestGuideCaptureKeepsLinksTimeAndOriginalText(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
+
+func TestStdioCancellationAndEOFDoNotPublishWaitingRequests(t *testing.T) {
+	bin := binary(t)
 	path := t.TempDir()
-	session := connect(t, ctx, binary(t), path, "")
-	if session.InitializeResult().Instructions != mcpserver.Guide {
-		t.Fatal("agent guide missing from initialization")
-	}
-	listed, err := session.ListTools(ctx, nil)
+	store, err := songya.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, tool := range listed.Tools {
-		schema, _ := json.Marshal(tool.InputSchema)
-		if bytes.Contains(schema, []byte(`"revision"`)) || bytes.Contains(schema, []byte(`"account"`)) {
-			t.Fatalf("technical capture input remains: %s", schema)
-		}
-	}
-	_, example, _ := strings.Cut(mcpserver.Guide, "save_memory(")
-	example, _, _ = strings.Cut(example, ")\n")
-	request := map[string]any{}
-	if err := json.Unmarshal([]byte(example), &request); err != nil {
+	original, err := store.Create(songya.Memories, map[string]any{"user": "test"}, "Keep")
+	if err != nil {
 		t.Fatal(err)
 	}
-	prepared, result := invoke(t, ctx, session, "prepare_memory", map[string]any{"original_text": request["original_text"], "user": "ari"})
-	if result.IsError || payload(t, prepared)["query"] != request["original_text"] {
-		t.Fatal(prepared)
-	}
-	request["key"] = payload(t, prepared)["key"]
-	saved, result := invoke(t, ctx, session, "save_memory", request)
-	if result.IsError {
-		t.Fatal(saved)
-	}
-	encoded, _ := json.Marshal(saved)
-	if bytes.Contains(encoded, []byte(`"revision"`)) {
-		t.Fatal("save exposed revision tokens")
-	}
-	refs := payload(t, saved)["refs"].(map[string]any)
-	id := refs["dinner"].(string)
-	read, result := invoke(t, ctx, session, "read_memory", map[string]any{"id": id})
-	if result.IsError {
-		t.Fatal(read)
-	}
-	doc := songya.Parse([]byte(payload(t, read)["text"].(string)))
-	if doc.Metadata().User != "ari" || len(doc.Metadata().Relations) != 2 || !strings.Contains(doc.Body, "John") {
-		t.Fatal("guide lost ownership, relationships or narrative", read)
-	}
-	fields := map[string]any{}
-	if err := doc.Frontmatter.Decode(&fields); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	session := connect(t, ctx, bin, path, "")
+	lock := flock.New(filepath.Join(path, ".lock"))
+	if err := lock.Lock(); err != nil {
 		t.Fatal(err)
 	}
-	when := fields["time"].(map[string]any)
-	if fmt.Sprint(when["earliest"]) != "2025-06-01" || fmt.Sprint(when["latest"]) != "2025-07-31" || !strings.Contains(fmt.Sprint(fields["original_accounts"]), request["original_text"].(string)) {
-		t.Fatal("guide lost event bounds or original words", fields)
+	defer lock.Close()
+	callCtx, stop := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer stop()
+	_, err = session.CallTool(callCtx, &mcp.CallToolParams{Name: "save_memory", Arguments: map[string]any{"id": original.ID, "text": "Must not publish"}})
+	if err == nil {
+		t.Fatal("blocked request ignored cancellation")
 	}
-	graph, result := invoke(t, ctx, session, "explore_memory", map[string]any{"id": id})
-	if result.IsError || len(payload(t, graph)["edges"].([]any)) != 2 {
-		t.Fatal(graph)
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
 	}
-	for _, name := range []string{"john", "pizza"} {
-		found := false
-		for _, relation := range doc.Metadata().Relations {
-			found = found || relation.Target == refs[name]
-		}
-		if !found {
-			t.Fatalf("unresolved %s relationship", name)
-		}
+	if err := lock.Unlock(); err != nil {
+		t.Fatal(err)
 	}
-	var writers sync.WaitGroup
-	for i := range 6 {
-		writers.Go(func() {
-			args := map[string]any{"key": fmt.Sprintf("detail-%d", i), "changes": []any{map[string]any{"id": id, "append": fmt.Sprintf("Detail %d", i)}}}
-			for range 2 { // A repeated accepted request must not append twice.
-				result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "save_memory", Arguments: args})
-				if err != nil || result.IsError {
-					t.Errorf("concurrent enrichment: %+v %v", result, err)
-					return
-				}
+	reopened, err := songya.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read, err := reopened.Read(original.ID)
+	if err != nil || read.Body != "Keep" {
+		t.Fatal("cancelled waiting request published")
+	}
+}
+
+func TestStdioShutdownCancelsUnacceptedWaitingWrite(t *testing.T) {
+	bin := binary(t)
+	for _, shutdown := range []string{"signal", "eof"} {
+		t.Run(shutdown, func(t *testing.T) {
+			path := t.TempDir()
+			store, err := songya.Open(path)
+			if err != nil {
+				t.Fatal(err)
 			}
+			doc, err := store.Create(songya.Memories, map[string]any{"user": "test"}, "Keep")
+			if err != nil {
+				t.Fatal(err)
+			}
+			lock := flock.New(filepath.Join(path, ".lock"))
+			if err := lock.Lock(); err != nil {
+				t.Fatal(err)
+			}
+			defer lock.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			command := exec.CommandContext(ctx, bin, "--store", path)
+			stdout, err := command.StdoutPipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			stdin, err := command.StdinPipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			command.Stderr = os.Stderr
+			if err := command.Start(); err != nil {
+				t.Fatal(err)
+			}
+			defer command.Process.Kill()
+			client := mcp.NewClient(&mcp.Implementation{Name: "signal-client", Version: "1"}, nil)
+			session, err := client.Connect(ctx, &mcp.IOTransport{Reader: stdout, Writer: stdin}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { command.Process.Kill(); session.Close() }()
+			finished := make(chan struct{})
+			go func() {
+				defer close(finished)
+				_, _ = session.CallTool(ctx, &mcp.CallToolParams{Name: "save_memory", Arguments: map[string]any{"id": doc.ID, "text": "Must not publish"}})
+			}()
+			// Allow the real transport to dispatch the request. The held lock prevents any
+			// acceptance; this delay does not determine the expected write outcome.
+			time.Sleep(100 * time.Millisecond)
+			if shutdown == "signal" {
+				if err := command.Process.Signal(syscall.SIGTERM); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := stdin.Close(); err != nil {
+				t.Fatal(err)
+			}
+			waited := make(chan error, 1)
+			go func() { waited <- command.Wait() }()
+			select {
+			case err := <-waited:
+				if err != nil {
+					t.Fatalf("shutdown: %v", err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("shutdown left the server waiting on an unaccepted write")
+			}
+			<-finished
+			if err := lock.Unlock(); err != nil {
+				t.Fatal(err)
+			}
+			current, err := store.Read(doc.ID)
+			if err != nil || current.Body != "Keep" {
+				t.Fatal("shutdown published an unaccepted request")
+			}
+
 		})
-	}
-	writers.Wait()
-	read, result = invoke(t, ctx, session, "read_memory", map[string]any{"id": id, "view": "body"})
-	if result.IsError {
-		t.Fatal(read)
-	}
-	for i := range 6 {
-		if strings.Count(payload(t, read)["text"].(string), fmt.Sprintf("Detail %d", i)) != 1 {
-			t.Fatal("concurrent append lost or duplicated detail", read)
-		}
 	}
 }

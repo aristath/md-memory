@@ -347,6 +347,22 @@ Graph/timeline summaries bound descriptive fields and mark `details_truncated`.
 Search summaries likewise abbreviate details; read the source for full metadata.
 These display limits never change authoritative content or relationship semantics.
 
+## Direct capture and domain writes
+
+`SaveMemory(ctx, MemoryInput)` accepts text, time, entities and topics. It resolves
+unique exact names/aliases and creates missing identities under the same store
+lock as the durable related write. Explicit IDs select known records. Ambiguous
+or unavailable connections remain in `unresolved_connections`; the memory and
+healthy connections still save. Entity descriptions gain supplied facts without
+replacing earlier knowledge.
+
+`SaveNamed(ctx, Entities|Topics, NamedInput)` creates or updates a named record.
+`SaveStory(ctx, StoryInput)` creates or updates a story with ordered members.
+Supplied members replace membership; omission preserves it. Supplied text replaces
+prose; `Append` adds detail. `Metadata` is open data. A supplied internal `Key`
+binds a retry to the same intent; omitting it starts an independent operation.
+These methods use the same batch journals and recovery as the lower-level API.
+
 ## Related changes and retry safety
 
 `Prepare(ctx, account, user, limit)` searches all record types together and returns a

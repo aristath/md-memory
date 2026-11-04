@@ -34,6 +34,7 @@ type StoryAddition struct {
 	Members  []string `json:"members"`
 }
 type BatchRequest struct {
+	prepare func(*os.Root) ([]Change, []StoryAddition, error)
 	User    string          `json:"user,omitempty"`
 	Key     string          `json:"key"`
 	Account string          `json:"original_text,omitempty"`
@@ -251,6 +252,13 @@ func batchFields(values map[string]any, refs map[string]string) map[string]any {
 
 func prepareBatch(ctx context.Context, root *os.Root, request BatchRequest, revision string) (batchJournal, error) {
 	journal := batchJournal{Key: request.Key, Account: []byte(request.Account), Request: revision, Refs: map[string]string{}}
+	if request.prepare != nil {
+		var err error
+		request.Changes, request.Stories, err = request.prepare(root)
+		if err != nil {
+			return journal, err
+		}
+	}
 	ids := map[string]bool{}
 	creates := map[string]bool{}
 	changes := append([]Change{}, request.Changes...)

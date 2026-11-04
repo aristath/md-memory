@@ -2,174 +2,108 @@
 
 [Getting started](../README.md) · [Engine reference](engine.md)
 
-`songya-mcp` serves MCP over stdio. Configure it using the
-[quickstart](../README.md#start-with-mcp). Initialization supplies the agent guide;
-`tools/list` supplies tool and parameter descriptions. The same guide is readable
-at `memory://guide`.
+`songya-mcp` serves MCP over stdio. Initialization and `memory://guide` provide
+compact agent instructions. Tool discovery describes each argument.
 
-## Records
+## Save a memory
 
-| Kind       | Purpose                                  | Metadata conventions                         |
-| ---------- | ---------------------------------------- | -------------------------------------------- |
-| `memories` | Remembered events and facts              | `title`, `user`, optional `time`             |
-| `entities` | People, places, organizations and things | `name`, optional `aliases`, free-form `type` |
-| `topics`   | Subjects used to group records           | `name`, optional `aliases`                   |
-| `stories`  | Memories arranged into a narrative       | `title`, `user`                              |
-
-Put narrative and descriptive knowledge in `body`, metadata in `fields`.
-Metadata and relationship names are open-ended. Songya generates IDs and record
-creation/update timestamps automatically.
-
-Memories and stories require an owner. Top-level `user` supplies the default for
-new records; `fields.user` can override it. Entities and topics are shared.
-Searches with a specific user include that user's memories/stories and shared
-records. `user:"all"` or an omitted filter selects everyone. Selection is unrestricted.
-
-## Prepare and save
-
-The examples below are tool names and arguments passed through an MCP client.
-Results are in `structuredContent.data`; text content is a short status summary.
-
-Prepare the user's original words:
+Describe the memory, its time, and its participants directly:
 
 ```json
 {
-  "name": "prepare_memory",
-  "arguments": {
-    "original_text": "Around June–July 2025 I had dinner with John at Pizza AMI.",
-    "user": "ari"
-  }
+  "text": "Around June–July 2025 I had dinner with John Pavlou at Pizza AMI.",
+  "user": "ari",
+  "time": {
+    "description": "Around June–July 2025",
+    "earliest": "2025-06-01",
+    "latest": "2025-07-31"
+  },
+  "entities": [
+    {"name": "John Pavlou", "type": "person", "description": "An old friend.", "relation": "with"},
+    {"name": "Pizza AMI", "type": "place", "relation": "at"}
+  ],
+  "topics": [{"name": "Old friendships"}]
 }
 ```
 
-The response includes `key`, the searched `query`, `user`, `matches`,
-`ambiguities`, and `possible_duplicates`. Read relevant candidates and reuse
-existing entity/topic IDs. An empty result describes the supplied search.
+Pass this object to `save_memory`. Songya creates the memory and its connections
+in one durable write. IDs, creation/update times and request bookkeeping are
+automatic. `title`, custom `metadata`, and existing-ID `relations` are optional.
+`time` also accepts ordinary wording such as `"last summer"`. Known exact dates
+use equal earliest/latest bounds.
 
-Use the returned key to save the related records together:
+Entities represent people, places, organizations or things. Topics represent
+subjects. A unique exact name or alias reuses an existing record; matching is
+case-insensitive. Supply `id` to select a particular existing entity/topic.
+Ambiguous or unavailable identities remain in the saved memory's
+`unresolved_connections`, with diagnostics. Healthy connections still save.
+Capture adds supplied descriptive facts while preserving existing descriptions.
+Simple lists such as `"entities":["John"]` and `"topics":["Gardening"]` also work.
+
+Memories and stories require an owning `user`. Integrations can fill it from the
+current user; Clara does this automatically. Entities and topics are shared.
+Searches select a user's memories/stories and shared records; `user:"all"`
+selects everyone. Selection is unrestricted.
+
+## Dedicated writes
+
+| Tool | Arguments |
+| --- | --- |
+| `save_memory` | `text`, optional `title`, `time`, `entities`, `topics`, `user`, `metadata`, `relations`; `id` updates an existing memory |
+| `save_entity` | `name`, optional `type`, `aliases`, `description`, `metadata`, `relations`; `id` selects an existing entity |
+| `save_topic` | `name`, optional `aliases`, `description`, `metadata`, `relations`; `id` selects an existing topic |
+| `save_story` | `title`, optional `text`, ordered `members`, `user`, `metadata`, `relations`; `id` updates an existing story |
+
+All four support `append` to add prose. `text` or `description` replaces supplied
+prose; omission preserves it. Omitted metadata stays intact. Standalone entity
+and topic saves reuse unique matching names, or create a new record.
 
 ```json
-{
-  "name": "save_memory",
-  "arguments": {
-    "key": "RETURNED_KEY",
-    "user": "ari",
-    "original_text": "Around June–July 2025 I had dinner with John at Pizza AMI.",
-    "changes": [
-      {
-        "ref": "john",
-        "kind": "entities",
-        "fields": { "name": "John", "type": "person" },
-        "body": "John attended the dinner."
-      },
-      {
-        "ref": "pizza",
-        "kind": "entities",
-        "fields": { "name": "Pizza AMI", "type": "place" },
-        "body": "The dinner venue."
-      },
-      {
-        "ref": "dinner",
-        "kind": "memories",
-        "fields": {
-          "title": "Dinner with John",
-          "time": {
-            "description": "Around June–July 2025",
-            "earliest": "2025-06-01",
-            "latest": "2025-07-31"
-          }
-        },
-        "body": "I had dinner with John at Pizza AMI.",
-        "add_relations": [
-          { "type": "with", "target": "$john" },
-          { "type": "at", "target": "$pizza" }
-        ]
-      }
-    ]
-  }
-}
+{"name":"save_entity","arguments":{"name":"John Pavlou","type":"person","description":"An old friend."}}
+{"name":"save_topic","arguments":{"name":"Gardening","description":"Plants and gardens."}}
+{"name":"save_memory","arguments":{"id":"MEMORY_ID","append":"We talked about roses."}}
+{"name":"save_story","arguments":{"user":"ari","title":"Meetings with John","members":["FIRST_MEMORY_ID","SECOND_MEMORY_ID"]}}
 ```
 
-`ref` declares a label for a new record. `$john` uses that label within this save.
-A relation to an existing record uses its ID directly. `data.refs` maps labels to
-generated IDs; `data.records` lists saved IDs. `data.status:"committed"` confirms
-saving. Songya retains `original_text` verbatim in the journal and affected memories.
+Supplied story `members` replace the ordered membership. Omitting them preserves
+existing membership, including when the narrative text is edited. Explicit `[]`
+clears membership. Original narratives remain available in retained write data.
 
-Time describes when the event happened. `description` preserves ordinary wording;
-`earliest` and `latest` give known bounds. For an exact day, use equal bounds.
-Include only known information and preserve uncertainty.
+## Results and retrieval
 
-## Search, read, and update
-
-Search a name, alias, or prose; omit `text` to list records of that kind:
+Tool results are in `structuredContent.data`. A save returns `status`, the main
+record's `id`, `operation_id`, saved prose/time/relations, connected entities and
+topics, and diagnostics. `status:"committed"` confirms publication. Long returned
+prose sets `text_truncated`; read the record for its full contents.
 
 ```json
-{"name":"search_memory","arguments":{"kind":"entities","text":"John"}}
+{"name":"prepare_memory","arguments":{"text":"John Pavlou","user":"ari"}}
+{"name":"search_memory","arguments":{"text":"John","kind":"entities"}}
 {"name":"search_memory","arguments":{"kind":"topics"}}
-{"name":"read_memory","arguments":{"id":"RECORD_ID"}}
-```
-
-An ordinary read returns metadata and Markdown together. `view:"body"` returns
-prose only; `view:"source"` explicitly selects the complete Markdown source.
-`memory://records/{id}/{offset}` also provides source pages. Binary pages use
-`base64` instead of `text`.
-
-Update by ID, using a fresh key from preparation for a new operation:
-
-```json
-{
-  "name": "save_memory",
-  "arguments": {
-    "key": "UPDATE_KEY",
-    "original_text": "John brought his blue guitar.",
-    "changes": [
-      { "id": "RECORD_ID", "append": "John brought his blue guitar." }
-    ]
-  }
-}
-```
-
-`append` adds prose; `body` replaces it. Omitted fields and body remain intact.
-`fields` patches metadata, and `add_relations` adds links. Locking and checks for
-changes during publication are handled by the engine.
-
-## Connections, timelines, and stories
-
-```json
+{"name":"read_memory","arguments":{"id":"MEMORY_ID"}}
 {"name":"explore_memory","arguments":{"id":"MEMORY_ID","direction":"both"}}
 {"name":"memory_timeline","arguments":{"user":"ari","text":"dinner"}}
-```
-
-Graph edges contain `source`, `type`, `target`, and `resolved`. Directions are
-`incoming`, `outgoing`, or `both`. Timeline order comes from event-time bounds
-and `before`/`after` links. Uncertain order remains uncertain.
-
-Create stories alongside memories, then add ordered members:
-
-```json
-{"name":"save_memory","arguments":{"key":"STORY_KEY","user":"ari","changes":[{"ref":"story","kind":"stories","fields":{"title":"Meetings with John"}}],"stories":[{"story":"$story","members":["MEMORY_ID"]}]}}
 {"name":"compose_story","arguments":{"id":"STORY_ID"}}
 ```
 
-An existing story uses its ID in `story`. Composition expands `[[record_id]]`
-references in order. New story bodies may refer to new records as `[[$label]]`.
-Missing or ambiguous references remain visible.
+Preparation is optional: it finds candidates, ambiguities and possible duplicate
+names. Its `query` identifies what was searched. Search without text lists records.
+Ordinary reads return metadata and Markdown; `view:"body"` selects prose only.
+Graph directions are `incoming`, `outgoing` or `both`. Timelines use stated event
+bounds and `before`/`after` connections; uncertain order stays uncertain.
 
-## Merge, split, and import
-
-Read the sources, then use a fresh key for each operation:
+## Organization and imports
 
 ```json
-{"name":"organize_memory","arguments":{"action":"merge","key":"MERGE_KEY","sources":[{"id":"FIRST_ID"},{"id":"SECOND_ID"}]}}
-{"name":"organize_memory","arguments":{"action":"split","key":"SPLIT_KEY","source":{"id":"SOURCE_ID"},"parts":[{"body":"First part"},{"body":"Second part"}]}}
+{"name":"organize_memory","arguments":{"action":"merge","sources":["FIRST_ID","SECOND_ID"],"metadata":{"title":"Combined account"}}}
+{"name":"organize_memory","arguments":{"action":"split","source":"SOURCE_ID","parts":[{"text":"First part"},{"text":"Second part"}]}}
 ```
 
-Original bodies remain readable under retired IDs. Results identify replacements
-as `refs.merged` or `refs.part_1`, `refs.part_2`, etc. Splits inherit their source
-user; merges inherit a common source user. Cross-user merges need `fields.user`.
+Original records remain readable under retired IDs. Merge returns `id`; split
+returns ordered replacement `ids`. Splits inherit their source user; merges
+inherit a common user. Cross-user merges need an explicit `metadata.user`.
 
-Imports use roots configured at startup with
-`--import-root notes=/absolute/path/to/sources`:
+Configure optional import roots with `--import-root notes=/absolute/source/path`:
 
 ```json
 {"name":"import_memories","arguments":{"action":"preview","root":"notes"}}
@@ -177,32 +111,26 @@ Imports use roots configured at startup with
 {"name":"import_memories","arguments":{"action":"apply","root":"notes","path":"old.md","user":"ari"}}
 ```
 
-Omitting `parts` imports the whole file. Explicit parts use reviewed byte ranges
-with `start` inclusive and `end` exclusive. Songya preserves the original and
-returns saved IDs, coverage, and an `archive` checksum. Archives remain readable
-through `read_memory({"archive":"CHECKSUM"})`. Retrying a source reuses its
-preserved original and saved IDs.
+Omit `parts` to import the entire file. Reviewed parts use exact byte ranges,
+`start` inclusive and `end` exclusive, with optional `kind` and `metadata`.
+The original is preserved. Results include mapped IDs, coverage, and an archive
+checksum, readable with `read_memory({"archive":"CHECKSUM"})`.
 
-## Retries and recovery
+## Recovery and clients
 
-Retry a save with the **same key and arguments**. Preparation produces an
-independent key; it does not invalidate previous preparations. A rejected request
-with `status:"not_accepted"` can be corrected under the same key. An accepted
-request keeps its original arguments and unfinished work for recovery.
+Clients can attach a stable `songya/request-key` in MCP `_meta` to each write.
+Reuse it with identical arguments when retrying the same operation. Clara forwards
+its durable tool invocation ID automatically. Distinct operations receive distinct
+keys, so identical words can describe separate memories. Without client metadata,
+Songya creates an independent operation ID and returns it in the result.
 
-```json
-{"name":"memory_maintenance","arguments":{"action":"receipt","key":"SAVE_KEY"}}
-{"name":"memory_maintenance","arguments":{"action":"recover"}}
-{"name":"memory_maintenance","arguments":{"action":"status"}}
-```
+Use `memory_maintenance` with `action:"receipt"` and `key:OPERATION_ID` to inspect
+an outcome. `recover` resumes retained work; `status` reports diagnostics;
+`rebuild` refreshes the disposable index. `abandon` deliberately withdraws an
+uncommitted operation while retaining its proposed data. `read_memory` with `key`,
+`id` and `view:"proposed"`, `"before"` or `"original_text"` inspects retained data.
+These are recovery operations; ordinary saves handle their bookkeeping internally.
 
-For inspection, `read_memory` accepts a saved `key`, `id`, and `view` of
-`proposed`, `before`, or `original_text`. Maintenance `abandon` deliberately
-withdraws an uncommitted request while retaining its proposals. `rebuild`
-recreates the disposable index.
-
-## Paging and limits
-
-Follow `next` when `truncated` is true. Search, graph, timeline and receipt pages
-use item offsets; text/source/story pages use byte offsets. Numeric strings are
-accepted. Pending or unconfirmed records remain readable with diagnostics.
+Follow `next` when `truncated` is true. Text/source/story offsets count bytes;
+search, graph and timeline offsets count items. Numeric strings are accepted.
+`memory://records/{id}/{offset}` provides source pages; binary pages use `base64`.
