@@ -24,8 +24,8 @@ const Guide = `songya stores authoritative Markdown records. Ordinary capture ta
 1. prepare_memory(account) returns a request key, bounded candidates, revisions and ambiguities.
 2. save_memory(key, account, changes, stories) submits the whole related batch. Reuse the SAME key and arguments on retry; inspect memory_maintenance receipt after a lost response.
 Memories and stories require a user field identifying one user. Entities and topics are shared. The user query filter selects memories/stories for that user plus shared entities/topics; all selects everyone. This is filtering, not access control.
-New changes use kind memories/entities/topics/stories and optional ref labels. Existing changes require id and revision. Fields are open YAML metadata. Omit body to preserve it; append adds detail without replacing earlier text. add_relations appends edges while preserving old data. Use $ref values for newly created records. Story additions accept story IDs or $refs and an ordered members list. Story bodies use [[record_id]].
-Keep identities unresolved when evidence is ambiguous. Relations are source-owned {type,target}; only before/after imply chronology. Episode time is time:{description,earliest,latest}; creation/update timestamps are not episode dates. Topics and entities use names/titles, aliases, descriptions and open metadata.
+New changes use kind memories/entities/topics/stories and optional ref labels. Existing changes require id and revision. Fields are open YAML metadata. The engine generates record creation and update timestamps automatically; never supply them. Omit body to preserve it; append adds detail without replacing earlier text. add_relations appends edges while preserving old data. Use $ref values for newly created records. Story additions accept story IDs or $refs and an ordered members list. Story bodies use [[record_id]].
+Keep identities unresolved when evidence is ambiguous. Relations are source-owned {type,target}; only before/after imply chronology. Optional event time is time:{description,earliest,latest}; supply it only when known. Topics and entities use names/titles, aliases, descriptions and open metadata.
 Read tool data and diagnostics before resolving conflicts. A blocked accepted batch is retained; never manufacture a new key to retry it. Inspect proposed/before/account byte pages with read_memory(key,id,view). After review, memory_maintenance abandon deliberately withdraws an uncommitted batch, restores only its own published bytes, and preserves later user edits and all proposals. Abandonment is terminal: retrying its key never publishes it again. Unconfirmed snapshots remain readable with no committed revision; repair their retained batch coordination before updating them. Markdown and preserved originals remain available. Search/list, graph, timelines and stories are paged. Follow next when truncated. Imported parts are reviewed exact byte ranges; no inference or automatic splitting occurs.
 Tool results use structuredContent. Text content is a short status summary. Full records and imports can be read in bounded byte pages.`
 
@@ -165,7 +165,9 @@ func str(description string) map[string]any {
 func count() map[string]any {
 	return map[string]any{"type": []string{"integer", "string"}, "description": "Optional page size or byte offset; numeric strings are accepted."}
 }
-func object() map[string]any        { return map[string]any{"type": "object", "additionalProperties": true} }
+func object() map[string]any {
+	return map[string]any{"type": "object", "additionalProperties": true, "description": "Optional record metadata. Creation and update timestamps are automatic; do not supply them. Optional time describes when the remembered event happened, if known."}
+}
 func array(item any) map[string]any { return map[string]any{"type": "array", "items": item} }
 
 func tool[T any](server *mcp.Server, name, description string, input any, readOnly bool, handler func(context.Context, T) (any, error)) {

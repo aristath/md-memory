@@ -162,6 +162,7 @@ func TestActualStdioCaptureRetrievalOrganizationAndRestart(t *testing.T) {
 		map[string]any{"ref": "memory", "fields": map[string]any{"title": "Coffee with John", "relations": []any{map[string]any{"type": "with", "target": "$john"}}}, "body": "We had coffee."},
 		map[string]any{"ref": "story", "kind": "stories", "fields": map[string]any{"title": "Coffee stories"}},
 	}, "stories": []any{map[string]any{"story": "$story", "members": []string{"$memory"}}}}
+	createdAfter := time.Now().UTC()
 	saved, result := invoke(t, ctx, session, "save_memory", request)
 	if result.IsError {
 		t.Fatalf("capture: %+v", saved)
@@ -172,6 +173,18 @@ func TestActualStdioCaptureRetrievalOrganizationAndRestart(t *testing.T) {
 	}
 	refs := receipt["refs"].(map[string]any)
 	id := refs["memory"].(string)
+	metadata := func() songya.Metadata {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(store, "memories", id+".md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return songya.Parse(data).Metadata()
+	}
+	created := metadata()
+	if created.CreatedAt.Before(createdAfter) || created.CreatedAt.After(time.Now().UTC()) || !created.UpdatedAt.Equal(created.CreatedAt) {
+		t.Fatalf("creation without timestamp inputs did not assign the current time: %+v", created)
+	}
 	read, result := invoke(t, ctx, session, "read_memory", map[string]any{"id": id})
 	if result.IsError {
 		t.Fatal(read)
@@ -185,6 +198,10 @@ func TestActualStdioCaptureRetrievalOrganizationAndRestart(t *testing.T) {
 	enriched, result := invoke(t, ctx, session, "save_memory", update)
 	if result.IsError {
 		t.Fatal(enriched)
+	}
+	modified := metadata()
+	if !modified.CreatedAt.Equal(created.CreatedAt) || !modified.UpdatedAt.After(created.UpdatedAt) {
+		t.Fatalf("update without timestamp inputs did not preserve creation time and advance update time: %+v", modified)
 	}
 	stale, result := invoke(t, ctx, session, "save_memory", map[string]any{"key": "stale", "changes": []any{map[string]any{"id": id, "revision": revision, "body": "Erase earlier details"}}})
 	if !result.IsError || stale["status"] != "conflict" {

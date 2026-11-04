@@ -36,6 +36,11 @@ Initialization supplies server instructions and capabilities. Clients discover
 tool descriptions and input schemas through `tools/list`; they do not need an
 extra application-specific schema tool before capturing memories.
 
+The engine assigns the current UTC time when a record is created or updated.
+Agents do not supply `created_at` or `updated_at`; these are not MCP input fields.
+The optional metadata field `time` describes when the remembered event happened,
+only when known. It is independent of these automatic record timestamps.
+
 `memory://guide` provides workflow instructions. The resource template
 `memory://records/{id}/{offset}` returns a JSON source page containing raw canonical
 record text (or base64), its revision, and continuation information. `read_memory`
