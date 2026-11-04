@@ -9,6 +9,7 @@ handles EOF, SIGINT, SIGTERM, and request cancellation.
 
 - [Tools and resources](#tools-and-resources)
 - [Users](#users)
+- [Entities](#entities)
 - [Prepare and save](#prepare-and-save)
 - [Search, read, and update](#search-read-and-update)
 - [Relationships, timelines, and stories](#relationships-timelines-and-stories)
@@ -75,6 +76,76 @@ Splits inherit the source user unless a part's fields override it. Merges inheri
 it when all sources share a user; cross-user merges need an explicit `fields.user`.
 Imports use top-level `user` as the default; part `fields.user` can override it.
 No user is inferred from the text or assigned to existing files automatically.
+
+## Entities
+
+An entity represents an identifiable person, place, organization, or other thing
+that memories can refer to. Its shared record holds identity metadata and a
+Markdown description of what is known about it.
+
+Use these metadata conventions:
+
+- `name`: the preferred name.
+- `aliases`: known alternative names, when available.
+- `type`: an optional, free-form description of what the entity represents,
+  such as `person`, `place`, or `organization`.
+
+Put descriptive knowledge and known facts in `body`. These conventions leave
+metadata open; they introduce no required fields or fixed classification list.
+`kind:"entities"` selects the record directory; `fields.type` describes the entity.
+
+Suppose the supplied account is **“John, also known as Johnny, is a gardener.”**
+Start with preparation, which searches existing records and supplies a save key:
+
+```json
+{"name":"prepare_memory","arguments":{"account":"John, also known as Johnny, is a gardener."}}
+```
+
+Read relevant entity candidates and reuse their IDs when they represent John.
+To read identity metadata and the Markdown description together, use:
+
+```json
+{"name":"read_memory","arguments":{"id":"ENTITY_ID","view":"source"}}
+```
+
+If John has no existing entity, use `data.key` from preparation as `ENTITY_KEY`:
+
+```json
+{
+  "name":"save_memory",
+  "arguments":{
+    "key":"ENTITY_KEY",
+    "account":"John, also known as Johnny, is a gardener.",
+    "changes":[{
+      "ref":"john",
+      "kind":"entities",
+      "fields":{"name":"John","aliases":["Johnny"],"type":"person"},
+      "body":"John is a gardener."
+    }]
+  }
+}
+```
+
+The committed response's `data.refs.john` is John's generated ID. Entities can be
+created alone or alongside memories in one save. In that same save, a memory can
+refer to the entity through a relation with `target:"$john"`; later saves use the
+returned ID. The engine supplies record IDs and timestamps. Entities need no user.
+
+For a direct entity lookup, search by name or alias:
+
+```json
+{"name":"search_memory","arguments":{"kind":"entities","text":"Johnny"}}
+```
+
+To list entities, omit the search text:
+
+```json
+{"name":"search_memory","arguments":{"kind":"entities"}}
+```
+
+An existing entity can be enriched through `save_memory`: use a fresh preparation
+key, its `id` and `revision` from retrieval, and `append` to add known facts to its
+description. Its ID remains the reusable reference for memories.
 
 ## Prepare and save
 

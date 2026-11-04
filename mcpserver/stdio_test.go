@@ -152,13 +152,13 @@ func TestActualStdioCaptureRetrievalOrganizationAndRestart(t *testing.T) {
 	}
 	// These are the only two tool calls in ordinary capture. No schema, per-entity,
 	// or separate ID lookup is required after preparation.
-	prepared, result := invoke(t, ctx, session, "prepare_memory", map[string]any{"account": "I had coffee with Johnny.", "limit": "3"})
+	prepared, result := invoke(t, ctx, session, "prepare_memory", map[string]any{"account": "John, also known as Johnny, is a gardener. I had coffee with him.", "limit": "3"})
 	if result.IsError {
 		t.Fatal(prepared)
 	}
 	key := payload(t, prepared)["key"].(string)
-	request := map[string]any{"key": key, "account": "I had coffee with Johnny.", "changes": []any{
-		map[string]any{"ref": "john", "kind": "entities", "fields": map[string]any{"name": "John", "aliases": []string{"Johnny"}}},
+	request := map[string]any{"key": key, "account": "John, also known as Johnny, is a gardener. I had coffee with him.", "changes": []any{
+		map[string]any{"ref": "john", "kind": "entities", "fields": map[string]any{"name": "John", "aliases": []string{"Johnny"}, "type": "person"}, "body": "John is a gardener."},
 		map[string]any{"ref": "memory", "fields": map[string]any{"title": "Coffee with John", "relations": []any{map[string]any{"type": "with", "target": "$john"}}}, "body": "We had coffee."},
 		map[string]any{"ref": "story", "kind": "stories", "fields": map[string]any{"title": "Coffee stories"}},
 	}, "stories": []any{map[string]any{"story": "$story", "members": []string{"$memory"}}}}
@@ -172,6 +172,25 @@ func TestActualStdioCaptureRetrievalOrganizationAndRestart(t *testing.T) {
 		t.Fatal(receipt)
 	}
 	refs := receipt["refs"].(map[string]any)
+	for _, text := range []string{"John", "Johnny", ""} {
+		entities, result := invoke(t, ctx, session, "search_memory", map[string]any{"kind": "entities", "text": text})
+		matches := payload(t, entities)["matches"].([]any)
+		if result.IsError || len(matches) != 1 || matches[0].(map[string]any)["id"] != refs["john"] {
+			t.Fatalf("entity lookup %q: %+v", text, entities)
+		}
+	}
+	entity, result := invoke(t, ctx, session, "read_memory", map[string]any{"id": refs["john"], "view": "source"})
+	if result.IsError {
+		t.Fatal(entity)
+	}
+	document := songya.Parse([]byte(payload(t, entity)["text"].(string)))
+	fields := map[string]any{}
+	if err := document.Frontmatter.Decode(&fields); err != nil {
+		t.Fatal(err)
+	}
+	if fields["name"] != "John" || fields["type"] != "person" || document.Body != "John is a gardener." {
+		t.Fatal("entity lost its identity metadata or descriptive knowledge", entity)
+	}
 	id := refs["memory"].(string)
 	metadata := func() songya.Metadata {
 		t.Helper()
