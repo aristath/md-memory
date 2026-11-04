@@ -39,7 +39,7 @@ type Record struct {
 	ID          string      `json:"id"`
 	Source      string      `json:"source"`
 	Kind        Destination `json:"kind"`
-	Revision    string      `json:"revision"`
+	Revision    string      `json:"-"`
 	Pending     bool        `json:"pending,omitempty"`
 	Unconfirmed bool        `json:"unconfirmed,omitempty"`
 	Title       string      `json:"title"`
@@ -298,7 +298,7 @@ type Match struct {
 	ID               string      `json:"id,omitempty"`
 	Source           string      `json:"source"`
 	Kind             Destination `json:"kind"`
-	Revision         string      `json:"revision"`
+	Revision         string      `json:"-"`
 	Pending          bool        `json:"pending,omitempty"`
 	Unconfirmed      bool        `json:"unconfirmed,omitempty"`
 	Title            string      `json:"title"`

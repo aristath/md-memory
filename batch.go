@@ -22,7 +22,7 @@ type Change struct {
 	Ref          string         `json:"ref,omitempty"`
 	ID           string         `json:"id,omitempty"`
 	Kind         Destination    `json:"kind,omitempty"`
-	Revision     string         `json:"revision,omitempty"`
+	Revision     string         `json:"-"`
 	Fields       map[string]any `json:"fields,omitempty"`
 	Body         *string        `json:"body,omitempty"`
 	Append       string         `json:"append,omitempty"`
@@ -30,19 +30,19 @@ type Change struct {
 }
 type StoryAddition struct {
 	Story    string   `json:"story"`
-	Revision string   `json:"revision,omitempty"`
+	Revision string   `json:"-"`
 	Members  []string `json:"members"`
 }
 type BatchRequest struct {
 	User    string          `json:"user,omitempty"`
 	Key     string          `json:"key"`
-	Account string          `json:"account,omitempty"`
+	Account string          `json:"original_text,omitempty"`
 	Changes []Change        `json:"changes"`
 	Stories []StoryAddition `json:"stories,omitempty"`
 }
 type SavedRecord struct {
 	ID       string `json:"id"`
-	Revision string `json:"revision"`
+	Revision string `json:"-"`
 }
 type Receipt struct {
 	Key         string            `json:"key"`
@@ -379,7 +379,7 @@ func prepareBatch(ctx context.Context, root *os.Root, request BatchRequest, revi
 		base := ""
 		if readErr == nil {
 			base = dataRevision(before)
-			if change.Revision == "" || base != strings.ToLower(strings.TrimSpace(change.Revision)) {
+			if change.Revision != "" && base != strings.ToLower(strings.TrimSpace(change.Revision)) {
 				return journal, fmt.Errorf("%s: %w", change.ID, ErrConflict)
 			}
 			doc = Parse(before)

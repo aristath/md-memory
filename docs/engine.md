@@ -354,13 +354,14 @@ fresh request key, shortlists, possible duplicate names, and identity ambiguitie
 It uses deterministic lexical matching, with no LLM calls. A shortlist is evidence
 to review, not an automatic identity assignment.
 
-`ApplyBatch(ctx, BatchRequest)` accepts creations, revision-checked updates, and
+`ApplyBatch(ctx, BatchRequest)` accepts creations, updates by ID, and
 story membership changes in one request. New changes can declare a `ref`; use
 `$ref` values in metadata or `[[$ref]]` in body references. The engine assigns
-final IDs. Existing changes supply `id` and `revision`. Omitted fields remain
+final IDs. Existing changes supply `id`. Go callers may supply `Revision` to
+check a previously read snapshot; MCP callers use IDs only. Omitted fields remain
 intact; omitted `body` preserves it. `append` adds a paragraph, while
 `add_relations` appends source-owned edges without discarding existing entries.
-Story additions require an existing story's revision, or its new `$ref`, and an
+Story additions use an existing story ID, or its new `$ref`, and an
 ordered member list. Unknown story IDs/references genuinely block safe changes;
 unresolved ordinary relationships can remain in source metadata.
 
@@ -415,7 +416,8 @@ no automatic Git commits or pushes of user memories.
 
 ## Organization and import
 
-`Merge(ctx, MergeRequest)` takes reviewed source IDs and revisions, creates a new
+`Merge(ctx, MergeRequest)` takes reviewed source IDs (with optional Go revision
+checks), creates a new
 canonical record, and retires sources through redirects. By default it preserves
 their bodies in a combined account and carries names/aliases and relationships.
 An explicit replacement narrative is a caller's reviewed choice. Original source
@@ -430,7 +432,7 @@ explicit operations, not automatic inference from shared words or names.
 Imports are separate from normal capture. Configure source roots explicitly.
 `PreviewImports(ctx, sourceRoot, offset, limit)` lists Markdown sources with exact
 byte revisions. Read and review them, then call `Import(ctx, sourceRoot, request)`
-with that revision and optional exact byte ranges (`start` inclusive, `end`
+with optional exact byte ranges (`start` inclusive, `end`
 exclusive). Omitting parts imports the whole file verbatim. No automatic splitting,
 identity assignment, rewriting, or inferred dates occur.
 

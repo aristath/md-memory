@@ -14,7 +14,7 @@ import (
 
 type Version struct {
 	ID       string `json:"id"`
-	Revision string `json:"revision"`
+	Revision string `json:"-"`
 }
 type MergeRequest struct {
 	Key     string         `json:"key"`
@@ -99,7 +99,7 @@ func (s *Store) Merge(ctx context.Context, request MergeRequest) (Receipt, error
 		if err != nil {
 			return Receipt{}, err
 		}
-		if source.Revision == "" || doc.Revision != source.Revision {
+		if source.Revision != "" && doc.Revision != source.Revision {
 			return Receipt{}, ErrConflict
 		}
 		if len(nodeStrings("redirects", doc)) > 0 {
@@ -124,7 +124,7 @@ func (s *Store) Merge(ctx context.Context, request MergeRequest) (Receipt, error
 		}
 		ids = append(ids, source.ID)
 		bodies = append(bodies, "## "+r.Title+"\n\n"+doc.Body)
-		changes = append(changes, Change{ID: source.ID, Revision: source.Revision, Fields: map[string]any{"redirects": []string{"$merged"}}})
+		changes = append(changes, Change{ID: source.ID, Revision: doc.Revision, Fields: map[string]any{"redirects": []string{"$merged"}}})
 	}
 	if len(uniqueStrings(ids)) != len(ids) {
 		return Receipt{}, fmt.Errorf("merge sources must identify different records")
@@ -161,7 +161,7 @@ func (s *Store) Split(ctx context.Context, request SplitRequest) (Receipt, error
 	if err != nil {
 		return Receipt{}, err
 	}
-	if original.Revision != request.Source.Revision {
+	if request.Source.Revision != "" && original.Revision != request.Source.Revision {
 		return Receipt{}, ErrConflict
 	}
 	if len(nodeStrings("redirects", original)) > 0 {
@@ -199,6 +199,8 @@ type Ambiguity struct {
 }
 type Preparation struct {
 	Key                string       `json:"key"`
+	Query              string       `json:"query"`
+	User               string       `json:"user,omitempty"`
 	Matches            []Match      `json:"matches"`
 	Ambiguities        []Ambiguity  `json:"ambiguities"`
 	PossibleDuplicates [][]string   `json:"possible_duplicates"`
@@ -220,7 +222,7 @@ func (s *Store) Prepare(ctx context.Context, account, user string, limit int) (P
 	if _, err := rand.Read(random[:]); err != nil {
 		return Preparation{}, err
 	}
-	result := Preparation{Key: fmt.Sprintf("capture_%x", random[:]), Matches: matches.Matches, Ambiguities: []Ambiguity{}, PossibleDuplicates: [][]string{}, Truncated: matches.Truncated, Next: matches.Next, Diagnostics: matches.Diagnostics}
+	result := Preparation{Key: fmt.Sprintf("capture_%x", random[:]), Query: clip(account, 1024), User: user, Matches: matches.Matches, Ambiguities: []Ambiguity{}, PossibleDuplicates: [][]string{}, Truncated: matches.Truncated, Next: matches.Next, Diagnostics: matches.Diagnostics}
 	names := map[string][]string{}
 	kinds := map[string]Destination{}
 	labels := map[string]string{}
@@ -303,7 +305,7 @@ func (s *Store) sourceForBatch(key string, version Version) (*Document, error) {
 	defer root.Close()
 	if journal, err := loadJournal(root, batchDirectory(key)); err == nil {
 		for _, entry := range journal.Entries {
-			if entry.ID == version.ID && entry.Base == version.Revision {
+			if entry.ID == version.ID && (version.Revision == "" || entry.Base == version.Revision) {
 				doc := Parse(entry.Before)
 				doc.ID, doc.Revision = version.ID, entry.Base
 				return doc, nil

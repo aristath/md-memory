@@ -25,7 +25,7 @@ type ImportPart struct {
 type ImportRequest struct {
 	User     string       `json:"user,omitempty"`
 	Path     string       `json:"path"`
-	Revision string       `json:"revision"`
+	Revision string       `json:"-"`
 	Parts    []ImportPart `json:"parts,omitempty"`
 }
 type ImportedPart struct {
@@ -35,7 +35,7 @@ type ImportedPart struct {
 }
 type ImportMapping struct {
 	Source           string         `json:"source"`
-	Revision         string         `json:"revision"`
+	Revision         string         `json:"-"`
 	Archive          string         `json:"archive"`
 	BatchKey         string         `json:"batch_key"`
 	Status           string         `json:"status"`
@@ -46,7 +46,7 @@ type ImportMapping struct {
 }
 type ImportCandidate struct {
 	Path     string `json:"path"`
-	Revision string `json:"revision"`
+	Revision string `json:"-"`
 	Bytes    int    `json:"bytes"`
 	Excerpt  string `json:"excerpt"`
 }
@@ -205,7 +205,7 @@ func (s *Store) Import(ctx context.Context, sourceRoot string, request ImportReq
 			doc := Parse(entry.After)
 			source := dereference(metadataField(&doc.Frontmatter, "import_source"))
 			archive := strings.Join(stringsFromNode(metadataField(source, "archive")), "")
-			if archive == request.Revision {
+			if request.Revision == "" || archive == request.Revision {
 				data, sourceErr = readFile(root, filepath.Join(".imports", archive+".md"))
 				break
 			}
@@ -215,7 +215,7 @@ func (s *Store) Import(ctx context.Context, sourceRoot string, request ImportReq
 		return ImportMapping{}, sourceErr
 	}
 	revision := dataRevision(data)
-	if request.Revision == "" || revision != request.Revision {
+	if request.Revision != "" && revision != request.Revision {
 		return ImportMapping{}, fmt.Errorf("import source changed: %w", ErrConflict)
 	}
 	if len(request.Parts) == 0 {

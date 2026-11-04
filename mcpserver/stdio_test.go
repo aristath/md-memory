@@ -16,8 +16,10 @@ import (
 	"time"
 
 	"github.com/aristath/songya"
+	"github.com/aristath/songya/mcpserver"
 	"github.com/gofrs/flock"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"sync"
 )
 
 func binary(t *testing.T) string {
@@ -106,7 +108,7 @@ func TestStdioUserFiltersKeepEntitiesSharedAndRequireOwnedWrites(t *testing.T) {
 			t.Fatalf("scope %s: %+v", user, envelope)
 		}
 	}
-	envelope, result = invoke(t, ctx, session, "prepare_memory", map[string]any{"account": "coffee John", "user": "bob"})
+	envelope, result = invoke(t, ctx, session, "prepare_memory", map[string]any{"original_text": "coffee John", "user": "bob"})
 	if result.IsError || len(payload(t, envelope)["matches"].([]any)) != 2 {
 		t.Fatal("preparation did not combine scoped memories and shared identities", envelope)
 	}
@@ -152,12 +154,12 @@ func TestActualStdioCaptureRetrievalOrganizationAndRestart(t *testing.T) {
 	}
 	// These are the only two tool calls in ordinary capture. No schema, per-entity,
 	// or separate ID lookup is required after preparation.
-	prepared, result := invoke(t, ctx, session, "prepare_memory", map[string]any{"account": "John, also known as Johnny, is a gardener. I had coffee with him.", "limit": "3"})
+	prepared, result := invoke(t, ctx, session, "prepare_memory", map[string]any{"original_text": "John, also known as Johnny, is a gardener. I had coffee with him.", "limit": "3"})
 	if result.IsError {
 		t.Fatal(prepared)
 	}
 	key := payload(t, prepared)["key"].(string)
-	request := map[string]any{"key": key, "account": "John, also known as Johnny, is a gardener. I had coffee with him.", "changes": []any{
+	request := map[string]any{"key": key, "original_text": "John, also known as Johnny, is a gardener. I had coffee with him.", "changes": []any{
 		map[string]any{"ref": "john", "kind": "entities", "fields": map[string]any{"name": "John", "aliases": []string{"Johnny"}, "type": "person"}, "body": "John is a gardener."},
 		map[string]any{"ref": "memory", "fields": map[string]any{"title": "Coffee with John", "relations": []any{map[string]any{"type": "with", "target": "$john"}}}, "body": "We had coffee."},
 		map[string]any{"ref": "story", "kind": "stories", "fields": map[string]any{"title": "Coffee stories"}},
@@ -204,7 +206,7 @@ func TestActualStdioCaptureRetrievalOrganizationAndRestart(t *testing.T) {
 	if created.CreatedAt.Before(createdAfter) || created.CreatedAt.After(time.Now().UTC()) || !created.UpdatedAt.Equal(created.CreatedAt) {
 		t.Fatalf("creation without timestamp inputs did not assign the current time: %+v", created)
 	}
-	read, result := invoke(t, ctx, session, "read_memory", map[string]any{"id": id})
+	read, result := invoke(t, ctx, session, "read_memory", map[string]any{"id": id, "view": "body"})
 	if result.IsError {
 		t.Fatal(read)
 	}
@@ -212,8 +214,10 @@ func TestActualStdioCaptureRetrievalOrganizationAndRestart(t *testing.T) {
 	if current["text"] != "We had coffee." {
 		t.Fatal(current)
 	}
-	revision := current["revision"].(string)
-	update := map[string]any{"key": "enrich", "changes": []any{map[string]any{"id": id, "revision": revision, "append": "I remember a blue guitar."}}}
+	if _, exposed := current["revision"]; exposed {
+		t.Fatal("read exposed a revision token")
+	}
+	update := map[string]any{"key": "enrich", "changes": []any{map[string]any{"id": id, "append": "I remember a blue guitar."}}}
 	enriched, result := invoke(t, ctx, session, "save_memory", update)
 	if result.IsError {
 		t.Fatal(enriched)
@@ -222,9 +226,9 @@ func TestActualStdioCaptureRetrievalOrganizationAndRestart(t *testing.T) {
 	if !modified.CreatedAt.Equal(created.CreatedAt) || !modified.UpdatedAt.After(created.UpdatedAt) {
 		t.Fatalf("update without timestamp inputs did not preserve creation time and advance update time: %+v", modified)
 	}
-	stale, result := invoke(t, ctx, session, "save_memory", map[string]any{"key": "stale", "changes": []any{map[string]any{"id": id, "revision": revision, "body": "Erase earlier details"}}})
-	if !result.IsError || stale["status"] != "conflict" {
-		t.Fatalf("stale edit accepted: %+v", stale)
+	second, result := invoke(t, ctx, session, "save_memory", map[string]any{"key": "enrich-again", "changes": []any{map[string]any{"id": id, "append": "John played it."}}})
+	if result.IsError || payload(t, second)["status"] != "committed" {
+		t.Fatalf("update by ID failed: %+v", second)
 	}
 	searched, result := invoke(t, ctx, session, "search_memory", map[string]any{"text": "blue guitar", "limit": "2"})
 	if result.IsError || len(payload(t, searched)["matches"].([]any)) != 1 {
@@ -243,7 +247,7 @@ func TestActualStdioCaptureRetrievalOrganizationAndRestart(t *testing.T) {
 		t.Fatal(imported)
 	}
 	file := payload(t, imported)["files"].([]any)[0].(map[string]any)
-	imported, result = invoke(t, ctx, session, "import_memories", map[string]any{"action": "apply", "root": "notes", "path": file["path"], "revision": file["revision"]})
+	imported, result = invoke(t, ctx, session, "import_memories", map[string]any{"action": "apply", "root": "notes", "path": file["path"]})
 	if result.IsError || payload(t, imported)["coverage_complete"] != true {
 		t.Fatal(imported)
 	}
@@ -257,7 +261,7 @@ func TestActualStdioCaptureRetrievalOrganizationAndRestart(t *testing.T) {
 	if result.IsError || payload(t, retried)["refs"].(map[string]any)["memory"] != id {
 		t.Fatal("restart lost idempotency")
 	}
-	read, result = invoke(t, ctx, session, "read_memory", map[string]any{"id": id})
+	read, result = invoke(t, ctx, session, "read_memory", map[string]any{"id": id, "view": "body"})
 	if result.IsError || !strings.Contains(payload(t, read)["text"].(string), "blue guitar") {
 		t.Fatal("retry replayed old content")
 	}
@@ -288,7 +292,7 @@ func TestStdioCancellationAndEOFDoNotPublishWaitingRequests(t *testing.T) {
 	defer lock.Close()
 	callCtx, stop := context.WithTimeout(ctx, 100*time.Millisecond)
 	defer stop()
-	_, err = session.CallTool(callCtx, &mcp.CallToolParams{Name: "save_memory", Arguments: map[string]any{"key": "cancelled", "changes": []any{map[string]any{"id": original.ID, "revision": original.Revision, "body": "Must not publish"}}}})
+	_, err = session.CallTool(callCtx, &mcp.CallToolParams{Name: "save_memory", Arguments: map[string]any{"key": "cancelled", "changes": []any{map[string]any{"id": original.ID, "body": "Must not publish"}}}})
 	if err == nil {
 		t.Fatal("blocked request ignored cancellation")
 	}
@@ -322,7 +326,7 @@ func TestEquivalentScalarArgumentsAndBinaryPages(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	session := connect(t, ctx, bin, path, "")
-	read, result := invoke(t, ctx, session, "read_memory", map[string]any{"id": doc.ID, "offset": "0", "limit": "3"})
+	read, result := invoke(t, ctx, session, "read_memory", map[string]any{"id": doc.ID, "view": "body", "offset": "0", "limit": "3"})
 	if result.IsError || payload(t, read)["base64"] != "//4A" {
 		t.Fatal("binary bytes were silently normalized")
 	}
@@ -330,7 +334,7 @@ func TestEquivalentScalarArgumentsAndBinaryPages(t *testing.T) {
 	if bytes.Contains(data, []byte("replacement")) {
 		t.Fatal("binary source became replacement characters")
 	}
-	saved, result := invoke(t, ctx, session, "save_memory", map[string]any{"key": "exact-numbers", "account": 3, "changes": []any{map[string]any{"ref": "numbers", "fields": map[string]any{"title": 3, "integer": json.Number("9007199254740993"), "decimal": json.Number("1.234567890123456789")}}}})
+	saved, result := invoke(t, ctx, session, "save_memory", map[string]any{"key": "exact-numbers", "original_text": 3, "changes": []any{map[string]any{"ref": "numbers", "fields": map[string]any{"title": 3, "integer": json.Number("9007199254740993"), "decimal": json.Number("1.234567890123456789")}}}})
 	if result.IsError {
 		t.Fatal(saved)
 	}
@@ -355,7 +359,7 @@ func TestLargeStdioReceiptsRemainBoundedAndFullyInspectable(t *testing.T) {
 	// successful write's durable outcome or return an oversized protocol message.
 	key := strings.Repeat("request-", 1000)
 	label := strings.Repeat("reference-", 1000)
-	request := map[string]any{"key": key, "account": "Original account", "changes": []any{map[string]any{"ref": label, "body": "A preserved narrative"}}}
+	request := map[string]any{"key": key, "original_text": "Original account", "changes": []any{map[string]any{"ref": label, "body": "A preserved narrative"}}}
 	envelope, result := invoke(t, ctx, session, "save_memory", request)
 	receipt := payload(t, envelope)
 	if result.IsError || receipt["status"] != "committed" || receipt["key_truncated"] != true || receipt["refs_truncated"] != true {
@@ -391,7 +395,7 @@ func TestLargeStdioReceiptsRemainBoundedAndFullyInspectable(t *testing.T) {
 	if result.IsError || !strings.Contains(payload(t, envelope)["text"].(string), "A preserved narrative") {
 		t.Fatal(envelope)
 	}
-	envelope, result = invoke(t, ctx, session, "read_memory", map[string]any{"key": key, "view": "account"})
+	envelope, result = invoke(t, ctx, session, "read_memory", map[string]any{"key": key, "view": "original_text"})
 	if result.IsError || payload(t, envelope)["text"] != "Original account" {
 		t.Fatal(envelope)
 	}
@@ -445,7 +449,7 @@ func TestStdioShutdownCancelsUnacceptedWaitingWrite(t *testing.T) {
 			finished := make(chan struct{})
 			go func() {
 				defer close(finished)
-				_, _ = session.CallTool(ctx, &mcp.CallToolParams{Name: "save_memory", Arguments: map[string]any{"key": "shutdown-waiting", "changes": []any{map[string]any{"id": doc.ID, "revision": doc.Revision, "body": "Must not publish"}}}})
+				_, _ = session.CallTool(ctx, &mcp.CallToolParams{Name: "save_memory", Arguments: map[string]any{"key": "shutdown-waiting", "changes": []any{map[string]any{"id": doc.ID, "body": "Must not publish"}}}})
 			}()
 			// Allow the real transport to dispatch the request. The held lock prevents any
 			// acceptance; this delay does not determine the expected write outcome.
@@ -504,11 +508,11 @@ func TestStdioGraphChronologyMergeSplitAndMaintenance(t *testing.T) {
 	}
 	sources := []any{}
 	for _, id := range []string{first, later} {
-		envelope, result = invoke(t, ctx, session, "read_memory", map[string]any{"id": id})
+		envelope, result = invoke(t, ctx, session, "read_memory", map[string]any{"id": id, "view": "body"})
 		if result.IsError {
 			t.Fatal(envelope)
 		}
-		sources = append(sources, map[string]any{"id": id, "revision": payload(t, envelope)["revision"]})
+		sources = append(sources, map[string]any{"id": id})
 	}
 	merge := map[string]any{"action": "merge", "key": "merge-stdio", "sources": sources}
 	envelope, result = invoke(t, ctx, session, "organize_memory", merge)
@@ -524,7 +528,7 @@ func TestStdioGraphChronologyMergeSplitAndMaintenance(t *testing.T) {
 	if result.IsError {
 		t.Fatal(envelope)
 	}
-	split := map[string]any{"action": "split", "key": "split-stdio", "source": map[string]any{"id": merged, "revision": payload(t, envelope)["revision"]}, "parts": []any{map[string]any{"body": "First account"}, map[string]any{"body": "Later account"}}}
+	split := map[string]any{"action": "split", "key": "split-stdio", "source": map[string]any{"id": merged}, "parts": []any{map[string]any{"body": "First account"}, map[string]any{"body": "Later account"}}}
 	envelope, result = invoke(t, ctx, session, "organize_memory", split)
 	if result.IsError {
 		t.Fatal(envelope)
@@ -609,13 +613,13 @@ func TestStdioRetainedSingleCreationRemainsSearchableAndReadable(t *testing.T) {
 	if len(matches) != 1 || matches[0].(map[string]any)["pending"] != true {
 		t.Fatal("pending body vanished from MCP discovery")
 	}
-	for _, args := range []map[string]any{{"id": id}, {"source": "memories/" + id + ".md"}} {
+	for _, args := range []map[string]any{{"id": id, "view": "body"}, {"source": "memories/" + id + ".md"}} {
 		envelope, result = invoke(t, ctx, session, "read_memory", args)
 		if result.IsError {
 			t.Fatal(envelope)
 		}
 		page := payload(t, envelope)
-		if page["pending"] != true || page["revision"] != "" || !strings.Contains(page["text"].(string), "Retained account") {
+		if page["pending"] != true || page["revision"] != nil || !strings.Contains(page["text"].(string), "Retained account") {
 			t.Fatalf("pending content claimed a committed revision: %+v", page)
 		}
 	}
@@ -634,23 +638,22 @@ func TestStdioImportRequiresUnambiguousReviewedBounds(t *testing.T) {
 	if result.IsError {
 		t.Fatal(envelope)
 	}
-	revision := payload(t, envelope)["files"].([]any)[0].(map[string]any)["revision"]
 	for _, part := range []map[string]any{{"start": "not a number", "end": 3}, {"start": 0.5, "end": 3}, {"start": 0}} {
-		envelope, result = invoke(t, ctx, session, "import_memories", map[string]any{"action": "apply", "root": "notes", "path": "reviewed.md", "revision": revision, "parts": []any{part}})
+		envelope, result = invoke(t, ctx, session, "import_memories", map[string]any{"action": "apply", "root": "notes", "path": "reviewed.md", "parts": []any{part}})
 		if !result.IsError {
 			t.Fatalf("unreviewed range was guessed: %+v", part)
 		}
 	}
-	envelope, result = invoke(t, ctx, session, "import_memories", map[string]any{"action": "apply", "root": "notes", "path": "reviewed.md", "revision": revision, "parts": []any{map[string]any{"start": "0.0", "end": "3.0"}}})
+	envelope, result = invoke(t, ctx, session, "import_memories", map[string]any{"action": "apply", "root": "notes", "path": "reviewed.md", "parts": []any{map[string]any{"start": "0.0", "end": "3.0"}}})
 	if result.IsError {
 		t.Fatal(envelope)
 	}
 	id := payload(t, envelope)["parts"].([]any)[0].(map[string]any)["id"]
-	envelope, result = invoke(t, ctx, session, "read_memory", map[string]any{"id": id})
+	envelope, result = invoke(t, ctx, session, "read_memory", map[string]any{"id": id, "view": "body"})
 	if result.IsError || payload(t, envelope)["text"] != "abc" {
 		t.Fatal("equivalent integral bounds failed")
 	}
-	envelope, result = invoke(t, ctx, session, "read_memory", map[string]any{"id": id, "offset": strconv.Itoa(int(^uint(0) >> 1))})
+	envelope, result = invoke(t, ctx, session, "read_memory", map[string]any{"id": id, "view": "body", "offset": strconv.Itoa(int(^uint(0) >> 1))})
 	if result.IsError || payload(t, envelope)["offset"] != float64(3) || payload(t, envelope)["truncated"] != false {
 		t.Fatal("large offset wrapped to the beginning")
 	}
@@ -677,12 +680,107 @@ func TestStdioUnconfirmedSnapshotIsReadableWithoutACommittedRevision(t *testing.
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	session := connect(t, ctx, bin, path, "")
-	envelope, result := invoke(t, ctx, session, "read_memory", map[string]any{"id": id})
+	envelope, result := invoke(t, ctx, session, "read_memory", map[string]any{"id": id, "view": "body"})
 	if result.IsError {
 		t.Fatal(envelope)
 	}
 	page := payload(t, envelope)
-	if page["unconfirmed"] != true || page["revision"] != "" || page["text"] != "Readable uncertain account" {
+	if page["unconfirmed"] != true || page["revision"] != nil || !strings.Contains(fmt.Sprint(page["text"]), "Readable uncertain account") {
 		t.Fatalf("coordination damage concealed content or claimed commitment: %+v", page)
+	}
+}
+
+// Execute the actual agent example, then check stored meaning and concurrent
+// enrichment through the real stdio server rather than a separate Go fixture.
+func TestGuideCaptureKeepsLinksTimeAndOriginalText(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	path := t.TempDir()
+	session := connect(t, ctx, binary(t), path, "")
+	if session.InitializeResult().Instructions != mcpserver.Guide {
+		t.Fatal("agent guide missing from initialization")
+	}
+	listed, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range listed.Tools {
+		schema, _ := json.Marshal(tool.InputSchema)
+		if bytes.Contains(schema, []byte(`"revision"`)) || bytes.Contains(schema, []byte(`"account"`)) {
+			t.Fatalf("technical capture input remains: %s", schema)
+		}
+	}
+	_, example, _ := strings.Cut(mcpserver.Guide, "save_memory(")
+	example, _, _ = strings.Cut(example, ")\n")
+	request := map[string]any{}
+	if err := json.Unmarshal([]byte(example), &request); err != nil {
+		t.Fatal(err)
+	}
+	prepared, result := invoke(t, ctx, session, "prepare_memory", map[string]any{"original_text": request["original_text"], "user": "ari"})
+	if result.IsError || payload(t, prepared)["query"] != request["original_text"] {
+		t.Fatal(prepared)
+	}
+	request["key"] = payload(t, prepared)["key"]
+	saved, result := invoke(t, ctx, session, "save_memory", request)
+	if result.IsError {
+		t.Fatal(saved)
+	}
+	encoded, _ := json.Marshal(saved)
+	if bytes.Contains(encoded, []byte(`"revision"`)) {
+		t.Fatal("save exposed revision tokens")
+	}
+	refs := payload(t, saved)["refs"].(map[string]any)
+	id := refs["dinner"].(string)
+	read, result := invoke(t, ctx, session, "read_memory", map[string]any{"id": id})
+	if result.IsError {
+		t.Fatal(read)
+	}
+	doc := songya.Parse([]byte(payload(t, read)["text"].(string)))
+	if doc.Metadata().User != "ari" || len(doc.Metadata().Relations) != 2 || !strings.Contains(doc.Body, "John") {
+		t.Fatal("guide lost ownership, relationships or narrative", read)
+	}
+	fields := map[string]any{}
+	if err := doc.Frontmatter.Decode(&fields); err != nil {
+		t.Fatal(err)
+	}
+	when := fields["time"].(map[string]any)
+	if fmt.Sprint(when["earliest"]) != "2025-06-01" || fmt.Sprint(when["latest"]) != "2025-07-31" || !strings.Contains(fmt.Sprint(fields["original_accounts"]), request["original_text"].(string)) {
+		t.Fatal("guide lost event bounds or original words", fields)
+	}
+	graph, result := invoke(t, ctx, session, "explore_memory", map[string]any{"id": id})
+	if result.IsError || len(payload(t, graph)["edges"].([]any)) != 2 {
+		t.Fatal(graph)
+	}
+	for _, name := range []string{"john", "pizza"} {
+		found := false
+		for _, relation := range doc.Metadata().Relations {
+			found = found || relation.Target == refs[name]
+		}
+		if !found {
+			t.Fatalf("unresolved %s relationship", name)
+		}
+	}
+	var writers sync.WaitGroup
+	for i := range 6 {
+		writers.Go(func() {
+			args := map[string]any{"key": fmt.Sprintf("detail-%d", i), "changes": []any{map[string]any{"id": id, "append": fmt.Sprintf("Detail %d", i)}}}
+			for range 2 { // A repeated accepted request must not append twice.
+				result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "save_memory", Arguments: args})
+				if err != nil || result.IsError {
+					t.Errorf("concurrent enrichment: %+v %v", result, err)
+					return
+				}
+			}
+		})
+	}
+	writers.Wait()
+	read, result = invoke(t, ctx, session, "read_memory", map[string]any{"id": id, "view": "body"})
+	if result.IsError {
+		t.Fatal(read)
+	}
+	for i := range 6 {
+		if strings.Count(payload(t, read)["text"].(string), fmt.Sprintf("Detail %d", i)) != 1 {
+			t.Fatal("concurrent append lost or duplicated detail", read)
+		}
 	}
 }

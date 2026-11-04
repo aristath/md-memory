@@ -15,7 +15,7 @@ type StoryPage struct {
 	User          string       `json:"user,omitempty"`
 	UserTruncated bool         `json:"user_truncated,omitempty"`
 	ID            string       `json:"id"`
-	Revision      string       `json:"revision"`
+	Revision      string       `json:"-"`
 	Text          string       `json:"text,omitempty"`
 	Base64        string       `json:"base64,omitempty"`
 	Offset        int          `json:"offset"`
