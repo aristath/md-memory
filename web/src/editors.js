@@ -68,13 +68,21 @@ export function timestamps(source) {
     .filter((line) => /^(created_at|updated_at):/.test(line))
     .join("\n");
 }
-export function codeEditor(host, source, onChange, protectedFields = []) {
+export function codeEditor(
+  host,
+  source,
+  onChange,
+  protectedFields = [],
+  readOnly = false,
+) {
   return new CodeView({
     parent: host,
     state: EditorState.create({
       doc: source,
       extensions: [
         basicSetup,
+        EditorState.readOnly.of(readOnly),
+        CodeView.editable.of(!readOnly),
         yamlFrontmatter({ content: markdown() }),
         CodeView.lineWrapping,
         CodeView.contentAttributes.of({ "aria-label": "Markdown source" }),
@@ -106,15 +114,19 @@ export function codeEditor(host, source, onChange, protectedFields = []) {
     }),
   });
 }
-export function richEditor(host, body, onChange) {
+export function richEditor(host, body, onChange, readOnly = false) {
   const doc = parser.parse(body);
   return new RichView(host, {
+    editable: () => !readOnly,
     attributes: {
       "aria-label": "Record text",
       role: "textbox",
       "aria-multiline": "true",
     },
-    state: RichState.create({ doc, plugins: exampleSetup({ schema }) }),
+    state: RichState.create({
+      doc,
+      plugins: readOnly ? [] : exampleSetup({ schema }),
+    }),
     dispatchTransaction(transaction) {
       const next = this.state.apply(transaction);
       this.updateState(next);

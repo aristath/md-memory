@@ -76,6 +76,31 @@ func TestHTTPDocumentEditingAndDeletion(t *testing.T) {
 		t.Fatal(response.Body.String())
 	}
 }
+
+func TestTableProjectsMetadataAndRevisionFromTheCatalog(t *testing.T) {
+	store, err := songya.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := store.Create(songya.Entities, map[string]any{"name": "Cedar", "description": "A tree", "type": "plant taxon", "aliases": []string{"Cedrus", "Atlas cedar"}}, "Botanical notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for pass := 0; pass < 2; pass++ { // Fresh scan and cached projection.
+		code, result := call(t, Handler(store), "GET", "/api/records", nil)
+		if code != 200 {
+			t.Fatal(code, result)
+		}
+		rows := result["records"].([]any)
+		if len(rows) != 1 {
+			t.Fatal(result)
+		}
+		row := rows[0].(map[string]any)
+		if row["title"] != "Cedar" || row["description"] != "A tree" || row["type"] != "plant taxon" || row["version"] != record.Revision || len(row["aliases"].([]any)) != 2 || result["types"].(map[string]any)["plant taxon"] != true {
+			t.Fatal("table lost metadata or revision", result)
+		}
+	}
+}
 func TestBundledAssetsAndCrossSiteWrites(t *testing.T) {
 	store, _ := songya.Open(t.TempDir())
 	h := Handler(store)

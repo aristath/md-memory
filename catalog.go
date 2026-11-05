@@ -20,7 +20,7 @@ import (
 	"time"
 )
 
-const indexFormat = 5
+const indexFormat = 6
 
 // Diagnostic identifies a recoverable problem without hiding healthy records.
 type Diagnostic struct {
@@ -46,6 +46,7 @@ type Record struct {
 	Name        string      `json:"name,omitempty"`
 	Aliases     []string    `json:"aliases,omitempty"`
 	Description string      `json:"description,omitempty"`
+	Type        string      `json:"type,omitempty"`
 	Relations   []Relation  `json:"relations,omitempty"`
 	Redirects   []string    `json:"redirects,omitempty"`
 	Time        EpisodeTime `json:"time"`
@@ -99,6 +100,7 @@ func recordFromDocument(source string, d *Document, kind Destination) Record {
 	r.Context = recallContext(d)
 	r.Aliases = nodeStrings("aliases", d)
 	r.Description = strings.Join(nodeStrings("description", d), " ")
+	r.Type = strings.Join(nodeStrings("type", d), " ")
 	r.Redirects = nodeStrings("redirects", d)
 	for _, name := range []string{"entities", "topics", "broader"} {
 		for _, target := range nodeStrings(name, d) {

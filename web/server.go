@@ -37,19 +37,19 @@ func Handler(store *songya.Store) http.Handler {
 		records := catalog.Select(songya.Query{Text: r.URL.Query().Get("q"), Kind: songya.Destination(r.URL.Query().Get("kind")), User: r.URL.Query().Get("user")})
 		summaries := []map[string]any{}
 		owners := map[string]bool{}
+		types := map[string]bool{}
 		for _, record := range catalog.Records {
 			if record.User != "" {
 				owners[record.User] = true
 			}
+			if record.Type != "" {
+				types[record.Type] = true
+			}
 		}
 		for _, record := range records {
-			preview := []rune(record.Body)
-			if len(preview) > 160 {
-				preview = preview[:160]
-			}
-			summaries = append(summaries, map[string]any{"id": record.ID, "source": record.Source, "title": record.Title, "kind": record.Kind, "user": record.User, "preview": string(preview)})
+			summaries = append(summaries, map[string]any{"id": record.ID, "source": record.Source, "title": record.Title, "description": record.Description, "type": record.Type, "aliases": record.Aliases, "kind": record.Kind, "user": record.User, "version": record.Revision, "pending": record.Pending || record.Unconfirmed})
 		}
-		write(w, map[string]any{"records": summaries, "owners": owners, "diagnostics": catalog.Diagnostics})
+		write(w, map[string]any{"records": summaries, "owners": owners, "types": types, "diagnostics": catalog.Diagnostics})
 	})
 	mux.HandleFunc("GET /api/records/{id}", func(w http.ResponseWriter, r *http.Request) {
 		doc, err := store.Read(r.PathValue("id"))

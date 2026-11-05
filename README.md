@@ -28,19 +28,26 @@ The editor listens on loopback by default. There are no accounts or per-user
 access restrictions. Owner filters group memories and stories; entities and
 topics remain shared.
 
-Browse or search all four record types. Open a record and choose **Visual** to edit
-formatted Markdown, or **Source** to edit the full Markdown/YAML document with
-syntax highlighting. Both views share the same draft. Metadata has text, number
-and boolean controls, with YAML values for lists and nested/custom structures.
+The front page is a full-width record table. Search content or filter by title,
+description, record type, metadata type, aliases and owner. Click a column header
+to sort in either direction. **Record type** identifies a memory, entity, topic or
+story; **Type** shows the open metadata value, such as person or plant taxon.
+
+Click a title to inspect the record in a read-only modal, or **Edit** to open the
+editor modal. **Visual** edits formatted Markdown; **Source** edits the complete
+Markdown/YAML document with syntax highlighting. Both modes share the same draft.
+Closing the modal with **Close** or Escape keeps unsaved work in the current tab.
+Metadata has text, number and boolean controls, with YAML values for lists and
+nested/custom structures.
 Creation/update timestamps are automatic and read-only. IDs come from filenames.
 
 **Connections** searches for targets by name or text, accepts custom relationship
 types, and shows outgoing connections and incoming links. Opening another record
 keeps unsaved drafts in the current browser tab. **Save** explicitly publishes
 changes. Failed saves retain the draft; uncertain writes reuse the original
-request on retry, while rejected input can be corrected. Conflicts preserve your draft; **Load saved version** explicitly replaces it
-with the current stored record after confirmation. **Discard draft/changes**
-explicitly abandons local edits. The browser warns before leaving a tab with
+request on retry, while rejected input can be corrected. Conflicts preserve your
+draft; **Load saved version** explicitly replaces it with the current stored record
+after confirmation. **Discard draft/changes** explicitly abandons local edits. The browser warns before leaving a tab with
 unsaved work. Drafts are not saved to disk until you press Save.
 
 **Delete permanently** removes the live record immediately, without trash or a

@@ -90,7 +90,22 @@ async function save(
 const source = (title, body = "A remembered afternoon.", extra = "") =>
   `---\nuser: ari\ntitle: ${title}\ncustom:\n  nested: [3, false, yes]\n${extra}---\n${body}`;
 async function waitText(page, text) {
-  await page.getByText(text, { exact: true }).first().waitFor();
+  await page
+    .locator(".messages:visible")
+    .getByText(text, { exact: true })
+    .waitFor();
+}
+
+async function editRecord(page, title) {
+  if (await page.locator("dialog[open]").count())
+    await page
+      .getByRole("button", { name: "Close record", exact: true })
+      .click();
+  await page.locator("dialog").waitFor({ state: "hidden" });
+  await page
+    .getByRole("button", { name: "Edit " + title, exact: true })
+    .click();
+  await page.getByRole("dialog").waitFor();
 }
 
 test("serves offline bundled editors; creates and visually edits a real memory", async () => {
@@ -144,11 +159,7 @@ test("all record types, full source, nested metadata and automatic clocks surviv
       (f) => f.key === "created_at",
     ).value;
     const { page, context } = await pageFor();
-    await page
-      .getByRole("button")
-      .filter({ has: page.getByText("Source " + kind, { exact: true }) })
-      .first()
-      .click();
+    await editRecord(page, "Source " + kind);
     await page.getByRole("tab", { name: "Source", exact: true }).click();
     const content = page.locator(".cm-content");
     await content.waitFor();
@@ -186,11 +197,7 @@ test("connections and deletion blockers are navigable; removing the link permits
   const entity = await save(source("Alex"), "entities");
   const memory = await save(source("Meeting Alex"));
   const { page, context } = await pageFor();
-  await page
-    .getByRole("button")
-    .filter({ has: page.getByText("Meeting Alex", { exact: true }) })
-    .first()
-    .click();
+  await editRecord(page, "Meeting Alex");
   await page.getByRole("button", { name: "Connections", exact: true }).click();
   await page.getByLabel("Find a record", { exact: true }).fill("Alex");
   await page
@@ -230,11 +237,7 @@ test("connections and deletion blockers are navigable; removing the link permits
     .click();
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await waitText(page, "Saved");
-  await page
-    .getByRole("button")
-    .filter({ has: page.getByText("Alex", { exact: true }) })
-    .first()
-    .click();
+  await editRecord(page, "Alex");
   await page.getByRole("heading", { name: "Alex", exact: true }).waitFor();
   await page
     .getByRole("button", { name: "Delete permanently", exact: true })
@@ -288,26 +291,12 @@ test("phone layout, metadata editing, references and unsaved navigation retain t
   );
   const two = await save(source("Another phone record"));
   const { page, context } = await pageFor({ width: 390, height: 844 });
-  await page
-    .getByRole("button")
-    .filter({ has: page.getByText("Phone record", { exact: true }) })
-    .first()
-    .click();
+  await editRecord(page, "Phone record");
   await page.locator(".ProseMirror p").first().click();
   await page.keyboard.press("End");
   await page.keyboard.type(" A new sentence.");
-  await page.getByRole("button", { name: "Library", exact: true }).click();
-  await page
-    .getByRole("button")
-    .filter({ has: page.getByText("Another phone record", { exact: true }) })
-    .first()
-    .click();
-  await page.getByRole("button", { name: "Library", exact: true }).click();
-  await page
-    .getByRole("button")
-    .filter({ has: page.getByText("Phone record", { exact: true }) })
-    .first()
-    .click();
+  await editRecord(page, "Another phone record");
+  await editRecord(page, "Phone record");
   await page
     .getByRole("heading", { name: "Phone record", exact: true })
     .waitFor();
@@ -335,6 +324,10 @@ test("phone layout, metadata editing, references and unsaved navigation retain t
 test("creates all four types through the visual form and exposes automatic source fields read-only", async () => {
   const { page, context } = await pageFor();
   for (const kind of ["memories", "entities", "topics", "stories"]) {
+    if (await page.locator("dialog[open]").count())
+      await page
+        .getByRole("button", { name: "Close record", exact: true })
+        .click();
     await page
       .getByRole("button", { name: "New record", exact: true })
       .first()
@@ -369,11 +362,7 @@ test("creates all four types through the visual form and exposes automatic sourc
 test("reports concurrent edits without overwriting and permits an explicit reload", async () => {
   const record = await save(source("Concurrent record"));
   const { page, context } = await pageFor();
-  await page
-    .getByRole("button")
-    .filter({ has: page.getByText("Concurrent record", { exact: true }) })
-    .first()
-    .click();
+  await editRecord(page, "Concurrent record");
   await page
     .getByRole("heading", { name: "Concurrent record", exact: true })
     .waitFor();
@@ -411,11 +400,7 @@ test("reports concurrent edits without overwriting and permits an explicit reloa
 test("source and visual metadata share one draft, including new nested metadata", async () => {
   const record = await save(source("Shared draft"));
   const { page, context } = await pageFor();
-  await page
-    .getByRole("button")
-    .filter({ has: page.getByText("Shared draft", { exact: true }) })
-    .first()
-    .click();
+  await editRecord(page, "Shared draft");
   await page
     .getByRole("heading", { name: "Shared draft", exact: true })
     .waitFor();
@@ -458,11 +443,7 @@ test("a malformed draft is retained while healthy records stay editable", async 
   const bad = await save(source("Draft with a mistake"));
   const healthy = await save(source("Healthy neighbour"));
   const { page, context } = await pageFor();
-  await page
-    .getByRole("button")
-    .filter({ has: page.getByText("Draft with a mistake", { exact: true }) })
-    .first()
-    .click();
+  await editRecord(page, "Draft with a mistake");
   await page
     .getByRole("heading", { name: "Draft with a mistake", exact: true })
     .waitFor();
@@ -472,22 +453,14 @@ test("a malformed draft is retained while healthy records stay editable", async 
     .fill("broken: [unfinished");
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await page.getByRole("alert").waitFor();
-  await page
-    .getByRole("button")
-    .filter({ has: page.getByText("Healthy neighbour", { exact: true }) })
-    .first()
-    .click();
+  await editRecord(page, "Healthy neighbour");
   await page
     .getByRole("heading", { name: "Healthy neighbour", exact: true })
     .waitFor();
   await page.locator(".ProseMirror").fill("Still editable.");
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await waitText(page, "Saved");
-  await page
-    .getByRole("button")
-    .filter({ has: page.getByText("Draft with a mistake", { exact: true }) })
-    .first()
-    .click();
+  await editRecord(page, "Draft with a mistake");
   await page
     .getByRole("heading", { name: "Draft with a mistake", exact: true })
     .waitFor();
@@ -512,22 +485,17 @@ test("a malformed draft is retained while healthy records stay editable", async 
   assert.deepEqual(errors, []);
 });
 
-test("quoted automatic timestamps are protected and malformed records leave healthy reads usable", async () => {
+test("quoted automatic timestamps are protected and malformed records leave healthy reads usable", async (t) => {
+  const damagedPath = join(root, "store", "memories", "m_000000000098.md");
+  t.after(() => rmSync(damagedPath, { force: true }));
   const id = "m_000000000099";
   writeFileSync(
     join(root, "store", "memories", id + ".md"),
     '---\r\nuser: ari\r\ntitle: Quoted clocks\r\n"created_at": 2024-01-01T00:00:00Z\r\n"updated_at": 2024-01-01T00:00:00Z\r\n---\r\nA record.',
   );
-  writeFileSync(
-    join(root, "store", "memories", "m_000000000098.md"),
-    "---\ntitle: [broken\n---\nRetained prose.",
-  );
+  writeFileSync(damagedPath, "---\ntitle: [broken\n---\nRetained prose.");
   const { page, context } = await pageFor();
-  await page
-    .getByRole("button")
-    .filter({ has: page.getByText("Quoted clocks", { exact: true }) })
-    .first()
-    .click();
+  await editRecord(page, "Quoted clocks");
   await page
     .getByRole("heading", { name: "Quoted clocks", exact: true })
     .waitFor();
@@ -576,7 +544,9 @@ test("owner and type filters preserve shared identities without adding access re
   assert.ok(rows.some((r) => r.includes("Ownership Bob")));
   assert.ok(rows.some((r) => r.includes("Ownership shared")));
   assert.ok(!rows.some((r) => r.includes("Ownership Ari")));
-  await page.getByLabel("Type", { exact: true }).selectOption("memories");
+  await page
+    .getByLabel("Record type filter", { exact: true })
+    .selectOption("memories");
   await page.waitForFunction(
     () => document.querySelectorAll(".record").length === 1,
   );
@@ -631,7 +601,10 @@ test("edits after a lost reply resolve the original write before saving the new 
   ).json();
   const matching = result.records.filter((r) => r.title === "A changing draft");
   assert.equal(matching.length, 1);
-  assert.match(matching[0].preview, /newer thought/);
+  const saved = await (
+    await fetch(url + "/api/records/" + matching[0].id)
+  ).json();
+  assert.match(saved.source, /newer thought/);
   await context.close();
   assert.deepEqual(errors, []);
 });
@@ -681,6 +654,168 @@ test("a rejected save can be corrected and saved without retaining the invalid r
     listed.records.filter((r) => r.title === "Corrected owner").length,
     1,
   );
+  await context.close();
+  assert.deepEqual(errors, []);
+});
+
+test("the front page is a sortable metadata table with independent column filters and read-only inspection", async () => {
+  for (const [title, description, type, alias, kind] of [
+    ["Table 2", "Cedar tree", "plant taxon", "Atlas", "entities"],
+    ["Table 10", "Botanist", "person", "Zoe", "entities"],
+    ["Table 1", "A walk outdoors", "experience", "Cedar walk", "memories"],
+  ])
+    await save(
+      source(
+        title,
+        "# Inspectable prose",
+        `description: ${description}\ntype: ${type}\naliases: [${alias}]\n`,
+      ),
+      kind,
+    );
+  const { page, context } = await pageFor();
+  await page.getByLabel("Filter title", { exact: true }).fill("Table ");
+  assert.equal(await page.locator(".record").count(), 3);
+  assert.equal(await page.locator("aside").count(), 0);
+  assert.equal(await page.locator("dialog[open]").count(), 0);
+  const titles = () =>
+    page.locator(".title-cell .text-button").allTextContents();
+  assert.deepEqual(await titles(), ["Table 1", "Table 2", "Table 10"]);
+  await page
+    .getByRole("button", { name: "Sort by Title", exact: true })
+    .click();
+  assert.deepEqual(await titles(), ["Table 10", "Table 2", "Table 1"]);
+  assert.equal(
+    await page.getByRole("columnheader").first().getAttribute("aria-sort"),
+    "descending",
+  );
+  for (const column of [
+    "Description",
+    "Record type",
+    "Type",
+    "Aliases",
+    "Owner",
+  ]) {
+    await page
+      .getByRole("button", { name: "Sort by " + column, exact: true })
+      .click();
+    const header = page.getByRole("columnheader").filter({
+      has: page.getByRole("button", {
+        name: "Sort by " + column,
+        exact: true,
+      }),
+    });
+    assert.equal(await header.getAttribute("aria-sort"), "ascending");
+    await page
+      .getByRole("button", { name: "Sort by " + column, exact: true })
+      .click();
+    assert.equal(await header.getAttribute("aria-sort"), "descending");
+  }
+  await page.getByLabel("Filter description", { exact: true }).fill("cedar");
+  assert.deepEqual(await titles(), ["Table 2"]);
+  await page.getByLabel("Filter description", { exact: true }).fill("");
+  await page.getByLabel("Filter aliases", { exact: true }).fill("zoe");
+  assert.deepEqual(await titles(), ["Table 10"]);
+  await page.getByLabel("Filter aliases", { exact: true }).fill("");
+  await page
+    .getByLabel("Metadata type filter", { exact: true })
+    .selectOption("plant taxon");
+  assert.deepEqual(await titles(), ["Table 2"]);
+  await page.getByRole("button", { name: "Table 2", exact: true }).click();
+  const modal = page.getByRole("dialog");
+  await modal.waitFor();
+  assert.equal(
+    await modal.locator(".ProseMirror").getAttribute("contenteditable"),
+    "false",
+  );
+  assert.match(
+    await modal.locator(".inspection-metadata").innerText(),
+    /plant taxon/,
+  );
+  await page.getByRole("tab", { name: "Source", exact: true }).click();
+  assert.equal(
+    await modal.locator(".cm-content").getAttribute("contenteditable"),
+    "false",
+  );
+  await modal.getByRole("button", { name: "Edit", exact: true }).click();
+  assert.equal(
+    await modal.locator(".cm-content").getAttribute("contenteditable"),
+    "true",
+  );
+  await page.keyboard.press("Escape");
+  await modal.waitFor({ state: "hidden" });
+  assert.deepEqual(await titles(), ["Table 2"]);
+  await page.getByRole("button", { name: "Edit Table 2", exact: true }).click();
+  await modal.waitFor();
+  assert.equal(
+    await modal.locator(".ProseMirror").getAttribute("contenteditable"),
+    "true",
+  );
+  await page.screenshot({
+    path: "/tmp/songya-ui-review/table-modal.png",
+    fullPage: true,
+  });
+  await page.keyboard.press("Escape");
+  await modal.waitFor({ state: "hidden" });
+  await page
+    .getByLabel("Metadata type filter", { exact: true })
+    .selectOption("");
+  await page.screenshot({
+    path: "/tmp/songya-ui-review/table.png",
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.ok(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  );
+  assert.ok(
+    await page
+      .locator(".table-scroll")
+      .evaluate((el) => el.scrollWidth > el.clientWidth),
+  );
+  await page.screenshot({
+    path: "/tmp/songya-ui-review/table-phone.png",
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "Edit Table 2", exact: true }).click();
+  await modal.waitFor();
+  const bounds = await modal.boundingBox();
+  assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= 390);
+  await page.getByRole("button", { name: "Close record", exact: true }).click();
+  await modal.waitFor({ state: "hidden" });
+  await context.close();
+  assert.deepEqual(errors, []);
+});
+
+test("table deletion shows navigable blockers and removes only an unreferenced record", async () => {
+  const target = await save(source("Table deletion target"), "entities");
+  const incoming = await save(
+    source("Table deletion source", "[[" + target.id + "]]"),
+  );
+  const { page, context } = await pageFor();
+  await page
+    .getByRole("button", { name: "Delete Table deletion target", exact: true })
+    .click();
+  await page.getByRole("dialog").waitFor();
+  await page
+    .locator(".blockers button")
+    .filter({ hasText: "Table deletion source" })
+    .click();
+  await page
+    .getByRole("heading", { name: "Table deletion source", exact: true })
+    .waitFor();
+  await page.locator(".ProseMirror").fill("Link removed.");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await waitText(page, "Saved");
+  await page.getByRole("button", { name: "Close record", exact: true }).click();
+  await page.getByRole("dialog").waitFor({ state: "hidden" });
+  await page
+    .getByRole("button", { name: "Delete Table deletion target", exact: true })
+    .click();
+  await waitText(page, "Deleted permanently");
+  assert.equal((await fetch(url + "/api/records/" + target.id)).status, 404);
+  assert.equal((await fetch(url + "/api/records/" + incoming.id)).status, 200);
   await context.close();
   assert.deepEqual(errors, []);
 });

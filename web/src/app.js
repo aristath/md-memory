@@ -26,6 +26,12 @@ Alpine.data("songya", () => {
   return {
     records: [],
     owners: {},
+    types: {},
+    filters: { title: "", description: "", type: "", aliases: "" },
+    sortKey: "title",
+    ascending: true,
+    dialogOpen: false,
+    inspecting: false,
     q: "",
     kind: "",
     owner: "",
@@ -40,7 +46,6 @@ Alpine.data("songya", () => {
     diagnostics: [],
     links: [],
     blockers: [],
-    mobileEditor: false,
     showMetadata: false,
     showConnections: false,
     targetQuery: "",
@@ -78,10 +83,69 @@ Alpine.data("songya", () => {
         if (ticket !== listing) return;
         this.records = result.records;
         this.owners = result.owners;
+        this.types = result.types || {};
         this.diagnostics = result.diagnostics || [];
       } catch (e) {
         if (ticket === listing) this.failure = e.message;
       }
+    },
+    rows() {
+      const text = (record, key) =>
+        key === "aliases"
+          ? (record.aliases || []).join(", ")
+          : key === "user"
+            ? record.user || "Shared"
+            : record[key] || "";
+      return this.records
+        .filter((record) =>
+          Object.entries(this.filters).every(([key, value]) =>
+            key === "type"
+              ? !value || text(record, key) === value
+              : text(record, key)
+                  .toLocaleLowerCase()
+                  .includes(value.toLocaleLowerCase()),
+          ),
+        )
+        .sort(
+          (a, b) =>
+            (this.ascending ? 1 : -1) *
+            (text(a, this.sortKey).localeCompare(
+              text(b, this.sortKey),
+              undefined,
+              { numeric: true, sensitivity: "base" },
+            ) || a.id.localeCompare(b.id)),
+        );
+    },
+    sort(key) {
+      this.ascending = this.sortKey === key ? !this.ascending : true;
+      this.sortKey = key;
+    },
+    sortOrder(key) {
+      return this.sortKey === key
+        ? this.ascending
+          ? "ascending"
+          : "descending"
+        : "none";
+    },
+    showDialog() {
+      this.dialogOpen = true;
+      if (!this.$refs.editorDialog.open) this.$refs.editorDialog.showModal();
+    },
+    closeDialog() {
+      this.$refs.editorDialog.close();
+      this.dialogOpen = false;
+      code?.destroy();
+      rich?.destroy();
+      code = null;
+      rich = null;
+      this.selected = null;
+      this.source = "";
+      this.dirty = false;
+      attempt = null;
+    },
+    edit() {
+      this.inspecting = false;
+      this.mount();
     },
     remember() {
       if (!this.selected) return;
@@ -111,7 +175,7 @@ Alpine.data("songya", () => {
       }
       this.remember();
     },
-    async open(id, force = false) {
+    async open(id, force = false, inspect = false) {
       if (this.busy || this.loading) return;
       this.loading = true;
       this.failure = "";
@@ -142,12 +206,13 @@ Alpine.data("songya", () => {
             attempt: null,
           };
         }
+        this.inspecting = inspect;
         this.install(saved);
         if (force) {
           drafts.delete(id);
         }
         this.blockers = [];
-        this.mobileEditor = true;
+        this.showDialog();
       } catch (e) {
         this.failure = e.message;
       } finally {
@@ -174,6 +239,7 @@ Alpine.data("songya", () => {
       this.loading = true;
       try {
         await this.stash();
+        this.inspecting = false;
         const saved = drafts.get("new");
         if (saved?.dirty) {
           this.install(saved);
@@ -194,7 +260,7 @@ Alpine.data("songya", () => {
             attempt: null,
           });
         }
-        this.mobileEditor = true;
+        this.showDialog();
         this.showMetadata = true;
         this.failure = "";
         this.notice = "";
@@ -224,6 +290,7 @@ Alpine.data("songya", () => {
             this.fields
               .filter((field) => field.system)
               .map((field) => field.protected),
+            this.inspecting,
           );
         } else {
           try {
@@ -235,6 +302,7 @@ Alpine.data("songya", () => {
                 this.dirty = true;
                 editGeneration++;
               },
+              this.inspecting,
             );
           } catch {
             this.visualIssue =
@@ -411,32 +479,34 @@ Alpine.data("songya", () => {
         this.busy = false;
       }
     },
-    async remove() {
-      if (this.busy || this.loading || !this.selected?.id) return;
-      if (this.dirty) {
-        this.failure = "Save your changes before deleting this record.";
+    async remove(record = this.selected) {
+      if (this.busy || this.loading || !record?.id) return;
+      if (
+        (this.selected?.id === record.id && this.dirty) ||
+        drafts.get(record.id)?.dirty ||
+        drafts.get(record.id)?.attempt
+      ) {
+        this.failure =
+          "Save or discard your draft before deleting this record.";
         return;
       }
       this.busy = true;
       this.failure = "";
       this.blockers = [];
       try {
-        await request("/api/records/" + this.selected.id, {
+        await request("/api/records/" + record.id, {
           method: "DELETE",
-          headers: { "If-Match": this.selected.version },
+          headers: { "If-Match": record.version },
         });
-        drafts.delete(this.selected.id);
-        this.selected = null;
-        this.source = "";
-        this.dirty = false;
-        code?.destroy();
-        rich?.destroy();
-        code = null;
-        rich = null;
-        this.mobileEditor = false;
+        drafts.delete(record.id);
+        if (this.selected?.id === record.id) this.closeDialog();
         this.notice = "Deleted permanently";
         await this.refresh();
       } catch (e) {
+        if (!this.dialogOpen && (e.blockers?.length || e.diagnostics?.length)) {
+          this.busy = false;
+          await this.open(record.id, false, true);
+        }
         this.failure = e.message;
         this.blockers = e.blockers || [];
         this.diagnostics = e.diagnostics || [];
@@ -502,7 +572,7 @@ Alpine.data("songya", () => {
       this.loading = true;
       try {
         await this.stash();
-        this.mobileEditor = false;
+        this.closeDialog();
       } catch (e) {
         this.failure = e.message;
       } finally {
@@ -536,13 +606,7 @@ Alpine.data("songya", () => {
       const pending = !!attempt;
       drafts.delete("new");
       attempt = null;
-      this.selected = null;
-      this.dirty = false;
-      code?.destroy();
-      rich?.destroy();
-      code = null;
-      rich = null;
-      this.mobileEditor = false;
+      this.closeDialog();
       this.failure = "";
       this.notice = pending
         ? "Local draft discarded. A save awaiting confirmation may already be in the library."
