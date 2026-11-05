@@ -248,7 +248,9 @@ test("connections and deletion blockers are navigable; removing the link permits
     .locator(".target-results button")
     .filter({ hasText: entity.id })
     .click();
-  await page.getByLabel("Relationship", { exact: true }).fill("with");
+  await page
+    .getByLabel("Relationship", { exact: true })
+    .selectOption("related_to");
   await page
     .getByRole("button", { name: "Add connection", exact: true })
     .click();
@@ -711,8 +713,8 @@ test("the front page is a sortable metadata table with independent column filter
     await save(
       source(
         title,
-        "# Inspectable prose",
-        `description: ${description}\ntype: ${type}\naliases: [${alias}]\n`,
+        kind === "memories" ? "# Inspectable prose" : description,
+        `${kind === "memories" ? `description: ${description}\n` : ""}type: ${type}\naliases: [${alias}]\n`,
       ),
       kind,
     );
@@ -835,7 +837,11 @@ test("the front page is a sortable metadata table with independent column filter
 test("table deletion shows navigable blockers and removes only an unreferenced record", async () => {
   const target = await save(source("Table deletion target"), "entities");
   const incoming = await save(
-    source("Table deletion source", "[[" + target.id + "]]"),
+    source(
+      "Table deletion source",
+      "A linked event.",
+      `relations: [{type: related_to, target: ${target.id}}]\n`,
+    ),
   );
   const { page, context } = await pageFor();
   await page
@@ -849,7 +855,13 @@ test("table deletion shows navigable blockers and removes only an unreferenced r
   await page
     .getByRole("heading", { name: "Table deletion source", exact: true })
     .waitFor();
-  await page.locator(".ProseMirror").fill("Link removed.");
+  await page.getByRole("button", { name: "Connections", exact: true }).click();
+  await page
+    .getByRole("button", {
+      name: "Remove connection " + target.id,
+      exact: true,
+    })
+    .click();
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await waitText(page, "Saved");
   await page.getByRole("button", { name: "Close record", exact: true }).click();
@@ -920,11 +932,15 @@ test("graph views render, preserve search when switching, and open safe hover la
     source(
       "Graph memory",
       "A connected afternoon.",
-      `entities: [${entity.id}]\ntopics: [${topic.id}]\n`,
+      `relations: [{type: related_to, target: ${entity.id}}, {type: related_to, target: ${topic.id}}]\n`,
     ),
   );
   const story = await save(
-    source("Graph story", `[[${memory.id}]]`),
+    source(
+      "Graph story",
+      "",
+      `relations: [{type: related_to, target: ${memory.id}}]\n`,
+    ),
     "stories",
   );
   const ids = new Set([entity.id, topic.id, memory.id, story.id]);
@@ -1128,6 +1144,83 @@ test("WebGL failure leaves the library and inspector working", async () => {
     .locator("#graph-matches")
     .getByRole("button", { name: "No WebGL memories", exact: true })
     .waitFor();
+  await context.close();
+  assert.deepEqual(errors, []);
+});
+
+test("date controls preserve exact dates, open bounds and unknown values across editor modes", async () => {
+  const record = await save(
+    source(
+      "Event time controls",
+      "A dated event.",
+      'time: {date: "2024-12-31", earliest: null, latest: null}\n',
+    ),
+  );
+  const { page, context } = await pageFor();
+  await editRecord(page, "Event time controls");
+  await page.getByRole("button", { name: "Metadata", exact: true }).click();
+  assert.equal(
+    await page.getByLabel("Exact event date", { exact: true }).inputValue(),
+    "2024-12-31",
+  );
+  await page
+    .getByLabel("Earliest event date", { exact: true })
+    .fill("2024-01-01");
+  await page.getByLabel("Earliest event date", { exact: true }).blur();
+  assert.equal(
+    await page.getByLabel("Exact event date", { exact: true }).inputValue(),
+    "",
+  );
+  await page.getByRole("tab", { name: "Source", exact: true }).click();
+  assert.match(await page.locator(".cm-content").innerText(), /2024-01-01/);
+  await page.getByRole("tab", { name: "Visual", exact: true }).click();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await waitText(page, "Saved");
+  let doc = await (await fetch(url + "/api/records/" + record.id)).json();
+  assert.deepEqual(doc.draft.fields.find((f) => f.key === "time").time, {
+    date: null,
+    earliest: "2024-01-01",
+    latest: null,
+  });
+  await page.getByLabel("Earliest event date", { exact: true }).fill("");
+  await page.getByLabel("Earliest event date", { exact: true }).blur();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await waitText(page, "Saved");
+  doc = await (await fetch(url + "/api/records/" + record.id)).json();
+  assert.deepEqual(doc.draft.fields.find((f) => f.key === "time").time, {
+    date: null,
+    earliest: null,
+    latest: null,
+  });
+  await context.close();
+  assert.deepEqual(errors, []);
+});
+
+test("story relation controls persist reading order while preserving prose", async () => {
+  const first = await save(source("Reading first"));
+  const second = await save(source("Reading second"));
+  const story = await save(
+    source(
+      "Reading order",
+      "Introduction",
+      `relations: [{type: related_to, target: ${first.id}}, {type: related_to, target: ${second.id}}]\n`,
+    ),
+    "stories",
+  );
+  const { page, context } = await pageFor();
+  await editRecord(page, "Reading order");
+  await page.getByRole("button", { name: "Connections", exact: true }).click();
+  await page
+    .locator(".edge")
+    .filter({ hasText: "Reading second" })
+    .getByRole("button", { name: "Move connection up", exact: true })
+    .click();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await waitText(page, "Saved");
+  const doc = await (await fetch(url + "/api/records/" + story.id)).json();
+  const ordered = doc.source.match(/target: (m_[a-z0-9]{12})/g);
+  assert.deepEqual(ordered, ["target: " + second.id, "target: " + first.id]);
+  assert.equal(doc.draft.body, "Introduction");
   await context.close();
   assert.deepEqual(errors, []);
 });

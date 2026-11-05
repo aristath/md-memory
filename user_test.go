@@ -133,9 +133,9 @@ func TestBatchesRequireOwnersBeforeAcceptanceAndRetainThemOnRetry(t *testing.T) 
 	}
 	request := BatchRequest{User: "ari", Key: "related", Changes: []Change{
 		{Ref: "person", Kind: Entities}, {Ref: "topic", Kind: Topics},
-		{Ref: "memory", Body: textPointer("Ari")}, {Ref: "story", Kind: Stories},
+		{Ref: "memory", Body: textPointer("Ari")}, {Ref: "story", Kind: Stories, Fields: map[string]any{"relations": []Relation{{Type: "related_to", Target: "$memory"}}}},
 		{Ref: "other", Fields: map[string]any{"user": "bob"}},
-	}, Stories: []StoryAddition{{Story: "$story", Members: []string{"$memory"}}}}
+	}}
 	first, err := store.ApplyBatch(ctx, request)
 	if err != nil || first.Status != "committed" {
 		t.Fatalf("capture failed: %+v, %v", first, err)
@@ -284,5 +284,38 @@ func TestImportUsesAnExplicitUserWithoutChangingTheOriginal(t *testing.T) {
 	}
 	if archived, err := store.ReadArchive(mapping.Archive); err != nil || string(archived) != string(original) {
 		t.Fatal("import ownership rewrote the original")
+	}
+}
+
+func TestCaptureUpdatesRetainOrExplicitlyChangeOwnership(t *testing.T) {
+	store, _ := Open(t.TempDir())
+	ctx := context.Background()
+	memory, err := store.SaveMemory(ctx, MemoryInput{User: "ari", Text: textValue("Original event")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	story, err := store.SaveStory(ctx, StoryInput{User: "ari", Title: "A story"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, user := range []string{"", "bob"} {
+		_, err = store.SaveMemory(ctx, MemoryInput{ID: memory.Refs["memory"], User: user, Append: "A detail"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = store.SaveStory(ctx, StoryInput{ID: story.Refs["story"], User: user, Append: "A detail"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := user
+		if want == "" {
+			want = "ari"
+		}
+		for _, id := range []string{memory.Refs["memory"], story.Refs["story"]} {
+			doc, err := store.Read(id)
+			if err != nil || doc.Metadata().User != want {
+				t.Fatal("ownership update ignored or invented", want, err)
+			}
+		}
 	}
 }

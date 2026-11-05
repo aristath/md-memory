@@ -372,7 +372,38 @@
                   <option value="text">Text</option>
                   <option value="number">Number</option>
                   <option value="boolean">True / false</option>
-                  <option value="yaml">YAML</option></select
+                  <option value="yaml">YAML</option>
+                  <option value="time" x-show="field.type==='time'">
+                    Event time
+                  </option></select
+                ><template x-if="!field.system && field.type==='time'"
+                  ><div class="event-time">
+                    <label
+                      >Exact date<input
+                        type="date"
+                        :aria-label="'Exact event date'"
+                        x-model="field.time.date"
+                        @change="timeChanged(field,true)"
+                    /></label>
+                    <label
+                      >Earliest<input
+                        type="date"
+                        aria-label="Earliest event date"
+                        x-model="field.time.earliest"
+                        @change="timeChanged(field,false)"
+                    /></label>
+                    <label
+                      >Latest<input
+                        type="date"
+                        aria-label="Latest event date"
+                        x-model="field.time.latest"
+                        @change="timeChanged(field,false)"
+                    /></label>
+                    <small
+                      >Leave unknown dates blank. Use an exact date or range
+                      bounds.</small
+                    >
+                  </div></template
                 ><input
                   x-show="!field.system && (field.type==='text'||field.type==='number')"
                   :aria-label="'Metadata '+field.key"
@@ -416,10 +447,7 @@
             <option value="time"></option>
             <option value="type"></option>
             <option value="aliases"></option>
-            <option value="relations"></option>
-            <option value="entities"></option>
-            <option value="topics"></option>
-            <option value="broader"></option></datalist
+            <option value="relations"></option></datalist
           ><button @click="addField()">Add metadata</button>
         </fieldset>
         <div
@@ -451,19 +479,16 @@
             <div class="add-connection" x-show="target">
               <span x-text="target?.title||target?.id"></span
               ><label
-                >Relationship<input
-                  list="relation-types"
-                  x-model="relation" /></label
-              ><datalist id="relation-types">
-                <option value="about"></option>
-                <option value="with"></option>
-                <option value="at"></option>
-                <option value="motivated_by"></option>
-                <option value="after"></option>
-                <option value="entities"></option>
-                <option value="topics"></option>
-                <option value="contains"></option>
-                <option value="mentions"></option></datalist
+                >Relationship<select
+                  x-model="relation"
+                  aria-label="Relationship"
+                >
+                  <option value="related_to">related_to</option>
+                  <option value="after">after</option>
+                  <option value="caused_by">caused_by</option>
+                  <option value="part_of">part_of</option>
+                  <option value="possibly_same_as">possibly_same_as</option>
+                </select></label
               ><button @click="addConnection()" :disabled="busy||loading">
                 Add connection</button
               ><button @click="target=null">Cancel</button>
@@ -477,6 +502,21 @@
                 @click="open(edge.target, false, inspecting)"
                 x-text="edge.target_title||edge.target"
               ></button
+              ><button
+                x-show="!inspecting && selected?.kind==='stories'"
+                @click="moveConnection(edge,-1)"
+                :disabled="busy||loading"
+                aria-label="Move connection up"
+              >
+                ↑
+              </button>
+              <button
+                x-show="!inspecting && selected?.kind==='stories'"
+                @click="moveConnection(edge,1)"
+                :disabled="busy||loading"
+                aria-label="Move connection down"
+              >
+                ↓</button
               ><button
                 x-show="!inspecting"
                 @click="connection('remove',edge)"
@@ -493,7 +533,7 @@
           <h4>Linked from</h4>
           <template x-for="(edge,index) in incoming()" :key="index"
             ><div class="edge">
-              <span x-text="edge.type"></span
+              <span x-text="edge.reverse_type||edge.type"></span
               ><button
                 @click="open(edge.source, false, inspecting)"
                 x-text="edge.source_title||edge.source"

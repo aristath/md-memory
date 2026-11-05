@@ -22,6 +22,8 @@ kind, metadata type, aliases, owner and row actions. The Go catalogue supplies
 metadata and the exact revision used for row deletion. Full-content search and
 ownership selection use engine queries; column filters and sorting refine the
 returned rows without changing the records.
+Entity and topic descriptions come from their Markdown bodies, so edits update
+the table and description filter directly.
 
 Titles open read-only inspection; Edit and New record open a native modal dialog.
 The browser keeps focus inside it. Close, Escape or clicking the backdrop retains
@@ -76,6 +78,11 @@ The browser sends source drafts to Go for parsing and metadata/relationship edit
 It does not maintain another memory format or its own relationship graph.
 Unchanged YAML values retain their nodes, including aliases and custom values.
 Common scalar controls are conveniences; custom and nested values remain editable.
+Event time has exact-date and earliest/latest date controls; blank values stay null.
+Changing an exact date clears the range, and changing a bound clears the exact date.
+Unrecognized time data stays editable as YAML. Connection controls offer the five
+structural types. A story’s outgoing relations can be moved up/down to set reading
+order; incoming links show their derived reverse labels.
 
 `Store.SaveSource` uses the existing batch journal and a stable write key. It
 replaces the full document while preserving the engine's identity/clock rules.

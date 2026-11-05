@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
-	"strings"
 )
 
 // SemanticRecallQuery is one source message, never a conversation-wide query.
@@ -184,21 +183,25 @@ func recollectionText(r Record, records []Record, byID map[string]Record) string
 	if r.Context != "" {
 		text += "\n" + r.Context
 	}
-	// One directly containing story supplies a bounded passage around this memory.
+	// A directly containing story supplies its introduction and neighboring events.
 	for _, story := range records {
 		if story.Kind != Stories {
 			continue
 		}
-		reference := "[[" + r.ID + "]]"
-		at := strings.Index(story.Body, reference)
-		if at < 0 {
-			continue
+		members := storyMembers(story)
+		for index, member := range members {
+			if member != r.ID {
+				continue
+			}
+			storyLabel, _ := json.Marshal(map[string]any{"id": story.ID, "user": story.User, "title": story.Title, "time": story.Time})
+			text += fmt.Sprintf("\nStory context %s:\n%s", storyLabel, clip(story.Body, 600))
+			for _, neighbor := range members[max(0, index-1):min(len(members), index+2)] {
+				if event, exists := byID[neighbor]; exists && neighbor != r.ID {
+					text += fmt.Sprintf("\n%s (%s): %s", event.Title, event.ID, clip(event.Body, 600))
+				}
+			}
+			return text
 		}
-		before, after := []rune(story.Body[:at]), []rune(story.Body[at+len(reference):])
-		passage := string(before[max(0, len(before)-600):]) + reference + string(after[:min(600, len(after))])
-		storyLabel, _ := json.Marshal(map[string]any{"id": story.ID, "user": story.User, "title": story.Title, "time": story.Time})
-		text += fmt.Sprintf("\nStory context %s:\n…%s…", storyLabel, passage)
-		break
 	}
 	return text
 }

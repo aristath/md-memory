@@ -13,40 +13,36 @@ import (
 
 // Key belongs to the caller's request metadata, never the model's arguments.
 type MemoryInput struct {
-	Key       string         `json:"-"`
-	ID        string         `json:"id,omitempty"`
-	User      string         `json:"user,omitempty"`
-	Title     string         `json:"title,omitempty"`
-	Text      *string        `json:"text,omitempty"`
-	Append    string         `json:"append,omitempty"`
-	Time      any            `json:"time,omitempty"`
-	Entities  []NamedInput   `json:"entities,omitempty"`
-	Topics    []NamedInput   `json:"topics,omitempty"`
-	Metadata  map[string]any `json:"metadata,omitempty"`
-	Relations []Relation     `json:"relations,omitempty"`
+	Key       string          `json:"-"`
+	ID        string          `json:"id,omitempty"`
+	User      string          `json:"user,omitempty"`
+	Title     string          `json:"title,omitempty"`
+	Text      *string         `json:"text,omitempty"`
+	Append    string          `json:"append,omitempty"`
+	Time      any             `json:"time,omitempty"`
+	Metadata  map[string]any  `json:"metadata,omitempty"`
+	Relations []RelationInput `json:"relations,omitempty"`
 }
 type NamedInput struct {
-	Key         string         `json:"-"`
-	ID          string         `json:"id,omitempty"`
-	Name        string         `json:"name,omitempty"`
-	Type        string         `json:"type,omitempty"`
-	Aliases     []string       `json:"aliases,omitempty"`
-	Description *string        `json:"description,omitempty"`
-	Append      string         `json:"append,omitempty"`
-	Relation    string         `json:"relation,omitempty"`
-	Metadata    map[string]any `json:"metadata,omitempty"`
-	Relations   []Relation     `json:"relations,omitempty"`
+	Key         string          `json:"-"`
+	ID          string          `json:"id,omitempty"`
+	Name        string          `json:"name,omitempty"`
+	Type        string          `json:"type,omitempty"`
+	Aliases     []string        `json:"aliases,omitempty"`
+	Description *string         `json:"description,omitempty"`
+	Append      string          `json:"append,omitempty"`
+	Metadata    map[string]any  `json:"metadata,omitempty"`
+	Relations   []RelationInput `json:"relations,omitempty"`
 }
 type StoryInput struct {
-	Key       string         `json:"-"`
-	ID        string         `json:"id,omitempty"`
-	User      string         `json:"user,omitempty"`
-	Title     string         `json:"title,omitempty"`
-	Text      *string        `json:"text,omitempty"`
-	Append    string         `json:"append,omitempty"`
-	Members   []string       `json:"members,omitempty"`
-	Metadata  map[string]any `json:"metadata,omitempty"`
-	Relations []Relation     `json:"relations,omitempty"`
+	Key       string          `json:"-"`
+	ID        string          `json:"id,omitempty"`
+	User      string          `json:"user,omitempty"`
+	Title     string          `json:"title,omitempty"`
+	Text      *string         `json:"text,omitempty"`
+	Append    string          `json:"append,omitempty"`
+	Metadata  map[string]any  `json:"metadata,omitempty"`
+	Relations []RelationInput `json:"relations,omitempty"`
 }
 
 func writeKey(key string) string {
@@ -64,77 +60,38 @@ func (s *Store) SaveMemory(ctx context.Context, input MemoryInput) (Receipt, err
 		return Receipt{Key: input.Key, Status: "not_accepted"}, fmt.Errorf("%s is not a memory ID", input.ID)
 	}
 	fields := copyFields(input.Metadata)
+	if input.User != "" {
+		fields["user"] = input.User
+	}
 	if input.Title != "" {
 		fields["title"] = input.Title
 	}
 	if input.Time != nil {
 		fields["time"] = input.Time
 	}
-	intent := map[string]any{"metadata": fields, "entities": namedData(input.Entities), "topics": namedData(input.Topics)}
-	request := BatchRequest{Key: input.Key, User: input.User, Changes: []Change{{ID: input.ID, Fields: intent, Body: input.Text, Append: input.Append, AddRelations: input.Relations}}}
+	intent := map[string]any{"metadata": fields, "relations": relationData(input.Relations)}
+	request := BatchRequest{Key: input.Key, User: input.User, Changes: []Change{{ID: input.ID, Fields: intent, Body: input.Text, Append: input.Append}}}
 	if input.Text != nil {
 		request.Account = *input.Text
 	}
-	request.prepare = func(root *os.Root) ([]Change, []StoryAddition, error) {
+	request.prepare = func(root *os.Root) ([]Change, error) {
 		memory := Change{Ref: "memory", ID: input.ID, Kind: Memories, Fields: fields, Body: input.Text, Append: input.Append}
 		if input.Relations != nil {
 			memory.Fields["relations"] = input.Relations
 		}
-		changes := []Change{}
-		unresolved := []any{}
-		for _, group := range []struct {
-			kind   Destination
-			inputs []NamedInput
-		}{{Entities, input.Entities}, {Topics, input.Topics}} {
-			for _, item := range group.inputs {
-				if err := ctx.Err(); err != nil {
-					return nil, nil, err
-				}
-				target, err := relatedRecord(ctx, root, group.kind, item, &changes)
-				if err != nil {
-					data := namedData([]NamedInput{item})[0].(map[string]any)
-					data["issue"], data["kind"] = err.Error(), string(group.kind)
-					unresolved = append(unresolved, data)
-					continue
-				}
-				relation := item.Relation
-				if relation == "" {
-					relation = string(group.kind)
-				}
-				memory.AddRelations = append(memory.AddRelations, Relation{Type: relation, Target: target})
-			}
-		}
-		if len(unresolved) > 0 {
-			node := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
-			if input.ID != "" {
-				name, _ := recordName(input.ID)
-				if doc, err := readCopy(root, input.ID, name); err == nil {
-					node = sequenceNode(metadataField(&doc.Frontmatter, "unresolved_connections"))
-				}
-			}
-			for _, item := range unresolved {
-				encoded, _ := encodeValue(item)
-				node.Content = append(node.Content, encoded)
-			}
-			memory.Fields["unresolved_connections"] = node
-		}
-		changes = append([]Change{memory}, changes...)
+		changes := []Change{memory}
 		err := resolveConnections(ctx, root, &changes)
-		return changes, nil, err
+		return changes, err
 	}
 	return s.ApplyBatch(ctx, request)
 }
 
-func namedData(inputs []NamedInput) []any {
-	result := []any{}
-	for _, v := range inputs {
-		item := map[string]any{"id": v.ID, "name": v.Name, "type": v.Type, "aliases": v.Aliases, "relation": v.Relation, "metadata": v.Metadata, "append": v.Append, "relations": v.Relations}
-		if v.Description != nil {
-			item["description"] = *v.Description
-		}
-		result = append(result, item)
+func namedData(input NamedInput) map[string]any {
+	data := map[string]any{"id": input.ID, "name": input.Name, "type": input.Type, "aliases": input.Aliases, "metadata": input.Metadata, "append": input.Append, "relations": relationData(input.Relations)}
+	if input.Description != nil {
+		data["description"] = *input.Description
 	}
-	return result
+	return data
 }
 func sameName(a, b string) bool {
 	return strings.EqualFold(strings.Join(strings.Fields(a), " "), strings.Join(strings.Fields(b), " "))
@@ -248,6 +205,7 @@ func relatedRecord(ctx context.Context, root *os.Root, kind Destination, input N
 			return doc.ID, nil
 		}
 		change.ID = doc.ID
+		change.enrich = true
 		// Capture adds knowledge; standalone save_entity/save_topic replace a supplied description.
 		change.Fields["name"] = doc.Record(kind).Title
 		for i := range *changes {
@@ -278,11 +236,11 @@ func relatedRecord(ctx context.Context, root *os.Root, kind Destination, input N
 
 func (s *Store) SaveNamed(ctx context.Context, kind Destination, input NamedInput) (Receipt, error) {
 	input.Key = writeKey(input.Key)
-	request := BatchRequest{Key: input.Key, Changes: []Change{{Kind: kind, Fields: map[string]any{"input": namedData([]NamedInput{input})}}}}
-	request.prepare = func(root *os.Root) ([]Change, []StoryAddition, error) {
+	request := BatchRequest{Key: input.Key, Changes: []Change{{Kind: kind, Fields: map[string]any{"input": namedData(input)}}}}
+	request.prepare = func(root *os.Root) ([]Change, error) {
 		doc, err := findNamed(ctx, root, kind, input)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		change := namedChange(kind, input)
 		change.Ref = "record"
@@ -294,7 +252,7 @@ func (s *Store) SaveNamed(ctx context.Context, kind Destination, input NamedInpu
 		}
 		changes := []Change{change}
 		err = resolveConnections(ctx, root, &changes)
-		return changes, nil, err
+		return changes, err
 	}
 	return s.ApplyBatch(ctx, request)
 }
@@ -303,48 +261,22 @@ func (s *Store) SaveStory(ctx context.Context, input StoryInput) (Receipt, error
 		return Receipt{Key: input.Key, Status: "not_accepted"}, fmt.Errorf("%s is not a story ID", input.ID)
 	}
 	fields := copyFields(input.Metadata)
+	if input.User != "" {
+		fields["user"] = input.User
+	}
 	if input.Title != "" {
 		fields["title"] = input.Title
 	}
-	intent := map[string]any{"metadata": fields, "members": input.Members}
-	request := BatchRequest{Key: writeKey(input.Key), User: input.User, Changes: []Change{{ID: input.ID, Kind: Stories, Fields: intent, Body: input.Text, Append: input.Append, AddRelations: input.Relations}}}
-	request.prepare = func(root *os.Root) ([]Change, []StoryAddition, error) {
+	intent := map[string]any{"metadata": fields, "relations": relationData(input.Relations)}
+	request := BatchRequest{Key: writeKey(input.Key), User: input.User, Changes: []Change{{ID: input.ID, Kind: Stories, Fields: intent, Body: input.Text, Append: input.Append}}}
+	request.prepare = func(root *os.Root) ([]Change, error) {
 		change := Change{Ref: "story", ID: input.ID, Kind: Stories, Fields: fields, Body: input.Text, Append: input.Append}
 		if input.Relations != nil {
 			change.Fields["relations"] = input.Relations
 		}
-		members := input.Members
-		body := ""
-		if input.ID != "" {
-			name, err := recordName(input.ID)
-			if err != nil {
-				return nil, nil, err
-			}
-			doc, err := readCopy(root, input.ID, name)
-			if err != nil {
-				return nil, nil, err
-			}
-			body = doc.Body
-			if input.Members == nil && input.Text != nil {
-				for _, match := range storyReference.FindAllStringSubmatch(body, -1) {
-					members = append(members, match[1])
-				}
-			}
-		}
-		if input.Members != nil {
-			if input.Text != nil {
-				body = *input.Text
-			}
-			body = strings.TrimSpace(storyReference.ReplaceAllString(body, ""))
-			change.Body = &body
-		}
-		target := input.ID
-		if target == "" {
-			target = "$story"
-		}
 		changes := []Change{change}
 		err := resolveConnections(ctx, root, &changes)
-		return changes, []StoryAddition{{Story: target, Members: members}}, err
+		return changes, err
 	}
 	return s.ApplyBatch(ctx, request)
 }
@@ -399,7 +331,8 @@ func mergeParticipant(root *os.Root, change *Change, input NamedInput) {
 		change.Fields["type"] = input.Type
 	}
 	if input.Relations != nil {
-		change.Fields["relations"] = input.Relations
+		previous, _ := change.Fields["relations"].([]RelationInput)
+		change.Fields["relations"] = append(previous, input.Relations...)
 	}
 	if input.Aliases != nil {
 		node, _ := encodeValue(change.Fields["aliases"])
@@ -440,32 +373,4 @@ func needsEnrichment(doc *Document, input NamedInput) bool {
 		}
 	}
 	return false
-}
-
-// Relations supplied by a caller replace the list. Names are resolved under the
-// same lock as the main record; ambiguous targets remain visible and repairable.
-func resolveConnections(ctx context.Context, root *os.Root, changes *[]Change) error {
-	for i := 0; i < len(*changes); i++ {
-		relations, supplied := (*changes)[i].Fields["relations"].([]Relation)
-		if !supplied {
-			continue
-		}
-		relations = append([]Relation{}, relations...)
-		for j := range relations {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			target := relations[j].Target
-			if ValidID(target) || kindOf(target) != "" || strings.TrimSpace(target) == "" {
-				continue
-			}
-			if id, err := relatedRecord(ctx, root, Entities, NamedInput{Name: target}, changes); err == nil {
-				relations[j].Target = id
-			}
-			// Keep an unresolved name intact. Canonical diagnostics report the link,
-			// and supplying a corrected relations list can replace it normally.
-		}
-		(*changes)[i].Fields["relations"] = relations
-	}
-	return nil
 }

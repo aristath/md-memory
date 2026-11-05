@@ -17,11 +17,13 @@ type TemporalRecord struct {
 	ID               string      `json:"id"`
 	Title            string      `json:"title"`
 	Time             EpisodeTime `json:"time"`
+	Relations        []Relation  `json:"relations,omitempty"`
 	Unordered        bool        `json:"unordered"`
 	Unconfirmed      bool        `json:"unconfirmed,omitempty"`
 	DetailsTruncated bool        `json:"details_truncated,omitempty"`
 }
 type Timeline struct {
+	Groups      map[string][]string  `json:"groups,omitempty"`
 	Records     []TemporalRecord     `json:"records"`
 	Constraints []TemporalConstraint `json:"constraints"`
 	Next        int                  `json:"next,omitempty"`
@@ -114,14 +116,15 @@ func (s *Store) Timeline(ctx context.Context, q Query) (Timeline, error) {
 		if r.Unconfirmed {
 			continue
 		}
-		if value, ok := parseBound(r.Time.Earliest, false); ok {
+		start, end := r.Time.bounds()
+		if value, ok := parseBound(start, false); ok {
 			earliest[id] = value
-		} else if r.Time.Earliest != "" {
+		} else if start != "" {
 			diagnostics = append(diagnostics, Diagnostic{id, "unrecognized earliest episode bound retained"})
 		}
-		if value, ok := parseBound(r.Time.Latest, true); ok {
+		if value, ok := parseBound(end, true); ok {
 			latest[id] = value
-		} else if r.Time.Latest != "" {
+		} else if end != "" {
 			diagnostics = append(diagnostics, Diagnostic{id, "unrecognized latest episode bound retained"})
 		}
 		if !earliest[id].IsZero() && !latest[id].IsZero() && earliest[id].After(latest[id]) {
@@ -144,10 +147,10 @@ func (s *Store) Timeline(ctx context.Context, q Query) (Timeline, error) {
 			continue
 		}
 		switch edge.Type {
-		case "before":
-			add(edge.Source, edge.Target, "explicit before relation")
 		case "after":
 			add(edge.Target, edge.Source, "explicit after relation")
+		case "caused_by":
+			add(edge.Target, edge.Source, "cause precedes consequence")
 		}
 	}
 	adjacent := map[string][]string{}
@@ -248,7 +251,7 @@ func (s *Store) Timeline(ctx context.Context, q Query) (Timeline, error) {
 		}
 	}
 	selected := searchCatalog(c, q)
-	result := Timeline{Records: []TemporalRecord{}, Constraints: []TemporalConstraint{}, Next: selected.Next, Truncated: selected.Truncated}
+	result := Timeline{Groups: map[string][]string{}, Records: []TemporalRecord{}, Constraints: []TemporalConstraint{}, Next: selected.Next, Truncated: selected.Truncated}
 	displayed := map[string]bool{}
 	for _, match := range selected.Matches {
 		if match.ID == "" {
@@ -256,10 +259,21 @@ func (s *Store) Timeline(ctx context.Context, q Query) (Timeline, error) {
 		}
 		r := records[match.ID]
 		episode := r.Time
-		episode.Description = clip(episode.Description, 512)
-		episode.Earliest = clip(episode.Earliest, 96)
-		episode.Latest = clip(episode.Latest, 96)
-		result.Records = append(result.Records, TemporalRecord{User: clip(r.User, 160), ID: r.ID, Title: clip(r.Title, 160), Time: episode, Unordered: !related[r.ID], Unconfirmed: r.Unconfirmed, DetailsTruncated: episode != r.Time || len(r.Title) > 160 || len(r.User) > 160})
+		for _, field := range []**string{&episode.Date, &episode.Earliest, &episode.Latest} {
+			if *field != nil && len(**field) > 96 {
+				clipped := clip(**field, 96)
+				*field = &clipped
+			}
+		}
+		relations := append([]Relation{}, r.Relations[:min(16, len(r.Relations))]...)
+		for i := range relations {
+			relations[i].Type = clip(relations[i].Type, 128)
+			relations[i].Target = clip(relations[i].Target, 128)
+			if relations[i].Type == "part_of" && ValidID(relations[i].Target) {
+				result.Groups[relations[i].Target] = append(result.Groups[relations[i].Target], r.ID)
+			}
+		}
+		result.Records = append(result.Records, TemporalRecord{User: clip(r.User, 160), ID: r.ID, Title: clip(r.Title, 160), Time: episode, Relations: relations, Unordered: !related[r.ID], Unconfirmed: r.Unconfirmed, DetailsTruncated: len(r.Relations) > len(relations) || episode != r.Time || len(r.Title) > 160 || len(r.User) > 160})
 		displayed[r.ID] = true
 	}
 	for _, a := range result.Records {

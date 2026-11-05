@@ -29,6 +29,34 @@ func createRecord(t *testing.T, s *Store, kind Destination, fields map[string]an
 	}
 	return d
 }
+
+func TestNamedDescriptionsUseTheBody(t *testing.T) {
+	for _, kind := range []Destination{Entities, Topics} {
+		store, err := Open(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		doc := createRecord(t, store, kind, map[string]any{"name": "Alex", "description": "obsolete metadata"}, "Current description")
+		if doc.Record(kind).Description != doc.Body {
+			t.Fatal("description did not use the body")
+		}
+		if _, err := store.Scan(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		description := "Updated identifying prose"
+		if receipt, err := store.SaveNamed(context.Background(), kind, NamedInput{ID: doc.ID, Description: &description}); err != nil || receipt.Status != "committed" {
+			t.Fatal(receipt, err)
+		}
+		found, err := store.Search(context.Background(), Query{Text: "identifying"})
+		if err != nil || len(found.Matches) != 1 || found.Matches[0].Excerpt != description {
+			t.Fatal("description change did not refresh search", found, err)
+		}
+		stale, err := store.Search(context.Background(), Query{Text: "obsolete"})
+		if err != nil || len(stale.Matches) != 0 {
+			t.Fatal("search used an obsolete metadata description", stale, err)
+		}
+	}
+}
 func TestCatalogRebuildsAndPreservesIndependentSources(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(t.TempDir())
@@ -98,7 +126,7 @@ func TestGraphAndRedirectsPreserveAmbiguity(t *testing.T) {
 	a := createRecord(t, store, Memories, map[string]any{"title": "A"}, "A body")
 	b := createRecord(t, store, Memories, map[string]any{"title": "B"}, "B body")
 	old := createRecord(t, store, Memories, map[string]any{"redirects": []string{a.ID, b.ID}}, "Original remains")
-	from := createRecord(t, store, Memories, map[string]any{"relations": []Relation{{Type: "custom", Target: old.ID}, {Type: "after", Target: a.ID}}}, "From")
+	from := createRecord(t, store, Memories, map[string]any{"relations": []Relation{{Type: "related_to", Target: old.ID}, {Type: "after", Target: a.ID}}}, "From")
 	incoming, err := store.Graph(ctx, GraphQuery{ID: a.ID, Direction: "incoming"})
 	if err != nil || len(incoming.Edges) != 1 || incoming.Edges[0].Source != from.ID {
 		t.Fatalf("wrong backlinks: %+v, %v", incoming, err)
@@ -108,7 +136,7 @@ func TestGraphAndRedirectsPreserveAmbiguity(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, edge := range graph.Edges {
-		if edge.Type == "custom" && (edge.Target != old.ID || edge.Resolved) {
+		if edge.Type == "related_to" && (edge.Target != old.ID || edge.Resolved) {
 			t.Fatal("split was silently assigned to one replacement")
 		}
 	}
@@ -125,9 +153,9 @@ func TestTimelineKeepsUnknownOrderAndDetectsConstraints(t *testing.T) {
 	}
 	ctx := context.Background()
 	unknown := createRecord(t, store, Memories, map[string]any{"title": "Unknown"}, "No known episode date")
-	later := createRecord(t, store, Memories, map[string]any{"time": map[string]any{"description": "winter 06", "earliest": "2006-12-01", "latest": "2006-12-31"}}, "Later")
-	first := createRecord(t, store, Memories, map[string]any{"relations": []Relation{{Type: "before", Target: later.ID}}, "time": map[string]any{"earliest": "2007-01-01"}}, "Conflicting")
-	if _, err := store.Update(later.ID, later.Revision, map[string]any{"relations": []Relation{{Type: "before", Target: first.ID}}}, later.Body); err != nil {
+	later := createRecord(t, store, Memories, map[string]any{"time": map[string]any{"earliest": "2006-12-01", "latest": "2006-12-31"}}, "Later")
+	first := createRecord(t, store, Memories, map[string]any{"relations": []Relation{{Type: "after", Target: later.ID}}, "time": map[string]any{"earliest": "2007-01-01"}}, "Conflicting")
+	if _, err := store.Update(later.ID, later.Revision, map[string]any{"relations": []Relation{{Type: "after", Target: first.ID}}}, later.Body); err != nil {
 		t.Fatal(err)
 	}
 	timeline, err := store.Timeline(ctx, Query{Limit: 50})
@@ -138,7 +166,7 @@ func TestTimelineKeepsUnknownOrderAndDetectsConstraints(t *testing.T) {
 	for _, r := range timeline.Records {
 		if r.ID == unknown.ID {
 			found = true
-			if !r.Unordered || r.Time.Earliest != "" {
+			if !r.Unordered || r.Time.Earliest != nil {
 				t.Fatal("recording time was invented as episode time")
 			}
 		}
@@ -164,8 +192,8 @@ func TestStoriesComposeReferencesWithoutCopyingNarratives(t *testing.T) {
 	}
 	ctx := context.Background()
 	memory := createRecord(t, store, Memories, nil, "Canonical episode")
-	a := createRecord(t, store, Stories, nil, "A\n[["+memory.ID+"]]\nEnd")
-	b := createRecord(t, store, Stories, nil, "B\n[["+memory.ID+"]]")
+	a := createRecord(t, store, Stories, map[string]any{"relations": []Relation{{"related_to", memory.ID}}}, "A\nEnd")
+	b := createRecord(t, store, Stories, map[string]any{"relations": []Relation{{"related_to", memory.ID}}}, "B")
 	for _, story := range []*Document{a, b} {
 		page, err := store.Compose(ctx, story.ID, 0, 16384)
 		if err != nil || !strings.Contains(page.Text, "Canonical episode") {
@@ -185,10 +213,10 @@ func TestStoriesComposeReferencesWithoutCopyingNarratives(t *testing.T) {
 		}
 		offset = page.Next
 	}
-	if assembled != "A\nCanonical episode\nEnd" {
+	if assembled != "A\nEnd\n\nCanonical episode" {
 		t.Fatalf("paging changed composition: %q", assembled)
 	}
-	if _, err := store.Update(a.ID, a.Revision, nil, "[["+a.ID+"]]"); err != nil {
+	if _, err := store.Update(a.ID, a.Revision, map[string]any{"relations": []Relation{{"related_to", a.ID}}}, "A"); err != nil {
 		t.Fatal(err)
 	}
 	cycle, err := store.Compose(ctx, a.ID, 0, 100)
@@ -208,9 +236,9 @@ func TestCanonicalStoryReferencesParticipateInBacklinks(t *testing.T) {
 	}
 	ctx := context.Background()
 	episode := createRecord(t, store, Memories, nil, "Canonical account")
-	first := createRecord(t, store, Stories, nil, "[["+episode.ID+"]]")
-	second := createRecord(t, store, Stories, nil, "First telling [["+episode.ID+"]]\nAnother telling [["+episode.ID+"]]")
-	graph, err := store.Graph(ctx, GraphQuery{ID: episode.ID, Direction: "incoming", Type: "contains"})
+	first := createRecord(t, store, Stories, map[string]any{"relations": []Relation{{"related_to", episode.ID}}}, "")
+	second := createRecord(t, store, Stories, map[string]any{"relations": []Relation{{"related_to", episode.ID}}}, "Another telling")
+	graph, err := store.Graph(ctx, GraphQuery{ID: episode.ID, Direction: "incoming", Type: "related_to"})
 	if err != nil || len(graph.Edges) != 2 {
 		t.Fatalf("story ownership was absent from backlinks: %+v %v", graph, err)
 	}
@@ -221,7 +249,7 @@ func TestCanonicalStoryReferencesParticipateInBacklinks(t *testing.T) {
 	if !got[first.ID] || !got[second.ID] {
 		t.Fatal("story references were not canonical backlinks")
 	}
-	linked, err := store.Search(ctx, Query{Kind: Stories, RelatedTo: episode.ID, RelationType: "contains"})
+	linked, err := store.Search(ctx, Query{Kind: Stories, RelatedTo: episode.ID, RelationType: "related_to"})
 	if err != nil || len(linked.Matches) != 2 {
 		t.Fatal("stories could not be retrieved through their canonical memories")
 	}
@@ -233,17 +261,17 @@ func TestIndexLossPreservesRetrievalGraphChronologyAndComposition(t *testing.T) 
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	entity := createRecord(t, store, Entities, map[string]any{"name": "John", "aliases": []string{"Johnny"}, "description": "A jazz friend"}, "Identity")
-	first := createRecord(t, store, Memories, map[string]any{"title": "Cafe", "entities": []string{entity.ID}, "time": map[string]any{"earliest": "2000-01-01", "latest": "2000-01-01"}}, "First account")
+	entity := createRecord(t, store, Entities, map[string]any{"name": "John", "aliases": []string{"Johnny"}}, "A jazz friend")
+	first := createRecord(t, store, Memories, map[string]any{"title": "Cafe", "relations": []Relation{{"related_to", entity.ID}}, "time": map[string]any{"earliest": "2000-01-01", "latest": "2000-01-01"}}, "First account")
 	second := createRecord(t, store, Memories, map[string]any{"relations": []Relation{{Type: "after", Target: first.ID}}, "time": map[string]any{"earliest": "2001-01-01", "latest": "2001-01-01"}}, "Second account")
-	story := createRecord(t, store, Stories, nil, "[["+first.ID+"]]")
+	story := createRecord(t, store, Stories, map[string]any{"relations": []Relation{{"related_to", first.ID}}}, "")
 	for _, check := range []struct {
 		query Query
 		id    string
 	}{
 		{Query{Text: "Johnny"}, entity.ID},
 		{Query{Text: "jazz", Kind: Entities}, entity.ID},
-		{Query{Kind: Memories, RelatedTo: entity.ID, RelationType: "entities"}, first.ID},
+		{Query{Kind: Memories, RelatedTo: entity.ID, RelationType: "related_to"}, first.ID},
 		{Query{Text: "2000-01-01"}, first.ID},
 	} {
 		found, err := store.Search(ctx, check.query)

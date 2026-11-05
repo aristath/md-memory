@@ -44,16 +44,19 @@ user: ari
 created_at: 2026-11-03T10:00:00Z
 updated_at: 2026-11-03T10:00:00Z
 relations:
-  - type: motivated_by
+  - type: caused_by
     target: m_b8r5n2w9d4hx
 ---
 
 Markdown body.
 ```
 
-Metadata is open-ended, including lists and nested mappings. Relation types are
-open-ended too. Relations live in their source file; reverse connections are
-derived using the same type. Markdown files are authoritative; `.index/` is disposable.
+Metadata is open-ended, including lists and nested mappings. Connections use the
+five structural types below, stored once in their source file; reverse connections
+are derived. Markdown files are authoritative; `.index/` is disposable.
+
+Entity and topic descriptions live in the Markdown body. The catalogue, search
+and UI use that body directly; there is no separate metadata description.
 
 ## Users
 
@@ -202,8 +205,7 @@ the engine. `Document.OriginalSource()` returns the bytes captured by `Read`,
 matching that snapshot's revision without a second filesystem read.
 
 `Delete(ctx, id, revision)` permanently removes a record after checking incoming
-links under the same cross-process writer lock. Other records' explicit links,
-identity/topic references, redirects and canonical Markdown references prevent
+links under the same cross-process writer lock. Other records' relations and redirects prevent
 deletion. Its own outgoing/self links do not. `DeleteBlocked` supplies referring
 records and diagnostics for navigation and repair. Pending proposals and unreadable
 sources cannot be interpreted as absence of links. Deletion never cascades,
@@ -357,52 +359,47 @@ to read the new version. Invalid UTF-8 pages retain their bytes in `Base64`.
 
 ## Graph, episode time, and stories
 
-`Graph(ctx, GraphQuery)` supplies source-owned edges and derived backlinks. Use
-`direction` incoming/outgoing/both, optional `type`, and a traversal `depth`
-(default 1, maximum 5). No inverse relationship or symmetry is invented.
-`entities`, `topics`, and topic `broader` lists are also exposed as edges named
-for their metadata fields. Exact story references produce derived `contains`
-edges; canonical references in other record bodies produce `mentions` edges. A
-memory's backlinks also identify its containing stories. These edges are not
-copied into source metadata. A retired starting ID resolves to its sole
-known replacement; ambiguous replacements remain explicit. `Resolve(ctx, id)` exposes
-the full redirect result. Missing or cyclic targets remain inspectable.
-An edge's `resolved` flag concerns target availability, not the truth of a
-relationship. Additional qualifiers remain in the source. Use an open name such
-as `possibly_before` for uncertain ordering; only explicit `before`/`after`
-claims participate in chronology.
+`Graph(ctx, GraphQuery)` supplies source-owned relations and derived backlinks.
+Use direction incoming/outgoing/both, optional type, and traversal depth (default 1,
+maximum 5). Edges include `reverse_type`: after/before, caused_by/causes,
+part_of/contains, and symmetric related_to or possibly_same_as. Persist only
+`after`, `caused_by`, `part_of`, `related_to`, `possibly_same_as`.
+Use related_to for entity/topic associations. possibly_same_as never merges.
+Only `relations` defines connections; Markdown links remain prose.
 
-Only `before` and `after` have temporal meaning. `Timeline(ctx, Query)` returns
-records and constraints, not a guessed sorted biography. Episode metadata is:
+A retired starting ID resolves to its sole known replacement. Splits remain
+ambiguous, missing or cyclic targets inspectable. `resolved` describes target
+availability, not the truth of a relationship.
+
+`Timeline(ctx, Query)` returns a partial chronology and part_of groups. Exact dates,
+open/closed bounds and after/caused_by constraints work together. No complete order,
+missing dates or causes are invented. Event time is independent of automatic save
+timestamps:
 
 ```yaml
 time:
-  description: "the winter I moved away"
-  earliest: 2006-12-01
-  latest: 2007-03-31
+  date: null
+  earliest: "2024-01-01"
+  latest: null
 ```
 
-Each field is optional. Bounds accept ISO dates, RFC3339 timestamps, or UTC
-`YYYY-MM-DD HH:MM:SS`; an upper date includes its whole day. An unrecognized value
-remains source data. Creation/update timestamps never become episode dates.
-Explicit ordering is checked globally for cycles and incompatible date ranges.
-Conflicting constraints are returned as unusable with diagnostics. Invalid date
-ranges are ignored for inference without disabling independent relative order.
-Date-proven constraints are derived between displayed records without
-materializing every pair in the entire store. Displayed times remain the original stated bounds;
-validation does not write inferred dates into records.
+This is the agreed “after 2024” convention. An exact date uses `date` with null bounds.
+A period uses null date and one or both bounds; unknowns are null. Bounds also accept
+RFC3339 timestamps or UTC `YYYY-MM-DD HH:MM:SS`; an upper date includes its day.
+Unrecognized values remain intact with diagnostics. Conflicting constraints become
+unusable; damaged calendar fields do not disable independent relative ordering.
+Date-proven constraints are derived for the displayed page without materializing
+all pairs in the store. Inferred dates are never written back.
 
-Stories use exact `[[m_0123456789ab]]` references (any valid record prefix works).
-Ordinary Markdown links are ordinary prose. `Compose(ctx, storyID, offset, limit)`
-expands canonical bodies, and nested stories, in narrative order. It never stores
-copies of those narratives. Missing references have visible markers; ambiguous
-redirects retain the retired account and identify replacements. Cycles and depth
-beyond 32 retain a reference marker. One render allows 100,000 reference visits;
-if that is exceeded, retrieve a nested story separately. Completed expansion
-lengths skip shared prefixes when paging larger compositions. Output defaults to
-4 KiB and caps at 16 KiB, with byte offsets and continuation. Unicode pages preserve
-whole characters, even if that requires up to three bytes beyond a tiny requested
-limit. Binary fragments use `base64` instead of losing bytes through JSON text.
+A story's related_to relations to memories/stories define reading order; entity/topic
+links are associations. Its body supplies introductory prose. `Compose(ctx, id,
+offset, limit)` expands canonical bodies in that order, without storing copies.
+Missing references remain visible, and ambiguous redirects retain the retired
+account and identify replacements. Cycles and depth beyond 32 retain a marker.
+A render allows 100,000 visits; retrieve a nested story if exceeded. Cached expansion
+lengths skip shared prefixes during paging. Output defaults to 4 KiB, capped at
+16 KiB, with byte offsets and continuation. Unicode stays whole; binary fragments
+use base64. Story order and event chronology are independent.
 
 Graph/timeline summaries bound descriptive fields and mark `details_truncated`.
 Search summaries likewise abbreviate details; read the source for full metadata.
@@ -410,28 +407,21 @@ These display limits never change authoritative content or relationship semantic
 
 ## Direct capture and domain writes
 
-`SaveMemory(ctx, MemoryInput)` accepts text, time, entities and topics. It resolves
-unique exact names/aliases and creates missing identities under the same store
-lock as the durable related write. Explicit IDs select known records. Ambiguous
-or unavailable connections remain in `unresolved_connections`; the memory and
-healthy connections still save. Entity descriptions briefly identify their
-subjects. Experiences, preferences and growing histories belong in memories linked
-to every relevant entity. Use an existing memory ID and `Append` to enrich its
-prose while preserving its connections; full prose is retained independently of
-bounded MCP previews.
+`SaveMemory(ctx, MemoryInput)` accepts prose, event time and relations. Each
+`RelationInput` takes a structural type and a target: record ID, entity name, or
+named entity/topic object. Unique exact names/aliases reuse identities; missing
+identities are created under the same lock and durable write. Ambiguous or unusable
+connections remain in unresolved_connections with diagnostics; prose still saves.
 
-`SaveNamed(ctx, Entities|Topics, NamedInput)` creates or updates a named record.
-`SaveStory(ctx, StoryInput)` creates or updates a story with ordered members.
-Supplied members replace membership; omission preserves it. Supplied text replaces
-prose; `Append` adds detail. `Metadata` is open data. A supplied internal `Key`
-binds a retry to the same intent; omitting it starts an independent operation.
-These methods use the same batch journals and recovery as the lower-level API.
-Their `Relations` field replaces explicit links when supplied; nil preserves them
-and an empty slice clears them. Targets accept canonical IDs or entity names;
-unique names are reused and missing entities are created under the write lock.
-Unresolved targets remain intact with diagnostics. Capture `Entities` and `Topics`
-add participant links to the memory. Lower-level `Change.AddRelations` remains
-explicitly additive.
+`SaveNamed(ctx, Entities|Topics, NamedInput)` creates/updates brief identities or
+subjects. Experiences and histories belong in linked memories. `SaveStory(ctx,
+StoryInput)` uses the same relations field, ordered for narrative members.
+
+An existing ID updates; Text/Description replaces prose, Append enriches it.
+Omitted fields remain intact. Supplied relations replace the list, except Append
+adds to existing connections; an empty slice clears it. Inline identity enrichment
+preserves connections. Metadata remains open. A supplied internal Key binds retry
+intent; omission starts an independent operation. All writes use batch recovery.
 
 ## Related changes and retry safety
 
@@ -440,16 +430,12 @@ fresh request key, shortlists, possible duplicate names, and identity ambiguitie
 It uses deterministic lexical matching, with no LLM calls. A shortlist is evidence
 to review, not an automatic identity assignment.
 
-`ApplyBatch(ctx, BatchRequest)` accepts creations, updates by ID, and
-story membership changes in one request. New changes can declare a `ref`; use
-`$ref` values in metadata or `[[$ref]]` in body references. The engine assigns
-final IDs. Existing changes supply `id`. Go callers may supply `Revision` to
-check a previously read snapshot; MCP callers use IDs only. Omitted fields remain
-intact; omitted `body` preserves it. `append` adds a paragraph, while
-`add_relations` appends source-owned edges without discarding existing entries.
-Story additions use an existing story ID, or its new `$ref`, and an
-ordered member list. Unknown story IDs/references genuinely block safe changes;
-unresolved ordinary relationships can remain in source metadata.
+`ApplyBatch(ctx, BatchRequest)` accepts creations and updates in one request.
+New changes can declare a `ref`; `$ref` values in metadata resolve to assigned IDs.
+Story relations use that same mechanism. Existing changes supply id; Go callers
+may supply Revision to check a read snapshot. MCP callers use IDs only. Omitted
+fields/body stay intact; Append adds a paragraph. AddRelations adds source-owned
+relations. Body text is never interpreted as a connection store.
 
 Supply one stable `key` and reuse exactly the same request on retry. Different
 changes under that key are blocked. Keys bind the accepted intent; they do not

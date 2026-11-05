@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"net/http"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/aristath/songya"
@@ -162,11 +163,22 @@ func Handler(store *songya.Store) http.Handler {
 			doc.Frontmatter = *next
 		}
 		if input.Action != "" {
-			if err := doc.EditConnection(input.Kind, songya.Relation{Type: input.Type, Target: input.Target}, input.Action == "remove"); err != nil {
+			relation := songya.Relation{Type: input.Type, Target: input.Target}
+			var err error
+			switch input.Action {
+			case "up":
+				err = doc.MoveConnection(relation, -1)
+			case "down":
+				err = doc.MoveConnection(relation, 1)
+			default:
+				err = doc.EditConnection(relation, input.Action == "remove")
+			}
+			if err != nil {
 				fail(w, err)
 				return
 			}
 		}
+
 		source := input.Source
 		if input.Body != nil || input.Fields != nil || input.Action != "" {
 			data, err := doc.Marshal()
@@ -254,13 +266,14 @@ func Handler(store *songya.Store) http.Handler {
 }
 
 type Field struct {
-	Protected string `json:"protected,omitempty"`
-	Index     int    `json:"index"`
-	Text      string `json:"text"`
-	Type      string `json:"type"`
-	Key       string `json:"key"`
-	Value     string `json:"value"`
-	System    bool   `json:"system"`
+	Time      *songya.EpisodeTime `json:"time,omitempty"`
+	Protected string              `json:"protected,omitempty"`
+	Index     int                 `json:"index"`
+	Text      string              `json:"text"`
+	Type      string              `json:"type"`
+	Key       string              `json:"key"`
+	Value     string              `json:"value"`
+	System    bool                `json:"system"`
 }
 type Draft struct {
 	Body     string   `json:"body"`
@@ -308,7 +321,25 @@ func describe(source string) Draft {
 			}
 			protected = strings.Join(lines[key.Line:end], "")
 		}
-		draft.Fields = append(draft.Fields, Field{Index: i / 2, Text: value.Value, Type: typ, Key: name, Value: string(data), System: system, Protected: protected})
+		f := Field{Index: i / 2, Text: value.Value, Type: typ, Key: name, Value: string(data), System: system, Protected: protected}
+		if name == "time" && value.Kind == yaml.MappingNode {
+			var event songya.EpisodeTime
+			usable := value.Decode(&event) == nil
+			for j := 0; j+1 < len(value.Content); j += 2 {
+				key := value.Content[j].Value
+				usable = usable && (key == "date" || key == "earliest" || key == "latest")
+			}
+			for _, date := range []*string{event.Date, event.Earliest, event.Latest} {
+				if date != nil {
+					_, err := time.Parse(time.DateOnly, *date)
+					usable = usable && err == nil
+				}
+			}
+			if usable {
+				f.Type, f.Time = "time", &event
+			}
+		}
+		draft.Fields = append(draft.Fields, f)
 	}
 	return draft
 }

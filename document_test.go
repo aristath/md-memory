@@ -16,9 +16,9 @@ title: Example
 created_at: 2026-11-03T10:00:00Z
 updated_at: 2026-11-03T10:00:00Z
 relations:
-  - type: motivated_by
+  - type: caused_by
     target: m_b8r5n2w9d4hx
-  - type: custom_connection
+  - type: related_to
     target: t_9za4cd6ef8gh
 # User-defined metadata
 aliases: &names ["α", "000123", "yes"]
@@ -165,7 +165,7 @@ func TestMalformedDocumentsStayUsable(t *testing.T) {
 		"duplicate title": strings.Replace(sample, "title: Example", "title: Example\ntitle: Duplicate", 1),
 		"missing time":    strings.Replace(sample, "created_at: 2026-11-03T10:00:00Z\n", "", 1),
 		"invalid target":  strings.Replace(sample, "m_b8r5n2w9d4hx", "missing", 1),
-		"empty type":      strings.Replace(sample, "type: motivated_by", "type: ''", 1),
+		"empty type":      strings.Replace(sample, "type: caused_by", "type: ''", 1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			data := []byte(input)

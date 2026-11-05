@@ -19,7 +19,7 @@ func recallContext(d *Document) string {
 	for i := 0; i+1 < len(node.Content); i += 2 {
 		name, _ := fieldName(node.Content[i])
 		switch name {
-		case "id", "created_at", "updated_at", "source", "user", "title", "name", "aliases", "description", "time", "relations", "entities", "topics", "broader", "redirects", "unparsed_frontmatter":
+		case "id", "created_at", "updated_at", "source", "original_accounts", "user", "title", "name", "aliases", "description", "time", "relations", "entities", "topics", "broader", "redirects", "unparsed_frontmatter":
 			continue
 		}
 		context.Content = append(context.Content, node.Content[i], node.Content[i+1])
@@ -116,8 +116,10 @@ func (s *Store) Recall(ctx context.Context, q RecallQuery) (RecallPage, error) {
 		if hubs[edge.Target] {
 			selected[edge.Source] = true
 		}
-		if edge.Type == "contains" {
-			parents[edge.Target] = append(parents[edge.Target], edge.Source)
+	}
+	for _, story := range c.Records {
+		for _, member := range storyMembers(story) {
+			parents[member] = append(parents[member], story.ID)
 		}
 	}
 	// Include enclosing narratives even when their other participants do not link
@@ -142,9 +144,11 @@ func (s *Store) Recall(ctx context.Context, q RecallQuery) (RecallPage, error) {
 	}
 	// Put the most directly connected account first; no story owns an identity.
 	coverage := map[string]int{}
-	for _, edge := range edges {
-		if edge.Type == "contains" && selected[edge.Target] {
-			coverage[edge.Source]++
+	for _, story := range c.Records {
+		for _, member := range storyMembers(story) {
+			if selected[member] {
+				coverage[story.ID]++
+			}
 		}
 	}
 	sort.Slice(stories, func(i, j int) bool {
@@ -238,15 +242,8 @@ func (s *Store) Recall(ctx context.Context, q RecallQuery) (RecallPage, error) {
 		if r.Unconfirmed {
 			label["unconfirmed"] = true
 		}
-		links := []Relation{}
-		for _, link := range r.Relations {
-			target, available := records[link.Target]
-			if link.Type != "contains" && (!available || userOwned(target.Kind) || !userOwned(r.Kind)) {
-				links = append(links, link)
-			}
-		}
-		if len(links) > 0 {
-			label["relations"] = links
+		if len(r.Relations) > 0 {
+			label["relations"] = r.Relations
 		}
 		header, _ := json.Marshal(label)
 		write("\n\n## ")
@@ -269,23 +266,14 @@ func (s *Store) Recall(ctx context.Context, q RecallQuery) (RecallPage, error) {
 			}
 			return
 		}
-		cursor := 0
-		for {
-			location := storyReference.FindStringSubmatchIndex(r.Body[cursor:])
-			if location == nil {
-				break
-			}
-			for i := range location {
-				location[i] += cursor
-			}
-			write(r.Body[cursor:location[0]])
-			visit(r.Body[location[2]:location[3]], depth+1)
-			cursor = location[1]
+		write(r.Body)
+		for _, member := range storyMembers(r) {
+			write("\n\n")
+			visit(member, depth+1)
 			if output.Len() >= size+2*utf8.UTFMax || ctx.Err() != nil {
 				return
 			}
 		}
-		write(r.Body[cursor:])
 	}
 	for _, id := range order {
 		if !seen[id] {

@@ -34,7 +34,6 @@ func savedWrite(ctx context.Context, store *songya.Store, receipt songya.Receipt
 		records[saved.ID] = doc.Record(kindFor(saved.ID))
 	}
 	if record, ok := records[id]; ok {
-		value["relations"] = record.Relations
 		if record.Kind == songya.Entities || record.Kind == songya.Topics {
 			value["name"], value["description"], value["aliases"] = record.Title, clipText(record.Body, 2048), record.Aliases
 			value["description_truncated"] = len(record.Body) > 2048
@@ -47,37 +46,23 @@ func savedWrite(ctx context.Context, store *songya.Store, receipt songya.Receipt
 				value["time"] = record.Time
 			}
 		}
-		entities, topics := []any{}, []any{}
+		connections := []any{}
 		for _, edge := range record.Relations {
+			connection := map[string]any{"type": edge.Type, "target": edge.Target}
 			target, ok := records[edge.Target]
 			if !ok && songya.ValidID(edge.Target) {
 				if doc, err := store.Read(edge.Target); err == nil {
 					target, ok = doc.Record(kindFor(edge.Target)), true
 				}
 			}
-			if !ok {
-				continue
+			if ok {
+				connection["name"], connection["kind"] = target.Title, target.Kind
+			} else {
+				diagnostics = append(diagnostics, songya.Diagnostic{Path: edge.Target, Message: "Connection target unavailable; read the record to repair it"})
 			}
-			connection := map[string]any{"id": edge.Target, "name": target.Title, "relation": edge.Type}
-			switch target.Kind {
-			case songya.Entities:
-				entities = append(entities, connection)
-			case songya.Topics:
-				topics = append(topics, connection)
-			}
+			connections = append(connections, connection)
 		}
-		if record.Kind == songya.Memories {
-			value["entities"], value["topics"] = entities, topics
-		}
-		if record.Kind == songya.Stories {
-			members := []string{}
-			for _, edge := range record.Relations {
-				if edge.Type == "contains" {
-					members = append(members, edge.Target)
-				}
-			}
-			value["members"] = members
-		}
+		value["relations"] = connections
 	}
 	value["diagnostics"] = diagnostics
 	return value, writeErr
@@ -95,20 +80,36 @@ func clipText(text string, n int) string {
 func memorySchema() map[string]any {
 	return schema(map[string]any{
 		"id": str("Existing memory ID to update; omit for a new memory"), "user": str("Owner of a new memory"), "title": str("Optional title"), "text": str("The memory in the user's own words; replaces prose when supplied"), "append": str("Enrich this memory with more detail; existing prose and links stay intact"),
-		"time":     map[string]any{"description": "When the event happened: ordinary words or known date bounds", "anyOf": []any{str("Approximate time in ordinary words"), schema(map[string]any{"description": str("When it happened"), "earliest": str("Earliest known date"), "latest": str("Latest known date")})}},
-		"entities": array(namedSchema(true)), "topics": array(namedSchema(false)), "metadata": object(), "relations": relationsSchema(),
+		"time": schema(map[string]any{
+			"date":     nullableDate("Exact event date"),
+			"earliest": nullableDate("Earliest event date; null for an open bound"),
+			"latest":   nullableDate("Latest event date; null for an open bound"),
+		}),
+		"metadata": object(), "relations": relationsSchema(),
 	})
 }
 func namedSchema(entity bool) map[string]any {
-	fields := map[string]any{"id": str("Existing ID; omit to reuse a unique matching name or create a record"), "name": str("Name, e.g. Alex Morgan or Cedar Café"), "aliases": array(str("Other known name")), "description": str("Brief identifying description; experiences, preferences and history belong in linked memories"), "append": str("Add a brief identifying detail"), "relation": str("This entity’s role in the memory: e.g. with, at, about"), "metadata": object(), "relations": relationsSchema()}
+	fields := map[string]any{"id": str("Existing ID; omit to reuse a unique matching name or create a record"), "name": str("Name, e.g. Alex Morgan or Cedar Café"), "aliases": array(str("Other known name")), "description": str("Brief identifying description; experiences, preferences and history belong in linked memories"), "append": str("Add a brief identifying detail"), "metadata": object(), "relations": relationsSchema()}
 	if entity {
 		fields["type"] = str("Free-form type, e.g. person, place or organization")
 	}
 	return schema(fields)
 }
 
+func nullableDate(description string) map[string]any {
+	return map[string]any{"type": []string{"string", "null"}, "description": description + "; YYYY-MM-DD or null"}
+}
+
 func relationsSchema() map[string]any {
-	value := array(schema(map[string]any{"type": str("This record's relationship to the target"), "target": str("Existing record ID or entity name; names are created or reused automatically")}, "type", "target"))
-	value["description"] = "Supplied list replaces explicit relations; omit to preserve, [] to clear"
+	named := schema(map[string]any{
+		"kind": map[string]any{"type": "string", "enum": []string{"entities", "topics"}},
+		"name": str("Name to create or reuse"), "type": str("Optional entity type"),
+		"description": str("Brief identity or subject description"), "aliases": array(str("Equivalent name")),
+	}, "name")
+	value := array(schema(map[string]any{
+		"type":   map[string]any{"type": "string", "enum": songya.RelationTypes[:]},
+		"target": map[string]any{"anyOf": []any{str("Existing record ID or entity name"), named}},
+	}, "type", "target"))
+	value["description"] = "Every connection uses this list. Omit to preserve; append adds connections, other saves replace supplied relations; [] clears. Story memory links are in reading order."
 	return value
 }

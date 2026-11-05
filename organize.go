@@ -116,12 +116,6 @@ func (s *Store) Merge(ctx context.Context, request MergeRequest) (Receipt, error
 		addAliases(metadataField(&doc.Frontmatter, "aliases"))
 		addAliases(yamlValue(r.Title))
 		relations.Content = append(relations.Content, sequenceNode(metadataField(&doc.Frontmatter, "relations")).Content...)
-		for _, name := range []string{"entities", "topics", "broader"} {
-			for _, target := range nodeStrings(name, doc) {
-				node, _ := encodeValue(Relation{Type: name, Target: target})
-				relations.Content = append(relations.Content, node)
-			}
-		}
 		ids = append(ids, source.ID)
 		bodies = append(bodies, "## "+r.Title+"\n\n"+doc.Body)
 		changes = append(changes, Change{ID: source.ID, Revision: doc.Revision, Fields: map[string]any{"redirects": []string{"$merged"}}})

@@ -19,6 +19,7 @@ import (
 
 // A nil body preserves the existing body on update, and means empty on creation.
 type Change struct {
+	enrich       bool           // Inline identity enrichment adds connections to the existing description.
 	source       *string        // Full document used internally by SaveSource.
 	Ref          string         `json:"ref,omitempty"`
 	ID           string         `json:"id,omitempty"`
@@ -29,18 +30,12 @@ type Change struct {
 	Append       string         `json:"append,omitempty"`
 	AddRelations []Relation     `json:"add_relations,omitempty"`
 }
-type StoryAddition struct {
-	Story    string   `json:"story"`
-	Revision string   `json:"-"`
-	Members  []string `json:"members"`
-}
 type BatchRequest struct {
-	prepare func(*os.Root) ([]Change, []StoryAddition, error)
-	User    string          `json:"user,omitempty"`
-	Key     string          `json:"key"`
-	Account string          `json:"original_text,omitempty"`
-	Changes []Change        `json:"changes"`
-	Stories []StoryAddition `json:"stories,omitempty"`
+	prepare func(*os.Root) ([]Change, error)
+	User    string   `json:"user,omitempty"`
+	Key     string   `json:"key"`
+	Account string   `json:"original_text,omitempty"`
+	Changes []Change `json:"changes"`
 }
 type SavedRecord struct {
 	ID       string `json:"id"`
@@ -205,8 +200,7 @@ func requestRevision(ctx context.Context, request BatchRequest) (string, error) 
 		User    []byte
 		Account []byte
 		Changes []intent
-		Stories []StoryAddition
-	}{[]byte(request.User), []byte(request.Account), intents, request.Stories})
+	}{[]byte(request.User), []byte(request.Account), intents})
 	if err != nil {
 		return "", err
 	}
@@ -256,7 +250,7 @@ func prepareBatch(ctx context.Context, root *os.Root, request BatchRequest, revi
 	journal := batchJournal{Key: request.Key, Account: []byte(request.Account), Request: revision, Refs: map[string]string{}}
 	if request.prepare != nil {
 		var err error
-		request.Changes, request.Stories, err = request.prepare(root)
+		request.Changes, err = request.prepare(root)
 		if err != nil {
 			return journal, err
 		}
@@ -312,64 +306,6 @@ func prepareBatch(ctx context.Context, root *os.Root, request BatchRequest, revi
 			}
 			journal.Refs[name] = id
 		}
-	}
-	// Story additions join a supplied change or form an ordinary revision-checked
-	// update. New stories can be addressed with their local reference.
-	for _, addition := range request.Stories {
-		if err := ctx.Err(); err != nil {
-			return journal, err
-		}
-		id := localID(addition.Story, journal.Refs)
-		if !ValidID(id) || !strings.HasPrefix(id, "s_") {
-			return journal, fmt.Errorf("%q is not a story ID", id)
-		}
-		index := -1
-		for i, change := range changes {
-			if change.ID == id {
-				index = i
-				break
-			}
-		}
-		if index < 0 {
-			changes = append(changes, Change{ID: id, Revision: addition.Revision})
-			index = len(changes) - 1
-		}
-		change := &changes[index]
-		if change.Revision != "" && addition.Revision != "" && change.Revision != addition.Revision {
-			return journal, ErrConflict
-		}
-		if change.Revision == "" && !creates[id] {
-			change.Revision = addition.Revision
-		}
-		body := ""
-		if change.Body != nil {
-			body = *change.Body
-		} else if !creates[id] {
-			name, _ := recordName(id)
-			data, err := readFile(root, name)
-			if err != nil {
-				return journal, err
-			}
-			body = Parse(data).Body
-		}
-		if change.Append != "" {
-			if body != "" {
-				body += "\n\n"
-			}
-			body += change.Append
-			change.Append = ""
-		}
-		for _, member := range addition.Members {
-			target := localID(member, journal.Refs)
-			if !ValidID(target) {
-				return journal, fmt.Errorf("story member %q needs a record ID or known local reference", member)
-			}
-			reference := "[[" + target + "]]"
-			if !strings.Contains(body, reference) {
-				body += "\n" + reference + "\n"
-			}
-		}
-		change.Body = &body
 	}
 	for _, change := range changes {
 		if err := ctx.Err(); err != nil {
@@ -431,14 +367,12 @@ func prepareBatch(ctx context.Context, root *os.Root, request BatchRequest, revi
 			}
 			body += change.Append
 		}
-		if change.source == nil {
-			for ref, id := range journal.Refs {
-				body = strings.ReplaceAll(body, "[[$"+ref+"]]", "[["+id+"]]")
-			}
-		}
 		if base == "" {
 			created := time.Now().UTC()
 			fields["created_at"], fields["updated_at"] = created, created
+			if kindOf(change.ID) == Memories && fields["time"] == nil && metadataField(&doc.Frontmatter, "time") == nil {
+				fields["time"] = map[string]any{}
+			}
 			delete(fields, "id")
 			if _, ok := fields["title"]; !ok && (change.source == nil || metadataField(&doc.Frontmatter, "title") == nil) {
 				fields["title"] = ""

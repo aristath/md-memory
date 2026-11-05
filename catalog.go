@@ -20,17 +20,12 @@ import (
 	"time"
 )
 
-const indexFormat = 6
+const indexFormat = 8
 
 // Diagnostic identifies a recoverable problem without hiding healthy records.
 type Diagnostic struct {
 	Path    string `json:"path"`
 	Message string `json:"message"`
-}
-type EpisodeTime struct {
-	Description string `json:"description,omitempty"`
-	Earliest    string `json:"earliest,omitempty"`
-	Latest      string `json:"latest,omitempty"`
 }
 
 // Record is the derived search/graph view. Source Markdown is authoritative.
@@ -100,38 +95,12 @@ func recordFromDocument(source string, d *Document, kind Destination) Record {
 	r.Context = recallContext(d)
 	r.Aliases = nodeStrings("aliases", d)
 	r.Description = strings.Join(nodeStrings("description", d), " ")
+	if kind == Entities || kind == Topics {
+		r.Description = d.Body
+	}
 	r.Type = strings.Join(nodeStrings("type", d), " ")
 	r.Redirects = nodeStrings("redirects", d)
-	for _, name := range []string{"entities", "topics", "broader"} {
-		for _, target := range nodeStrings(name, d) {
-			r.Relations = append(r.Relations, Relation{Type: name, Target: target})
-		}
-	}
-	{
-		referenceType := "mentions"
-		if kind == Stories {
-			referenceType = "contains"
-		}
-		seen := map[string]bool{}
-		for cursor := 0; cursor < len(r.Body); {
-			match := storyReference.FindStringSubmatchIndex(r.Body[cursor:])
-			if match == nil {
-				break
-			}
-			target := r.Body[cursor+match[2] : cursor+match[3]]
-			if !seen[target] {
-				seen[target] = true
-				r.Relations = append(r.Relations, Relation{Type: referenceType, Target: target})
-			}
-			cursor += match[1]
-		}
-	}
-	timeNode := dereference(metadataField(&d.Frontmatter, "time"))
-	if timeNode != nil && timeNode.Kind == yaml.MappingNode {
-		r.Time = EpisodeTime{Description: strings.Join(stringsFromNode(metadataField(timeNode, "description")), " "), Earliest: strings.Join(stringsFromNode(metadataField(timeNode, "earliest")), " "), Latest: strings.Join(stringsFromNode(metadataField(timeNode, "latest")), " ")}
-	} else {
-		r.Time.Description = strings.Join(stringsFromNode(timeNode), " ")
-	}
+	r.Time = episodeTime(metadataField(&d.Frontmatter, "time"))
 	if r.Title == "" {
 		r.Title = d.ID
 		if r.Title == "" {
@@ -401,7 +370,7 @@ func rankMatches(c Catalog, q Query) []Match {
 		}
 		title := strings.ToLower(strings.Join(names, " "))
 		description := strings.ToLower(r.Description)
-		body := strings.ToLower(r.Body + " " + r.Time.Description + " " + r.Time.Earliest + " " + r.Time.Latest)
+		body := strings.ToLower(r.Body + " " + dateValue(r.Time.Date) + " " + dateValue(r.Time.Earliest) + " " + dateValue(r.Time.Latest))
 		for _, token := range tokens {
 			if strings.Contains(title, token) {
 				score += 5

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
@@ -71,18 +70,18 @@ func TestDeleteChecksAllIncomingFormsAndDoesNotRecoverDeletedRecord(t *testing.T
 	for _, kind := range destinations {
 		t.Run(string(kind), func(t *testing.T) {
 			target, _ := s.Create(kind, testUserFields(kind, map[string]any{"title": "Target"}), "Target body")
-			fields := map[string]any{"user": "ari", "relations": []Relation{{Type: "motivated_by", Target: target.ID}}, "entities": []string{target.ID}, "topics": []string{target.ID}, "broader": []string{target.ID}}
+			fields := map[string]any{"user": "ari", "relations": []Relation{{Type: "caused_by", Target: target.ID}}}
 			incoming, _ := s.Create(Memories, fields, "A memory [["+target.ID+"]]")
-			story, _ := s.Create(Stories, map[string]any{"user": "ari"}, "A narrative [["+target.ID+"]]")
+			story, _ := s.Create(Stories, map[string]any{"user": "ari", "relations": []Relation{{"related_to", target.ID}}}, "A narrative")
 			before, _ := s.Read(target.ID)
 			var blocked *DeleteBlocked
 			if err := s.Delete(ctx, target.ID, before.Revision); !errors.As(err, &blocked) || len(blocked.Records) != 2 {
 				t.Fatal("missing incoming blockers", blocked, err)
 			}
-			if _, err := s.Update(incoming.ID, incoming.Revision, map[string]any{"relations": []Relation{}, "entities": []string{}, "topics": []string{}, "broader": []string{}}, "Links removed"); err != nil {
+			if _, err := s.Update(incoming.ID, incoming.Revision, map[string]any{"relations": []Relation{}}, "Links removed"); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := s.Update(story.ID, story.Revision, nil, "Membership removed"); err != nil {
+			if _, err := s.Update(story.ID, story.Revision, map[string]any{"relations": []Relation{}}, "Membership removed"); err != nil {
 				t.Fatal(err)
 			}
 			// A committed batch receipt must not recreate this record on normal recovery.
@@ -143,7 +142,7 @@ func TestDeleteWaitsForConcurrentWriterAndSeesItsIncomingLink(t *testing.T) {
 		writer <- s.lockedContext(ctx, func(root *os.Root) error {
 			close(locked)
 			<-release
-			doc, _ := NewDocument(Metadata{User: "ari", CreatedAt: time.Now(), UpdatedAt: time.Now()}, "Concurrent [["+target.ID+"]]")
+			doc, _ := NewDocument(Metadata{User: "ari", CreatedAt: time.Now(), UpdatedAt: time.Now(), Relations: []Relation{{"related_to", target.ID}}}, "Concurrent [["+target.ID+"]]")
 			data, _ := doc.Marshal()
 			if err := root.WriteFile("memories/m_000000000001.md", data, 0600); err != nil {
 				return err
@@ -171,18 +170,18 @@ func TestDeleteWaitsForConcurrentWriterAndSeesItsIncomingLink(t *testing.T) {
 }
 
 func TestConnectionsPreserveUnrelatedMetadata(t *testing.T) {
-	d := Parse([]byte("---\ncustom: {a: [3, false]}\nrelations:\n - {type: at, target: e_000000000000}\n---\nText"))
-	relation := Relation{Type: "mentions", Target: "m_000000000000"}
-	if err := d.EditConnection(Memories, relation, false); err != nil {
+	d := Parse([]byte("---\ncustom: {a: [3, false]}\nrelations:\n - {type: related_to, target: e_000000000000}\n---\nText"))
+	relation := Relation{Type: "related_to", Target: "m_000000000000"}
+	if err := d.EditConnection(relation, false); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(d.Body, "[[m_000000000000]]") {
+	if len(d.Metadata().Relations) != 2 || d.Body != "Text" {
 		t.Fatal("reference absent")
 	}
-	if err := d.EditConnection(Memories, relation, true); err != nil {
+	if err := d.EditConnection(relation, true); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(d.Body, "[[m_000000000000]]") || metadataField(&d.Frontmatter, "custom") == nil || len(d.Metadata().Relations) != 1 {
+	if d.Body != "Text" || metadataField(&d.Frontmatter, "custom") == nil || len(d.Metadata().Relations) != 1 {
 		t.Fatal("connection edit lost data")
 	}
 }
@@ -193,7 +192,8 @@ func TestDeletionChecksUnpublishedProposalsAndRetainsPendingWork(t *testing.T) {
 	target, _ := s.Create(Entities, nil, "")
 	incoming, _ := s.Create(Memories, map[string]any{"user": "ari"}, "Original")
 	doc, _ := s.Read(incoming.ID)
-	doc.Body = "Pending [[" + target.ID + "]]"
+	doc.Body = "Pending"
+	_ = doc.Set("relations", []Relation{{"related_to", target.ID}})
 	data, _ := doc.Marshal()
 	name, _ := recordName(incoming.ID)
 	if err := s.lockedContext(ctx, func(root *os.Root) error { _, err := stage(root, name, incoming.Revision, data); return err }); err != nil {
@@ -213,7 +213,7 @@ func TestDeletionChecksUnpublishedProposalsAndRetainsPendingWork(t *testing.T) {
 	separate, _ := Open(t.TempDir())
 	other, _ := separate.Create(Entities, nil, "")
 	body := "Unpublished [[" + other.ID + "]]"
-	request := BatchRequest{Key: "unpublished", User: "ari", Changes: []Change{{Kind: Memories, Body: &body}}}
+	request := BatchRequest{Key: "unpublished", User: "ari", Changes: []Change{{Kind: Memories, Body: &body, Fields: map[string]any{"relations": []Relation{{"related_to", other.ID}}}}}}
 	if err := separate.lockedContext(ctx, func(root *os.Root) error {
 		digest, _ := requestRevision(ctx, request)
 		journal, err := prepareBatch(ctx, root, request, digest)
@@ -246,7 +246,7 @@ func TestDirectConnectionsAreCompleteAndKeepOriginalRedirectTargets(t *testing.T
 	target, _ := s.Create(Entities, nil, "")
 	replacement, _ := s.Create(Entities, nil, "")
 	for range 65 {
-		if _, err := s.Create(Memories, map[string]any{"user": "ari"}, "[["+target.ID+"]]"); err != nil {
+		if _, err := s.Create(Memories, map[string]any{"user": "ari", "relations": []Relation{{"related_to", target.ID}}}, "Linked"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -270,7 +270,7 @@ func TestDeleteIgnoresOwnOutgoingAndSelfLinks(t *testing.T) {
 	s, _ := Open(t.TempDir())
 	other, _ := s.Create(Entities, nil, "")
 	record, _ := s.Create(Memories, map[string]any{"user": "ari"}, "")
-	record, err := s.Update(record.ID, record.Revision, map[string]any{"relations": []Relation{{Type: "self", Target: record.ID}, {Type: "about", Target: other.ID}}}, "[["+record.ID+"]] [["+other.ID+"]]")
+	record, err := s.Update(record.ID, record.Revision, map[string]any{"relations": []Relation{{Type: "related_to", Target: record.ID}, {Type: "related_to", Target: other.ID}}}, "[["+record.ID+"]] [["+other.ID+"]]")
 	if err != nil {
 		t.Fatal(err)
 	}

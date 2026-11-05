@@ -262,6 +262,11 @@ func (d *Document) metadata() (m Metadata, warnings []string) {
 			warnings = append(warnings, fmt.Sprintf("relation %d: %s", i, warning))
 		}
 		relation.Type = strings.TrimSpace(relation.Type)
+		if normalized := relationType(relation.Type); normalized != "" {
+			relation.Type = normalized
+		} else if relation.Type != "" {
+			warnings = append(warnings, fmt.Sprintf("relation %d uses unsupported type %q; original data retained", i, relation.Type))
+		}
 		relation.Target = strings.TrimSpace(relation.Target)
 		if relation.Type == "" || !ValidID(relation.Target) {
 			warnings = append(warnings, fmt.Sprintf("relation %d is unresolved", i))
@@ -281,6 +286,11 @@ func (d *Document) Metadata() Metadata {
 
 func (d *Document) Diagnostics() []string {
 	metadata, warnings := d.metadata()
+	if node := metadataField(&d.Frontmatter, "time"); node != nil {
+		if _, issue := eventTimeNode(node); issue != "" {
+			warnings = append(warnings, issue)
+		}
+	}
 	if userOwned(kindOf(d.ID)) && (metadata.User == "" || metadata.User == "all") {
 		warnings = append(warnings, "user field is missing or invalid; original content retained")
 	}
@@ -346,6 +356,14 @@ func assignNode(destination, source *yaml.Node) {
 
 // Marshal preserves damaged metadata as data rather than rejecting the record.
 func (d *Document) Marshal() ([]byte, error) {
+	if node := metadataField(&d.Frontmatter, "time"); node != nil {
+		value, issue := eventTimeNode(node)
+		if issue == "" {
+			_ = d.Set("time", value)
+		} else {
+			d.warnings = append(d.warnings, issue)
+		}
+	}
 	var output bytes.Buffer
 	output.WriteString("---\n")
 	encoder := yaml.NewEncoder(&output)

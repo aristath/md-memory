@@ -22,24 +22,25 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const Guide = `Songya saves connected Markdown records. IDs, timestamps and retry bookkeeping are automatic.
+const Guide = `Songya stores connected Markdown records. IDs, save timestamps and retry bookkeeping are automatic.
 
-Memories hold experiences, facts, preferences and history. Link every relevant person, place or thing, including the speaker when the memory concerns them. Entity descriptions briefly identify who or what an entity is. Topics identify subjects; stories arrange memories into a narrative.
+Before every save, use prepare_memory(text) to find existing memories, entities and topics. Reuse existing records. One save can create a memory and its new connected identities.
 
-Save directly with save_memory: text, entities and optional time. Named entities are created or reused by unique exact name/alias. Include relation to describe each entity's role, such as with, at or about. Use an existing memory's id and append to enrich it; text replaces its prose. Search or prepare_memory when you need to find an existing record.
+Memories hold events, experiences, facts and preferences. Entities briefly identify people, places and things. Topics identify subjects. Stories compose memories through related_to links in reading order.
 
-Example:
-save_memory({"text":"Alex Morgan and Sam Lee enjoy the lentil soup at Cedar Café.","entities":[{"name":"Alex Morgan","type":"person","relation":"about"},{"name":"Sam Lee","type":"person","relation":"about"},{"name":"Cedar Café","type":"place","relation":"at"}]})
+Every connection uses relations: type and target. Types: after, caused_by, part_of, related_to, possibly_same_as. Use related_to for entity/topic associations. Reverse connections are automatic. possibly_same_as never merges records.
 
-Time describes when something happened: ordinary words or known earliest/latest bounds. Preserve approximate wording; an exact day uses equal bounds.
+A target is an existing record ID, an entity name, or an object with kind (entities or topics), name and optional brief description/type/aliases.
 
-save_entity edits identity and a brief description; save_topic edits a subject; save_story takes text and ordered members. Supplied relations replace explicit links; omit to preserve, [] to clear. A target is a record ID or entity name. Its type describes this record's connection to that target. Ambiguous names remain unresolved with diagnostics.
+save_memory({"text":"Alex and Sam enjoy the lentil soup at Cedar Café.","relations":[{"type":"related_to","target":"Alex"},{"type":"related_to","target":"Sam"},{"type":"related_to","target":{"kind":"entities","name":"Cedar Café","type":"place"}}]})
 
-Memories and stories require an owning user; integrations can supply the current user automatically. Entities and topics are shared. user filters queries; all selects everyone.
+Use id and append to enrich a memory. text replaces its prose. Omitted relations stay intact; append adds connections, other saves replace supplied relations, [] clears them. Entity/topic saves use name, optional identifying description and the same relations. save_story uses title, optional text and ordered relations to memories/stories.
 
-recall_memory(text) returns connected accounts for a name, subject or record ID, including story context. Pass next as offset with the same text and user to continue. Stories preserve narrative order.
+Event time has date, earliest and latest. Exact date: {"date":"2024-12-31","earliest":null,"latest":null}. A range uses null date and known bounds; unknown values are null. “After 2024” uses earliest:"2024-01-01", latest:null. after links order undated events; caused_by connects a consequence to its cause.
 
-search_memory(text,mode=semantic) finds memories and entities by meaning. Omit text to list; kind selects a record type. read_memory(id) returns prose; view=source returns the original metadata and Markdown. search_memory(kind=memories,related_to=ENTITY_ID) finds an entity’s memories. explore_memory(id) follows connections. Follow next when results are truncated.`
+Memories/stories have an owning user; integrations can supply it. Entities/topics are shared. user:"all" selects everyone. Ownership is separate from linked participants.
+
+recall_memory(text) retrieves connected accounts; search_memory(text,mode=semantic) searches by meaning. Search kind=entities or topics to find identities/subjects. read_memory(id) reads prose; view=source includes metadata. explore_memory(id) follows links. Follow next as offset with the same query/user when results are paged.`
 
 // App keeps import access separate from record-store access. Import roots are
 // supplied by the process owner, never accepted as arbitrary client paths.
@@ -74,14 +75,16 @@ type recordPage struct {
 }
 
 func normalize(value any, key string) any {
-	if key == "entities" || key == "topics" {
+	if key == "relations" {
 		switch v := value.(type) {
 		case string:
-			value = []any{map[string]any{"name": v}}
+			value = []any{map[string]any{"type": "related_to", "target": v}}
+		case map[string]any:
+			value = []any{v}
 		case []any:
 			for i, item := range v {
 				if text, ok := item.(string); ok {
-					v[i] = map[string]any{"name": text}
+					v[i] = map[string]any{"type": "related_to", "target": text}
 				}
 			}
 		}
@@ -494,14 +497,13 @@ func New(lifetime context.Context, store *songya.Store, roots map[string]string)
 		description string
 	}{{"save_entity", songya.Entities, "Save a person, place or thing with a brief identifying description. Save its experiences, preferences and history as linked memories. Reuses a unique name; id selects an existing entity."}, {"save_topic", songya.Topics, "Save a subject by name and description. Reuses a unique matching name; use id to update a specific topic."}} {
 		inputSchema := namedSchema(item.kind == songya.Entities)
-		delete(inputSchema["properties"].(map[string]any), "relation")
 		tool(server, item.name, item.description, inputSchema, false, func(ctx context.Context, input songya.NamedInput) (any, error) {
 			input.Key = requestKey(ctx)
 			receipt, err := store.SaveNamed(ctx, item.kind, input)
 			return savedWrite(ctx, store, receipt, "record", err)
 		})
 	}
-	tool(server, "save_story", "Save a narrative with ordered memory IDs in members. Use id to update an existing story.", schema(map[string]any{"id": str("Existing story ID; omit to create"), "user": str("Story owner"), "title": str("Story title"), "text": str("Narrative text"), "append": str("Add narrative text"), "members": array(str("Memory or story ID, in order; supplied members replace membership")), "metadata": object(), "relations": relationsSchema()}), false, func(ctx context.Context, input songya.StoryInput) (any, error) {
+	tool(server, "save_story", "Save a narrative. Order its related_to links to memories/stories in reading order. Use id to update.", schema(map[string]any{"id": str("Existing story ID; omit to create"), "user": str("Story owner"), "title": str("Story title"), "text": str("Narrative text"), "append": str("Add narrative text"), "metadata": object(), "relations": relationsSchema()}), false, func(ctx context.Context, input songya.StoryInput) (any, error) {
 		input.Key = requestKey(ctx)
 		receipt, err := store.SaveStory(ctx, input)
 		return savedWrite(ctx, store, receipt, "story", err)
@@ -525,11 +527,11 @@ func New(lifetime context.Context, store *songya.Store, roots map[string]string)
 		input.Limit = limit(input.Limit, 20, 10)
 		return store.Graph(ctx, input)
 	})
-	tool(server, "memory_timeline", "Partial chronology from stated bounds and before/after relations. Unknown order remains unknown; contradictory constraints are diagnosed.", querySchema, true, func(ctx context.Context, input songya.Query) (any, error) {
+	tool(server, "memory_timeline", "Partial chronology from event dates, bounds, after and caused_by; part_of groups events. Unknown order remains unknown; contradictory constraints are diagnosed.", querySchema, true, func(ctx context.Context, input songya.Query) (any, error) {
 		input.Limit = limit(input.Limit, 8, 8)
 		return store.Timeline(ctx, input)
 	})
-	tool(server, "compose_story", "Expand canonical [[record_id]] references in narrative order, in bounded byte pages. Missing, recursive and split references remain explicit.", schema(map[string]any{"id": str("Story ID"), "offset": count(), "limit": count()}, "id"), true, func(ctx context.Context, input pageInput) (any, error) {
+	tool(server, "compose_story", "Compose a story’s introduction and ordered related_to memories/stories in bounded byte pages. Missing, recursive and split targets remain explicit.", schema(map[string]any{"id": str("Story ID"), "offset": count(), "limit": count()}, "id"), true, func(ctx context.Context, input pageInput) (any, error) {
 		return store.Compose(ctx, input.ID, input.Offset, limit(input.Limit, 12288, 8192))
 	})
 	type organization struct {

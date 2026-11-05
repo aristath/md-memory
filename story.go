@@ -4,12 +4,9 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"regexp"
 	"strings"
 	"unicode/utf8"
 )
-
-var storyReference = regexp.MustCompile(`\[\[([mets]_[0-9a-z]{12})\]\]`)
 
 type StoryPage struct {
 	User          string       `json:"user,omitempty"`
@@ -25,8 +22,7 @@ type StoryPage struct {
 	Diagnostics   []Diagnostic `json:"diagnostics,omitempty"`
 }
 
-// Compose expands exact [[record_id]] references in stories. Referenced memory
-// bodies are canonical content; ordinary prose is never interpreted as a link.
+// Compose expands the story’s ordered relations. Prose is never another link store.
 func (s *Store) Compose(ctx context.Context, id string, offset, limit int) (StoryPage, error) {
 	catalog, err := s.Scan(ctx)
 	if err != nil {
@@ -132,23 +128,16 @@ func (s *Store) Compose(ctx context.Context, id string, offset, limit int) (Stor
 		active[current] = true
 		defer delete(active, current)
 		startSkip, startOutput, startDiagnostics := skip, output.Len(), len(diagnostics)
-		cursor := 0
-		for {
-			location := storyReference.FindStringSubmatchIndex(r.Body[cursor:])
-			if location == nil {
-				break
-			}
-			for i := range location {
-				location[i] += cursor
-			}
+		write(r.Body)
+		for index, member := range storyMembers(r) {
 			if output.Len() >= ceiling || ctx.Err() != nil || renderErr != nil {
 				return
 			}
-			write(r.Body[cursor:location[0]])
-			render(r.Body[location[2]:location[3]], depth+1)
-			cursor = location[1]
+			if r.Body != "" || index > 0 {
+				write("\n\n")
+			}
+			render(member, depth+1)
 		}
-		write(r.Body[cursor:])
 		// Only completed, unambiguous expansions have reusable lengths. Keying by
 		// depth keeps the recursion boundary identical across separate page requests.
 		if output.Len() < ceiling && len(diagnostics) == startDiagnostics && renderErr == nil && ctx.Err() == nil {

@@ -76,7 +76,7 @@ func TestSemanticIndexNamesDescriptionsContentsAndRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entity := createEmbeddedRecord(t, s, Entities, map[string]any{"name": "Alex Morgan", "title": "A friend", "aliases": []string{"Alex"}, "description": "She plays the violoncello."}, "Brief identity.")
+	entity := createEmbeddedRecord(t, s, Entities, map[string]any{"name": "Alex Morgan", "title": "A friend", "aliases": []string{"Alex"}}, "Brief identity. She plays the violoncello.")
 	memory := createEmbeddedRecord(t, s, Memories, map[string]any{"title": "An evening", "user": "ari"}, "She performed on the violoncello.")
 	createEmbeddedRecord(t, s, Memories, map[string]any{"user": "ari"}, "The roses grow in the garden.")
 	createEmbeddedRecord(t, s, Memories, map[string]any{"user": "bob"}, "Bob plays the violoncello.")
@@ -135,7 +135,7 @@ func TestSemanticIndexNamesDescriptionsContentsAndRefresh(t *testing.T) {
 	}
 	edited, _ := s.Read(entity.ID)
 	_ = edited.Set("name", "Sam Lee")
-	_ = edited.Set("description", "A gardener tending roses.")
+	edited.Body = "A gardener tending roses."
 	changed, _ := edited.Marshal()
 	if err := os.WriteFile(filepath.Join(s.path, "entities", entity.ID+".md"), changed, 0600); err != nil {
 		t.Fatal(err)

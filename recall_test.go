@@ -25,12 +25,12 @@ func TestRecallConnectedNarratives(t *testing.T) {
 	}
 	e := create(Entities, map[string]any{"name": "Dimitra Sayas", "aliases": []string{"Dimitra"}}, "A musician.")
 	earlier := create(Memories, map[string]any{"user": "ari", "title": "Earlier context"}, "Ari first tried to reach Athanasia.")
-	a := create(Memories, map[string]any{"user": "ari", "title": "How they met", "time": "early 2000s", "emotions": []string{"hope with uncertainty"}, "relations": []Relation{{Type: "about", Target: e.ID}}}, "He messaged Dimitra instead; he hoped they would stay together.")
-	story := create(Stories, map[string]any{"user": "ari", "title": "Their relationship"}, "Before: [["+earlier.ID+"]] Then: [["+a.ID+"]]")
-	b := create(Memories, map[string]any{"user": "ari", "title": "Later reflection", "relations": []Relation{{Type: "about", Target: e.ID}}}, "Years later the breakup still hurt him.")
-	create(Stories, map[string]any{"user": "ari", "title": "Later life"}, "[["+b.ID+"]]")
-	create(Stories, map[string]any{"user": "ari", "title": "A wider narrative"}, "Outer context [["+story.ID+"]]")
-	other := create(Memories, map[string]any{"user": "clara", "relations": []Relation{{Type: "about", Target: e.ID}}}, "Clara has her own perspective.")
+	a := create(Memories, map[string]any{"user": "ari", "title": "How they met", "time": map[string]any{"earliest": "2000-01-01", "latest": "2004-12-31"}, "emotions": []string{"hope with uncertainty"}, "relations": []Relation{{Type: "related_to", Target: e.ID}}}, "In the early 2000s, he messaged Dimitra instead; he hoped they would stay together.")
+	story := create(Stories, map[string]any{"user": "ari", "title": "Their relationship", "relations": []Relation{{"related_to", earlier.ID}, {"related_to", a.ID}}}, "Before and after")
+	b := create(Memories, map[string]any{"user": "ari", "title": "Later reflection", "relations": []Relation{{Type: "related_to", Target: e.ID}}}, "Years later the breakup still hurt him.")
+	create(Stories, map[string]any{"user": "ari", "title": "Later life", "relations": []Relation{{"related_to", b.ID}}}, "")
+	create(Stories, map[string]any{"user": "ari", "title": "A wider narrative", "relations": []Relation{{"related_to", story.ID}}}, "Outer context")
+	other := create(Memories, map[string]any{"user": "clara", "relations": []Relation{{Type: "related_to", Target: e.ID}}}, "Clara has her own perspective.")
 	// Intact prose remains useful even when frontmatter needs repair.
 	damaged := create(Memories, map[string]any{"user": "ari", "title": "Dimitra damaged account"}, "Retained uncertain account.")
 	name := filepath.Join(s.path, "memories", damaged.ID+".md")
@@ -120,11 +120,11 @@ func TestRecallAmbiguityMissingReferencesAndRetiredMembers(t *testing.T) {
 	}
 	for _, description := range []string{"A cellist.", "A neighbour."} {
 		e := create(Entities, map[string]any{"name": "Dimitra"}, description)
-		create(Memories, map[string]any{"user": "ari", "relations": []Relation{{Type: "about", Target: e.ID}}}, description+" Separate account.")
+		create(Memories, map[string]any{"user": "ari", "relations": []Relation{{Type: "related_to", Target: e.ID}}}, description+" Separate account.")
 	}
 	replacement := create(Memories, map[string]any{"user": "ari"}, "The corrected account.")
 	retired := create(Memories, map[string]any{"user": "ari", "redirects": []string{replacement.ID}}, "The original account.")
-	story := create(Stories, map[string]any{"user": "ari"}, "Healthy story [["+retired.ID+"]][[m_000000000000]]")
+	story := create(Stories, map[string]any{"user": "ari", "relations": []Relation{{"related_to", retired.ID}, {"related_to", "m_000000000000"}}}, "Healthy story")
 	for text, wants := range map[string][]string{"Dimitra": {"A cellist.", "A neighbour."}, story.ID: {retired.ID, replacement.ID, "The corrected account.", "record unavailable"}} {
 		page, err := s.Recall(context.Background(), RecallQuery{Text: text, User: "ari"})
 		if err != nil {
@@ -138,5 +138,18 @@ func TestRecallAmbiguityMissingReferencesAndRetiredMembers(t *testing.T) {
 		if text == story.ID && len(page.Diagnostics) == 0 {
 			t.Fatal("missing reference was not diagnosed")
 		}
+	}
+}
+
+func TestRecallKeepsMemoryAndSemanticMetadataWithoutDuplicatingStorageAccounts(t *testing.T) {
+	store, _ := Open(t.TempDir())
+	memory := createRecord(t, store, Memories, map[string]any{"emotions": []string{"hope"}, "original_accounts": []string{"RAW_STORAGE_ACCOUNT"}}, "The full memory.")
+	page, err := store.Recall(context.Background(), RecallQuery{Text: memory.ID})
+	if err != nil || !strings.Contains(page.Text, "The full memory.") || !strings.Contains(page.Text, "hope") || strings.Contains(page.Text, "RAW_STORAGE_ACCOUNT") {
+		t.Fatal("recall omitted meaning or included storage provenance", page, err)
+	}
+	doc, _ := store.Read(memory.ID)
+	if len(nodeStrings("original_accounts", doc)) != 1 {
+		t.Fatal("projection changed stored account")
 	}
 }

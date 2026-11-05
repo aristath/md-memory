@@ -19,7 +19,7 @@ func TestGeneratedUpdateSequencesPreserveIndependentData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expected := map[string]any{"user": "test", "title": "Start", "untouched": map[string]any{"literal": "000123"}}
+	expected := map[string]any{"user": "test", "title": "Start", "untouched": map[string]any{"literal": "000123"}, "time": map[string]any{"date": nil, "earliest": nil, "latest": nil}}
 	doc, err := store.Create(Memories, testUserFields(Memories, expected), "Start body")
 	if err != nil {
 		t.Fatal(err)

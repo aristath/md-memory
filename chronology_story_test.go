@@ -18,13 +18,13 @@ func TestTimelineValidatesChainsWithoutMarkingCycleDescendants(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	finish := createRecord(t, store, Memories, map[string]any{"time": map[string]any{"latest": "2000-01-01"}}, "finish")
-	middle := createRecord(t, store, Memories, map[string]any{"relations": []Relation{{"before", finish.ID}}}, "middle")
-	start := createRecord(t, store, Memories, map[string]any{"time": map[string]any{"earliest": "2001-01-01"}, "relations": []Relation{{"before", middle.ID}}}, "start")
+	start := createRecord(t, store, Memories, map[string]any{"time": map[string]any{"earliest": "2001-01-01"}}, "start")
+	middle := createRecord(t, store, Memories, map[string]any{"relations": []Relation{{"after", start.ID}}}, "middle")
 	a := createRecord(t, store, Memories, nil, "cycle A")
-	b := createRecord(t, store, Memories, map[string]any{"relations": []Relation{{"before", a.ID}}}, "cycle B")
-	descendant := createRecord(t, store, Memories, map[string]any{"relations": []Relation{{"before", finish.ID}}}, "descendant")
-	if _, err := store.Update(a.ID, a.Revision, map[string]any{"relations": []Relation{{"before", b.ID}, {"before", descendant.ID}}}, a.Body); err != nil {
+	b := createRecord(t, store, Memories, map[string]any{"relations": []Relation{{"after", a.ID}}}, "cycle B")
+	descendant := createRecord(t, store, Memories, map[string]any{"relations": []Relation{{"after", a.ID}}}, "descendant")
+	finish := createRecord(t, store, Memories, map[string]any{"time": map[string]any{"latest": "2000-01-01"}, "relations": []Relation{{"after", middle.ID}, {"after", descendant.ID}}}, "finish")
+	if _, err := store.Update(a.ID, a.Revision, map[string]any{"relations": []Relation{{"after", b.ID}}}, a.Body); err != nil {
 		t.Fatal(err)
 	}
 	result, err := store.Timeline(ctx, Query{Limit: 50})
@@ -89,8 +89,8 @@ func TestStoryPagesPreserveUnicodeAndLargeOffsets(t *testing.T) {
 	}
 	ctx := context.Background()
 	episode := createRecord(t, store, Memories, nil, "Καφέ ☕🙂 and music")
-	story := createRecord(t, store, Stories, nil, "始 [["+episode.ID+"]] 終")
-	want := "始 " + episode.Body + " 終"
+	story := createRecord(t, store, Stories, map[string]any{"relations": []Relation{{"related_to", episode.ID}}}, "始 終")
+	want := "始 終\n\n" + episode.Body
 	for size := 1; size <= 9; size++ {
 		var got strings.Builder
 		offset := 0
@@ -144,7 +144,11 @@ func TestInvalidCalendarBoundsDoNotDisableIndependentRelativeOrder(t *testing.T)
 		t.Fatal(err)
 	}
 	target := createRecord(t, store, Memories, nil, "Known later")
-	source := createRecord(t, store, Memories, map[string]any{"time": map[string]any{"earliest": "2001-01-01", "latest": "2000-01-01"}, "relations": []Relation{{Type: "before", Target: target.ID}}}, "Dates need correction; relative order is known")
+	source := createRecord(t, store, Memories, map[string]any{"time": map[string]any{"earliest": "2001-01-01", "latest": "2000-01-01"}}, "Dates need correction; relative order is known")
+	_, err = store.Update(target.ID, target.Revision, map[string]any{"relations": []Relation{{"after", source.ID}}}, target.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
 	timeline, err := store.Timeline(context.Background(), Query{Limit: 50})
 	if err != nil {
 		t.Fatal(err)
@@ -170,12 +174,12 @@ func TestStoryCanPageLargeSharedCompositionsWithoutReplayingTheirPrefix(t *testi
 	}
 	node := createRecord(t, store, Memories, nil, "X")
 	for range 20 {
-		node = createRecord(t, store, Stories, nil, "[["+node.ID+"]][["+node.ID+"]]")
+		node = createRecord(t, store, Stories, map[string]any{"relations": []Relation{{"related_to", node.ID}, {"related_to", node.ID}}}, "")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	page, err := store.Compose(ctx, node.ID, 700000, 64)
-	if err != nil || page.Text != strings.Repeat("X", 64) || !page.Truncated || page.Next != 700064 {
+	if err != nil || page.Text != strings.Repeat("X\n\n", 700100/3+1)[700000:700064] || !page.Truncated || page.Next != 700064 {
 		t.Fatalf("large canonical composition could not be paged: %+v %v", page, err)
 	}
 }
@@ -187,7 +191,7 @@ func TestVirtualStoryOffsetsDoNotOverflow(t *testing.T) {
 	}
 	node := createRecord(t, store, Memories, nil, "X")
 	for range 12 {
-		node = createRecord(t, store, Stories, nil, strings.Repeat("[["+node.ID+"]]", 100))
+		node = createRecord(t, store, Stories, map[string]any{"relations": repeatedRelations(node.ID, 100)}, "")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -202,13 +206,21 @@ func TestStoryBudgetAlsoBoundsMissingReferences(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A flat source must not bypass the work budget by containing only missing
-	// references, whose diagnostic markers would otherwise be skipped indefinitely.
-	story := createRecord(t, store, Stories, nil, strings.Repeat("[[m_000000000000]]", 100001))
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	// Missing targets still count toward the traversal budget. The structured YAML
+	// fixture needs time to decode under the race detector before traversal starts.
+	story := createRecord(t, store, Stories, map[string]any{"relations": repeatedRelations("m_000000000000", 100001)}, "")
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	_, err = store.Compose(ctx, story.ID, int(^uint(0)>>1), 100)
 	if err == nil || !strings.Contains(err.Error(), "traversal budget") {
 		t.Fatalf("missing references bypassed the work budget: %v", err)
 	}
+}
+
+func repeatedRelations(id string, count int) []Relation {
+	relations := make([]Relation, count)
+	for i := range relations {
+		relations[i] = Relation{"related_to", id}
+	}
+	return relations
 }

@@ -236,6 +236,9 @@ func (s *Store) Create(destination Destination, fields map[string]any, body stri
 	}
 	now := time.Now().UTC()
 	values["created_at"], values["updated_at"] = now, now
+	if destination == Memories && values["time"] == nil {
+		values["time"] = map[string]any{}
+	}
 	node, warnings := encodeValue(values)
 	d := &Document{Body: body, warnings: warnings}
 	assignNode(&d.Frontmatter, node)

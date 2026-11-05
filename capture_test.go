@@ -18,7 +18,7 @@ func TestConcurrentCapturesShareOneEntity(t *testing.T) {
 	var writers sync.WaitGroup
 	for i := range 6 {
 		writers.Go(func() {
-			_, err := store.SaveMemory(context.Background(), MemoryInput{Key: fmt.Sprintf("capture-%d", i), User: "ari", Text: textValue(fmt.Sprintf("Meeting %d with John", i)), Entities: []NamedInput{{Name: "John", Type: "person", Relation: "with"}}})
+			_, err := store.SaveMemory(context.Background(), MemoryInput{Key: fmt.Sprintf("capture-%d", i), User: "ari", Text: textValue(fmt.Sprintf("Meeting %d with John", i)), Relations: []RelationInput{{Type: "related_to", Target: map[string]any{"kind": "entities", "name": "John", "type": "person"}}}})
 			if err != nil {
 				t.Error(err)
 			}
@@ -51,7 +51,7 @@ func TestRepeatedParticipantKeepsEveryFact(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := range 2 {
-		receipt, err := store.SaveMemory(context.Background(), MemoryInput{Key: fmt.Sprint(i), User: "ari", Text: textValue("Dinner with John"), Entities: []NamedInput{{Name: "John", Type: "person", Aliases: []string{"Johnny"}, Description: textValue("John grows roses."), Relation: "with"}, {Name: "Johnny", Description: textValue("John plays guitar."), Relation: "friend"}}})
+		receipt, err := store.SaveMemory(context.Background(), MemoryInput{Key: fmt.Sprint(i), User: "ari", Text: textValue("Dinner with John"), Relations: []RelationInput{{Type: "related_to", Target: map[string]any{"kind": "entities", "name": "John", "type": "person", "aliases": []string{"Johnny"}, "description": textValue("John grows roses.")}}, {Type: "related_to", Target: map[string]any{"kind": "entities", "name": "Johnny", "description": textValue("John plays guitar.")}}}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -78,7 +78,7 @@ func TestBrokenUnrelatedEntityDoesNotHideHealthyMatch(t *testing.T) {
 	if err := os.Symlink("/nonexistent", filepath.Join(path, "entities", "e_000000000000.md")); err != nil {
 		t.Fatal(err)
 	}
-	receipt, err := store.SaveMemory(context.Background(), MemoryInput{Key: "healthy", User: "ari", Text: textValue("Dinner with John"), Entities: []NamedInput{{Name: "John"}}})
+	receipt, err := store.SaveMemory(context.Background(), MemoryInput{Key: "healthy", User: "ari", Text: textValue("Dinner with John"), Relations: []RelationInput{{Type: "related_to", Target: map[string]any{"kind": "entities", "name": "John"}}}})
 	if err != nil {
 		t.Fatal("unrelated damage blocked a known identity", receipt, err)
 	}
@@ -99,7 +99,7 @@ func TestUnusableEntityDirectoryStillPreservesMemory(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(path, "entities"), []byte("blocked"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	receipt, err := store.SaveMemory(context.Background(), MemoryInput{Key: "preserve", User: "ari", Text: textValue("Dinner with John"), Entities: []NamedInput{{Name: "John", Description: textValue("A long-standing friend")}}})
+	receipt, err := store.SaveMemory(context.Background(), MemoryInput{Key: "preserve", User: "ari", Text: textValue("Dinner with John"), Relations: []RelationInput{{Type: "related_to", Target: map[string]any{"kind": "entities", "name": "John", "description": textValue("A long-standing friend")}}}})
 	if err != nil || receipt.Status != "committed" {
 		t.Fatal(receipt, err)
 	}
@@ -120,7 +120,7 @@ func TestStoryTextEditsKeepMembershipAndMembersReplaceInOrder(t *testing.T) {
 	}
 	a, _ := store.Create(Memories, map[string]any{"user": "ari"}, "First")
 	b, _ := store.Create(Memories, map[string]any{"user": "ari"}, "Second")
-	created, err := store.SaveStory(context.Background(), StoryInput{Key: "create", User: "ari", Text: textValue("A narrative"), Members: []string{a.ID, b.ID}})
+	created, err := store.SaveStory(context.Background(), StoryInput{Key: "create", User: "ari", Text: textValue("A narrative"), Relations: []RelationInput{{Type: "related_to", Target: a.ID}, {Type: "related_to", Target: b.ID}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,10 +129,11 @@ func TestStoryTextEditsKeepMembershipAndMembersReplaceInOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	doc, _ := store.Read(id)
-	if !strings.Contains(doc.Body, a.ID) || !strings.Contains(doc.Body, b.ID) || !strings.Contains(doc.Body, "Revised narrative") {
+	members := storyMembers(doc.Record(Stories))
+	if len(members) != 2 || members[0] != a.ID || members[1] != b.ID || doc.Body != "Revised narrative" {
 		t.Fatal(doc.Body)
 	}
-	input := StoryInput{Key: "order", ID: id, Members: []string{b.ID, a.ID}}
+	input := StoryInput{Key: "order", ID: id, Relations: []RelationInput{{Type: "related_to", Target: b.ID}, {Type: "related_to", Target: a.ID}}}
 	if _, err := store.SaveStory(context.Background(), input); err != nil {
 		t.Fatal(err)
 	}
@@ -140,14 +141,15 @@ func TestStoryTextEditsKeepMembershipAndMembersReplaceInOrder(t *testing.T) {
 		t.Fatal("retry failed", err)
 	}
 	doc, _ = store.Read(id)
-	if strings.Index(doc.Body, b.ID) > strings.Index(doc.Body, a.ID) {
+	members = storyMembers(doc.Record(Stories))
+	if len(members) != 2 || members[0] != b.ID || members[1] != a.ID {
 		t.Fatal(doc.Body)
 	}
-	if _, err := store.SaveStory(context.Background(), StoryInput{Key: "clear", ID: id, Members: []string{}}); err != nil {
+	if _, err := store.SaveStory(context.Background(), StoryInput{Key: "clear", ID: id, Relations: []RelationInput{}}); err != nil {
 		t.Fatal(err)
 	}
 	doc, _ = store.Read(id)
-	if strings.Contains(doc.Body, "[[") || !strings.Contains(doc.Body, "Revised narrative") {
+	if len(storyMembers(doc.Record(Stories))) != 0 || doc.Body != "Revised narrative" {
 		t.Fatal(doc.Body)
 	}
 }
@@ -165,7 +167,7 @@ func TestCaptureReusesIdentityWithoutRewritingAndKeepsCanonicalName(t *testing.T
 	id := john.Refs["record"]
 	filename := filepath.Join(path, "entities", id+".md")
 	before, _ := os.ReadFile(filename)
-	_, err = store.SaveMemory(context.Background(), MemoryInput{User: "ari", Text: textValue("Coffee with Johnny"), Entities: []NamedInput{{Name: "Johnny"}}})
+	_, err = store.SaveMemory(context.Background(), MemoryInput{User: "ari", Text: textValue("Coffee with Johnny"), Relations: []RelationInput{{Type: "related_to", Target: map[string]any{"kind": "entities", "name": "Johnny"}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +183,7 @@ func TestCaptureReusesIdentityWithoutRewritingAndKeepsCanonicalName(t *testing.T
 	if doc.Record(Entities).Title != "John Pavlou" {
 		t.Fatal("alias lookup renamed the canonical record", doc)
 	}
-	_, err = store.SaveMemory(context.Background(), MemoryInput{User: "ari", Text: textValue("Another meeting"), Entities: []NamedInput{{ID: id, Name: "John P."}}})
+	_, err = store.SaveMemory(context.Background(), MemoryInput{User: "ari", Text: textValue("Another meeting"), Relations: []RelationInput{{Type: "related_to", Target: map[string]any{"kind": "entities", "id": id, "name": "John P."}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +200,7 @@ func TestRelationsReplacePreserveClearAndResolveNames(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			save := func(key, id string, relations []Relation) Receipt {
+			save := func(key, id string, relations []RelationInput) Receipt {
 				t.Helper()
 				var r Receipt
 				var err error
@@ -215,9 +217,9 @@ func TestRelationsReplacePreserveClearAndResolveNames(t *testing.T) {
 				}
 				return r
 			}
-			r := save("create", "", []Relation{{Type: "liked_by", Target: "e_daphne"}})
+			r := save("create", "", []RelationInput{{Type: "related_to", Target: "e_daphne"}})
 			id := r.Records[0].ID
-			input := []Relation{{Type: "liked_by", Target: "Sam Lee"}}
+			input := []RelationInput{{Type: "related_to", Target: "Sam Lee"}}
 			repaired := save("repair", id, input)
 			if input[0].Target != "Sam Lee" {
 				t.Fatal("caller input mutated", input)
@@ -242,7 +244,7 @@ func TestRelationsReplacePreserveClearAndResolveNames(t *testing.T) {
 			if len(doc.Metadata().Relations) != 1 || doc.Metadata().Relations[0].Target != target {
 				t.Fatal("omission lost links", doc)
 			}
-			save("clear", id, []Relation{})
+			save("clear", id, []RelationInput{})
 			doc, _ = store.Read(id)
 			if len(doc.Metadata().Relations) != 0 {
 				t.Fatal("empty list did not clear links", doc)
@@ -257,7 +259,7 @@ func TestLongMemoryEnrichmentKeepsHistoryOutOfEntities(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := strings.Repeat("Alex and Sam remember their school days together.\n", 3000)
-	created, err := store.SaveMemory(context.Background(), MemoryInput{Key: "long", User: "ari", Text: &body, Time: map[string]any{"earliest": "1995-01-01", "latest": "1998-12-31"}, Entities: []NamedInput{{Name: "Alex Morgan", Type: "person", Description: textValue("A person."), Relation: "about"}, {Name: "Sam Lee", Type: "person", Description: textValue("A school friend."), Relation: "about"}}})
+	created, err := store.SaveMemory(context.Background(), MemoryInput{Key: "long", User: "ari", Text: &body, Time: map[string]any{"earliest": "1995-01-01", "latest": "1998-12-31"}, Relations: []RelationInput{{Type: "related_to", Target: map[string]any{"kind": "entities", "name": "Alex Morgan", "type": "person", "description": textValue("A person.")}}, {Type: "related_to", Target: map[string]any{"kind": "entities", "name": "Sam Lee", "type": "person", "description": textValue("A school friend.")}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +268,7 @@ func TestLongMemoryEnrichmentKeepsHistoryOutOfEntities(t *testing.T) {
 	entities := doc.Metadata().Relations
 	before, _ := store.Read(entities[1].Target)
 	original, _ := before.Marshal()
-	if _, err := store.SaveMemory(context.Background(), MemoryInput{Key: "enrich", ID: id, Append: "They later met at Cedar Café.", Entities: []NamedInput{{Name: "Cedar Café", Type: "place", Relation: "at"}}}); err != nil {
+	if _, err := store.SaveMemory(context.Background(), MemoryInput{Key: "enrich", ID: id, Append: "They later met at Cedar Café.", Relations: []RelationInput{{Type: "related_to", Target: map[string]any{"kind": "entities", "name": "Cedar Café", "type": "place"}}}}); err != nil {
 		t.Fatal(err)
 	}
 	doc, _ = store.Read(id)
@@ -289,7 +291,7 @@ func TestLongMemoryEnrichmentKeepsHistoryOutOfEntities(t *testing.T) {
 	if len(timeline.Records) != 1 || timeline.Records[0].ID != id {
 		t.Fatal("school history missing from timeline", timeline)
 	}
-	if doc.Record(Memories).Time.Earliest != "1995-01-01" || doc.Record(Memories).Time.Latest != "1998-12-31" {
+	if dateValue(doc.Record(Memories).Time.Earliest) != "1995-01-01" || dateValue(doc.Record(Memories).Time.Latest) != "1998-12-31" {
 		t.Fatal("time span lost")
 	}
 }
@@ -301,16 +303,16 @@ func TestAmbiguousNamedRelationSurvivesAndCanBeCorrected(t *testing.T) {
 	}
 	first, _ := store.Create(Entities, map[string]any{"name": "Sam Lee"}, "One person")
 	store.Create(Entities, map[string]any{"name": "Sam Lee"}, "Another person")
-	r, err := store.SaveMemory(context.Background(), MemoryInput{Key: "ambiguous-target", User: "ari", Text: textValue("A shared preference"), Relations: []Relation{{Type: "about", Target: "Sam Lee"}}})
+	r, err := store.SaveMemory(context.Background(), MemoryInput{Key: "ambiguous-target", User: "ari", Text: textValue("A shared preference"), Relations: []RelationInput{{Type: "related_to", Target: "Sam Lee"}}})
 	if err != nil || r.Status != "committed" || len(r.Diagnostics) == 0 {
 		t.Fatal("ambiguous connection blocked the memory or vanished", r, err)
 	}
 	id := r.Refs["memory"]
 	doc, _ := store.Read(id)
-	if len(doc.Metadata().Relations) != 1 || doc.Metadata().Relations[0].Target != "Sam Lee" {
+	if len(doc.Metadata().Relations) != 0 || metadataField(&doc.Frontmatter, "unresolved_connections") == nil {
 		t.Fatal("unresolved intent lost", doc)
 	}
-	r, err = store.SaveMemory(context.Background(), MemoryInput{Key: "correct-target", ID: id, Relations: []Relation{{Type: "about", Target: first.ID}}})
+	r, err = store.SaveMemory(context.Background(), MemoryInput{Key: "correct-target", ID: id, Relations: []RelationInput{{Type: "related_to", Target: first.ID}}})
 	if err != nil || len(r.Diagnostics) > 0 {
 		t.Fatal("corrected relation still diagnosed as broken", r, err)
 	}

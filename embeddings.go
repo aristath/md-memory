@@ -111,13 +111,10 @@ func embeddingText(r Record) string {
 	switch r.Kind {
 	case Entities:
 		parts := append([]string{r.Name, r.Title}, r.Aliases...)
-		parts = append(parts, r.Description)
-		if r.Body != r.Description {
-			parts = append(parts, r.Body)
-		}
+		parts = append(parts, r.Body)
 		return strings.Join(parts, "\n")
 	case Memories:
-		return strings.Join([]string{r.Title, r.Body, r.Time.Description, r.Time.Earliest, r.Time.Latest, r.Context}, "\n")
+		return strings.Join([]string{r.Title, r.Body, dateValue(r.Time.Date), dateValue(r.Time.Earliest), dateValue(r.Time.Latest), r.Context}, "\n")
 	}
 	return ""
 }

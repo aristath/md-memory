@@ -21,9 +21,9 @@ func TestBatchCaptureRetriesAndResolvesLocalReferences(t *testing.T) {
 	request := BatchRequest{User: "test", Key: "capture-one", Account: "I met John for coffee.", Changes: []Change{
 		{Ref: "john", Kind: Entities, Fields: map[string]any{"name": "John", "aliases": []string{"Johnny"}}},
 		{Ref: "music", Kind: Topics, Fields: map[string]any{"title": "Music"}},
-		{Ref: "episode", Kind: Memories, Fields: map[string]any{"title": "Coffee", "relations": []any{map[string]any{"type": "with", "target": "$john"}}, "topics": []string{"$music"}}, Body: textPointer("An episode")},
-		{Ref: "story", Kind: Stories, Fields: map[string]any{"title": "Our meetings"}},
-	}, Stories: []StoryAddition{{Story: "$story", Members: []string{"$episode"}}}}
+		{Ref: "episode", Kind: Memories, Fields: map[string]any{"title": "Coffee", "relations": []any{map[string]any{"type": "related_to", "target": "$john"}, map[string]any{"type": "related_to", "target": "$music"}}}, Body: textPointer("An episode")},
+		{Ref: "story", Kind: Stories, Fields: map[string]any{"title": "Our meetings", "relations": []Relation{{Type: "related_to", Target: "$episode"}}}},
+	}}
 	first, err := store.ApplyBatch(ctx, request)
 	if err != nil || first.Status != "committed" || len(first.Refs) != 4 {
 		t.Fatalf("capture failed: %+v, %v", first, err)
@@ -36,7 +36,7 @@ func TestBatchCaptureRetriesAndResolvesLocalReferences(t *testing.T) {
 		t.Fatal("references or original account were lost")
 	}
 	story, err := store.Compose(ctx, first.Refs["story"], 0, 4096)
-	if err != nil || story.Text != "\nAn episode\n" {
+	if err != nil || story.Text != "An episode" {
 		t.Fatalf("story batch membership failed: %+v, %v", story, err)
 	}
 	reopened, err := Open(store.path)
@@ -207,10 +207,8 @@ func TestStoryMembershipRespectsReplacementAppendAndExistingRevision(t *testing.
 				change.Append = "New detail"
 				want += "\n\nNew detail"
 			}
-			request := BatchRequest{User: "test", Key: mode, Changes: []Change{change}, Stories: []StoryAddition{{Story: story.ID, Revision: story.Revision, Members: []string{member.ID}}}}
-			if mode == "membership-only" {
-				request.Changes = nil
-			}
+			change.Fields = map[string]any{"relations": []Relation{{Type: "related_to", Target: member.ID}}}
+			request := BatchRequest{User: "test", Key: mode, Changes: []Change{change}}
 			if _, err := store.ApplyBatch(context.Background(), request); err != nil {
 				t.Fatal(err)
 			}
@@ -218,8 +216,7 @@ func TestStoryMembershipRespectsReplacementAppendAndExistingRevision(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
-			want += "\n[[" + member.ID + "]]\n"
-			if got.Body != want {
+			if got.Body != want || len(storyMembers(got.Record(Stories))) != 1 {
 				t.Fatalf("membership changed reviewed narrative: got %q want %q", got.Body, want)
 			}
 		})

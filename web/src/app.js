@@ -56,7 +56,7 @@ Alpine.data("songya", () => {
     targetQuery: "",
     targets: [],
     target: null,
-    relation: "about",
+    relation: "related_to",
     visualIssue: "",
     recordIssues: [],
     loading: false,
@@ -316,7 +316,10 @@ Alpine.data("songya", () => {
         } else {
           const result = await request("/api/draft", {
             method: "POST",
-            body: JSON.stringify({ source: '---\ntitle: ""\nuser: ""\n---\n' }),
+            body: JSON.stringify({
+              source:
+                '---\ntitle: ""\nuser: ""\ntime: {date: null, earliest: null, latest: null}\n---\n',
+            }),
           });
           this.install({
             selected: { id: "", kind: "memories", version: "" },
@@ -466,6 +469,17 @@ Alpine.data("songya", () => {
           system: false,
         });
       this.metadataChanged();
+    },
+    timeChanged(field, exact) {
+      if (exact) field.time.earliest = field.time.latest = null;
+      else field.time.date = null;
+      for (const key of ["date", "earliest", "latest"])
+        field.time[key] ||= null;
+      field.value = JSON.stringify(field.time);
+      this.metadataChanged();
+    },
+    async moveConnection(edge, direction) {
+      await this.connection(direction < 0 ? "up" : "down", edge);
     },
     fieldChanged(field) {
       field.value =
@@ -635,7 +649,7 @@ Alpine.data("songya", () => {
     async addConnection() {
       if (this.target)
         await this.connection("add", {
-          type: this.relation || "about",
+          type: this.relation || "related_to",
           target: this.target.id,
         });
     },

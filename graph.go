@@ -10,6 +10,7 @@ type Edge struct {
 	SourceTitle      string `json:"source_title,omitempty"`
 	TargetTitle      string `json:"target_title,omitempty"`
 	Type             string `json:"type"`
+	ReverseType      string `json:"reverse_type"`
 	Target           string `json:"target"`
 	Resolved         bool   `json:"resolved"`
 	Unconfirmed      bool   `json:"unconfirmed,omitempty"`
@@ -115,7 +116,7 @@ func graphEdges(records map[string]Record) []Edge {
 			if !resolution.Ambiguous && len(resolution.Targets) == 1 {
 				target = resolution.Targets[0]
 			}
-			edges = append(edges, Edge{Source: record.ID, Type: relation.Type, Target: target, Resolved: !resolution.Ambiguous && !resolution.Unconfirmed && len(resolution.Targets) == 1, Unconfirmed: record.Unconfirmed || resolution.Unconfirmed})
+			edges = append(edges, Edge{Source: record.ID, Type: relation.Type, ReverseType: reverseRelation(relation.Type), Target: target, Resolved: !resolution.Ambiguous && !resolution.Unconfirmed && len(resolution.Targets) == 1, Unconfirmed: record.Unconfirmed || resolution.Unconfirmed})
 		}
 	}
 	sort.Slice(edges, func(i, j int) bool {
@@ -172,11 +173,11 @@ func graphFromCatalog(c Catalog, q GraphQuery) GraphResult {
 			if _, included := visible[edge.Source]; !included {
 				continue
 			}
-			if q.Type != "" && edge.Type != q.Type {
-				continue
-			}
 			incoming := q.Direction != "outgoing" && frontier[edge.Target]
 			outgoing := q.Direction != "incoming" && frontier[edge.Source]
+			if q.Type != "" && edge.Type != q.Type && !((incoming || q.ID == "") && edge.ReverseType == q.Type) {
+				continue
+			}
 			if q.ID != "" && !incoming && !outgoing {
 				continue
 			}
@@ -204,6 +205,7 @@ func graphFromCatalog(c Catalog, q GraphQuery) GraphResult {
 		result.Edges[i].SourceTitle = clip(visible[edge.Source].Title, 128)
 		result.Edges[i].TargetTitle = clip(visible[edge.Target].Title, 128)
 		result.Edges[i].Type = clip(edge.Type, 128)
+		result.Edges[i].ReverseType = clip(edge.ReverseType, 128)
 		result.Edges[i].Target = clip(edge.Target, 256)
 		result.Edges[i].DetailsTruncated = result.Edges[i].Type != edge.Type || result.Edges[i].Target != edge.Target || len(visible[edge.Source].Title) > 128 || len(visible[edge.Target].Title) > 128
 	}
@@ -236,7 +238,7 @@ func (c Catalog) Connections(id string) []Edge {
 			if r.ID != id && relation.Target != id {
 				continue
 			}
-			edge := Edge{Source: r.ID, SourceTitle: r.Title, Target: relation.Target, TargetTitle: records[relation.Target].Title, Type: relation.Type, Resolved: records[relation.Target].ID != ""}
+			edge := Edge{Source: r.ID, SourceTitle: r.Title, Target: relation.Target, TargetTitle: records[relation.Target].Title, Type: relation.Type, ReverseType: reverseRelation(relation.Type), Resolved: records[relation.Target].ID != ""}
 			if !seen[edge] {
 				edges = append(edges, edge)
 				seen[edge] = true

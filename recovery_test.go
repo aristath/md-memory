@@ -321,9 +321,9 @@ func TestStagedFileRecoversBeforePublication(t *testing.T) {
 }
 
 func TestCommonDateRepresentationsAndSingleRelation(t *testing.T) {
-	doc := Parse([]byte("---\ntitle: 3\ncreated_at: '2026-11-03 10:00:00'\nupdated_at: '2026-11-03'\nrelations:\n  type: 3\n  target: m_7k3m9x2q6v4c\n---\nBody"))
+	doc := Parse([]byte("---\ntitle: 3\ncreated_at: '2026-11-03 10:00:00'\nupdated_at: '2026-11-03'\nrelations:\n  type: Related-To\n  target: m_7k3m9x2q6v4c\n---\nBody"))
 	m := doc.Metadata()
-	if m.Title != "3" || m.CreatedAt.IsZero() || m.UpdatedAt.IsZero() || len(m.Relations) != 1 || m.Relations[0].Type != "3" {
+	if m.Title != "3" || m.CreatedAt.IsZero() || m.UpdatedAt.IsZero() || len(m.Relations) != 1 || m.Relations[0].Type != "related_to" {
 		t.Fatalf("equivalent representations rejected: %+v", m)
 	}
 	if len(doc.Diagnostics()) != 0 {

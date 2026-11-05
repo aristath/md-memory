@@ -12,19 +12,21 @@ import (
 func TestSemanticRecallBatchOwnershipConnectionsStoriesAndCache(t *testing.T) {
 	f := embeddingService(t)
 	s, _ := Open(t.TempDir(), EmbeddingConfig{BaseURL: f.server.URL})
-	entity := createEmbeddedRecord(t, s, Entities, map[string]any{"name": "Alex", "description": "A violoncello player"}, "")
-	connected := createEmbeddedRecord(t, s, Memories, map[string]any{"user": "ari", "time": "around college", "emotion": "uncertain tenderness", "relations": []Relation{{Type: "about", Target: entity.ID}}}, "We talked after rehearsal.")
+	entity := createEmbeddedRecord(t, s, Entities, map[string]any{"name": "Alex"}, "A violoncello player")
+	connected := createEmbeddedRecord(t, s, Memories, map[string]any{"user": "ari", "time": map[string]any{}, "emotion": "uncertain tenderness", "relations": []Relation{{Type: "related_to", Target: entity.ID}}}, "Around college, we talked after rehearsal.")
 	clara := createEmbeddedRecord(t, s, Memories, map[string]any{"user": "clara"}, "I enjoyed the violoncello performance.")
 	createEmbeddedRecord(t, s, Memories, map[string]any{"user": "bob"}, "Bob's private violoncello account")
 	createEmbeddedRecord(t, s, Memories, map[string]any{"user": "ari"}, "Unrelated account.")
-	story := createEmbeddedRecord(t, s, Stories, map[string]any{"user": "ari", "title": "College"}, "FAR AWAY "+strings.Repeat("x", 2000)+"Before the rehearsal [["+connected.ID+"]] Afterwards we left.")
-	createEmbeddedRecord(t, s, Stories, map[string]any{"user": "bob"}, "OTHER OWNER [["+connected.ID+"]]")
+	before := createEmbeddedRecord(t, s, Memories, map[string]any{"user": "ari"}, "Before the rehearsal")
+	after := createEmbeddedRecord(t, s, Memories, map[string]any{"user": "ari"}, "Afterwards we left.")
+	story := createEmbeddedRecord(t, s, Stories, map[string]any{"user": "ari", "title": "College", "relations": []Relation{{"related_to", before.ID}, {"related_to", connected.ID}, {"related_to", after.ID}}}, "College rehearsals. "+strings.Repeat("x", 2000)+" FAR AWAY")
+	createEmbeddedRecord(t, s, Stories, map[string]any{"user": "bob", "relations": []Relation{{"related_to", connected.ID}}}, "OTHER OWNER")
 	queries := []SemanticRecallQuery{{Text: "orchestral performer", Limit: 10}, {Text: "garden", Limit: 1}}
 	results, err := s.RecallSemantic(context.Background(), queries, []string{"ari", "clara"})
 	if err != nil || len(results) != 2 || results[0].Incomplete {
 		t.Fatal(results, err)
 	}
-	if len(results[0].Items) != 4 || len(results[1].Items) != 1 {
+	if len(results[0].Items) != 6 || len(results[1].Items) != 1 {
 		t.Fatal(results)
 	}
 	seen := map[string]Recollection{}
@@ -37,7 +39,7 @@ func TestSemanticRecallBatchOwnershipConnectionsStoriesAndCache(t *testing.T) {
 	if seen[clara.ID].Score < 0.99 || seen[connected.ID].Score < 0.49 {
 		t.Fatal("entity connection or Clara memory lost", seen)
 	}
-	for _, word := range []string{connected.ID, "ari", "around college", "uncertain tenderness", "Alex", story.ID, "Before the rehearsal", "Afterwards we left"} {
+	for _, word := range []string{connected.ID, "ari", "Around college", "uncertain tenderness", "Alex", story.ID, "Before the rehearsal", "Afterwards we left"} {
 		if !strings.Contains(seen[connected.ID].Content, word) {
 			t.Fatal("recall lost context", word, seen)
 		}

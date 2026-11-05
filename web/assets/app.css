@@ -687,3 +687,12 @@ blockquote {
     font-size: 0.82rem;
   }
 }
+
+.event-time {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.event-time small {
+  flex-basis: 100%;
+}

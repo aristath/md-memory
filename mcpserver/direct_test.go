@@ -65,7 +65,7 @@ func TestDirectGuideCapture(t *testing.T) {
 	if saved["status"] != "committed" {
 		t.Fatal(saved)
 	}
-	entities := saved["entities"].([]any)
+	entities := saved["relations"].([]any)
 	if len(entities) != 3 {
 		t.Fatal("capture lost entities", saved)
 	}
@@ -80,11 +80,11 @@ func TestDirectGuideCapture(t *testing.T) {
 	}
 	for _, v := range entities {
 		entity := v.(map[string]any)
-		if !strings.Contains(string(data), entity["id"].(string)) {
+		if !strings.Contains(string(data), entity["target"].(string)) {
 			t.Fatal("entity is not connected", entity)
 		}
 	}
-	for _, text := range []string{"Alex Morgan", "Sam Lee", "Cedar Café"} {
+	for _, text := range []string{"Alex", "Sam", "Cedar Café"} {
 		found, r := invoke(t, ctx, session, "search_memory", map[string]any{"text": text, "user": "ari"})
 		if r.IsError || len(payload(t, found)["matches"].([]any)) != 2 {
 			t.Fatal("saved knowledge cannot be found", found)
@@ -101,9 +101,9 @@ func TestDedicatedWritesOwnershipAndOrganization(t *testing.T) {
 	session := connect(t, ctx, binary(t), t.TempDir(), "")
 	john := keyed(t, ctx, session, "save_entity", "john", map[string]any{"name": "John", "type": "person", "aliases": []string{"Johnny"}, "description": "An old friend."})
 	topic := keyed(t, ctx, session, "save_topic", "topic", map[string]any{"name": "Gardening", "description": "Plants and gardens."})
-	a := keyed(t, ctx, session, "save_memory", "ari", map[string]any{"text": "Coffee with John.", "user": "ari", "entities": []any{map[string]any{"name": "Johnny", "type": "person", "description": "John grows roses.", "relation": "with"}}, "topics": []string{"Gardening"}})
-	b := keyed(t, ctx, session, "save_memory", "bob", map[string]any{"text": "Bob met John.", "user": "bob", "entities": []string{"John"}})
-	if a["entities"].([]any)[0].(map[string]any)["id"] != john["id"] || a["topics"].([]any)[0].(map[string]any)["id"] != topic["id"] {
+	a := keyed(t, ctx, session, "save_memory", "ari", map[string]any{"text": "Coffee with John.", "user": "ari", "relations": []any{map[string]any{"type": "related_to", "target": map[string]any{"kind": "entities", "name": "Johnny", "type": "person", "description": "John grows roses."}}, map[string]any{"type": "related_to", "target": map[string]any{"kind": "topics", "name": "Gardening"}}}})
+	b := keyed(t, ctx, session, "save_memory", "bob", map[string]any{"text": "Bob met John.", "user": "bob", "relations": []any{map[string]any{"type": "related_to", "target": "John"}}})
+	if a["relations"].([]any)[0].(map[string]any)["target"] != john["id"] || a["relations"].([]any)[1].(map[string]any)["target"] != topic["id"] {
 		t.Fatal("exact names/aliases not reused", a)
 	}
 	for user, count := range map[string]int{"ari": 3, "bob": 3, "all": 4} {
@@ -112,7 +112,7 @@ func TestDedicatedWritesOwnershipAndOrganization(t *testing.T) {
 			t.Fatal(user, found)
 		}
 	}
-	story := keyed(t, ctx, session, "save_story", "story", map[string]any{"title": "Meetings", "user": "ari", "members": []any{a["id"], b["id"]}})
+	story := keyed(t, ctx, session, "save_story", "story", map[string]any{"title": "Meetings", "user": "ari", "relations": []any{map[string]any{"type": "related_to", "target": a["id"]}, map[string]any{"type": "related_to", "target": b["id"]}}})
 	composed, r := invoke(t, ctx, session, "compose_story", map[string]any{"id": story["id"]})
 	if r.IsError || !strings.Contains(payload(t, composed)["text"].(string), "Bob met John") {
 		t.Fatal(composed)
@@ -134,14 +134,14 @@ func TestRetryMetadataSurvivesRestart(t *testing.T) {
 	defer cancel()
 	bin, path := binary(t), t.TempDir()
 	session := connect(t, ctx, bin, path, "")
-	args := map[string]any{"user": "ari", "text": "Coffee with John", "entities": []string{"John"}}
+	args := map[string]any{"user": "ari", "text": "Coffee with John", "relations": []any{map[string]any{"type": "related_to", "target": "John"}}}
 	first := keyed(t, ctx, session, "save_memory", "stable-operation", args)
 	if err := session.Close(); err != nil {
 		t.Fatal(err)
 	}
 	session = connect(t, ctx, bin, path, "")
 	retried := keyed(t, ctx, session, "save_memory", "stable-operation", args)
-	if first["id"] != retried["id"] || first["entities"].([]any)[0].(map[string]any)["id"] != retried["entities"].([]any)[0].(map[string]any)["id"] {
+	if first["id"] != retried["id"] || first["relations"].([]any)[0].(map[string]any)["target"] != retried["relations"].([]any)[0].(map[string]any)["target"] {
 		t.Fatal("retry created new records", retried)
 	}
 	found, r := invoke(t, ctx, session, "search_memory", map[string]any{"user": "all"})
@@ -164,7 +164,7 @@ func TestDirectArgumentsStayFlexible(t *testing.T) {
 	defer cancel()
 	path := t.TempDir()
 	session := connect(t, ctx, binary(t), path, "")
-	saved := keyed(t, ctx, session, "save_memory", "numbers", map[string]any{"text": 3, "user": 3, "time": "last summer", "entities": []any{map[string]any{"name": 3, "description": 3}}, "metadata": map[string]any{"number": json.Number("9007199254740993")}})
+	saved := keyed(t, ctx, session, "save_memory", "numbers", map[string]any{"text": 3, "user": 3, "time": "last summer", "metadata": map[string]any{"number": json.Number("9007199254740993")}, "relations": []any{map[string]any{"type": "related_to", "target": map[string]any{"kind": "entities", "name": 3, "description": 3}}}})
 	data, err := os.ReadFile(filepath.Join(path, "memories", saved["id"].(string)+".md"))
 	if err != nil {
 		t.Fatal(err)
@@ -187,8 +187,8 @@ func TestIncompleteIdentityDoesNotDiscardCapture(t *testing.T) {
 		}
 	}
 	session := connect(t, ctx, binary(t), path, "")
-	saved := keyed(t, ctx, session, "save_memory", "ambiguous", map[string]any{"text": "Dinner with John at Pizza AMI", "user": "ari", "entities": []any{map[string]any{"name": "John", "relation": "with"}, map[string]any{"name": "Pizza AMI", "type": "place", "relation": "at"}}})
-	if len(saved["entities"].([]any)) != 1 || !strings.Contains(fmt.Sprint(saved["diagnostics"]), "identity resolution") {
+	saved := keyed(t, ctx, session, "save_memory", "ambiguous", map[string]any{"text": "Dinner with John at Pizza AMI", "user": "ari", "relations": []any{map[string]any{"type": "related_to", "target": map[string]any{"kind": "entities", "name": "John"}}, map[string]any{"type": "related_to", "target": map[string]any{"kind": "entities", "name": "Pizza AMI", "type": "place"}}}})
+	if len(saved["relations"].([]any)) != 1 || !strings.Contains(fmt.Sprint(saved["diagnostics"]), "identity resolution") {
 		t.Fatal(saved)
 	}
 	data, _ := os.ReadFile(filepath.Join(path, "memories", saved["id"].(string)+".md"))
@@ -201,8 +201,8 @@ func TestMCPRelationsCanBeCorrectedByName(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	session := connect(t, ctx, binary(t), t.TempDir(), "")
-	first := keyed(t, ctx, session, "save_entity", "venue", map[string]any{"name": "Cedar Café", "relations": []any{map[string]any{"type": "liked_by", "target": "e_sam"}}})
-	corrected := keyed(t, ctx, session, "save_entity", "repair", map[string]any{"id": first["id"], "relations": []any{map[string]any{"type": "liked_by", "target": "Sam Lee"}}})
+	first := keyed(t, ctx, session, "save_entity", "venue", map[string]any{"name": "Cedar Café", "relations": []any{map[string]any{"type": "related_to", "target": "e_sam"}}})
+	corrected := keyed(t, ctx, session, "save_entity", "repair", map[string]any{"id": first["id"], "relations": []any{map[string]any{"type": "related_to", "target": "Sam Lee"}}})
 	relations := corrected["relations"].([]any)
 	if len(relations) != 1 || !songya.ValidID(relations[0].(map[string]any)["target"].(string)) || len(corrected["diagnostics"].([]any)) != 0 {
 		t.Fatal(corrected)
@@ -227,21 +227,21 @@ func TestLongSharedMemoryIsEnrichedWithoutGrowingItsEntities(t *testing.T) {
 	path := t.TempDir()
 	session := connect(t, ctx, binary(t), path, "")
 	text := "Ari and Daphne enjoy Pizza AMI's soup.\n" + strings.Repeat("Their shared history is recorded here.\n", 2000)
-	saved := keyed(t, ctx, session, "save_memory", "history", map[string]any{"user": "ari", "text": text, "entities": []any{map[string]any{"name": "Ari", "type": "person", "relation": "about"}, map[string]any{"name": "Daphne", "type": "person", "relation": "about"}, map[string]any{"name": "Pizza AMI", "type": "place", "relation": "at"}}})
-	if saved["text_truncated"] != true || len(saved["entities"].([]any)) != 3 {
+	saved := keyed(t, ctx, session, "save_memory", "history", map[string]any{"user": "ari", "text": text, "relations": []any{map[string]any{"type": "related_to", "target": map[string]any{"kind": "entities", "name": "Ari", "type": "person"}}, map[string]any{"type": "related_to", "target": map[string]any{"kind": "entities", "name": "Daphne", "type": "person"}}, map[string]any{"type": "related_to", "target": map[string]any{"kind": "entities", "name": "Pizza AMI", "type": "place"}}}})
+	if saved["text_truncated"] != true || len(saved["relations"].([]any)) != 3 {
 		t.Fatal(saved)
 	}
 	updated := keyed(t, ctx, session, "save_memory", "enrich-history", map[string]any{"id": saved["id"], "append": "They also enjoy the salad."})
-	if updated["id"] != saved["id"] || len(updated["entities"].([]any)) != 3 {
+	if updated["id"] != saved["id"] || len(updated["relations"].([]any)) != 3 {
 		t.Fatal(updated)
 	}
 	data, err := os.ReadFile(filepath.Join(path, "memories", saved["id"].(string)+".md"))
 	if err != nil || songya.Parse(data).Body != text+"\n\nThey also enjoy the salad." {
 		t.Fatal("long memory lost prose", err)
 	}
-	for _, item := range saved["entities"].([]any) {
+	for _, item := range saved["relations"].([]any) {
 		entity := item.(map[string]any)
-		id := entity["id"].(string)
+		id := entity["target"].(string)
 		data, err := os.ReadFile(filepath.Join(path, "entities", id+".md"))
 		if err != nil || songya.Parse(data).Body != "" {
 			t.Fatal("history leaked into identity", id, err)

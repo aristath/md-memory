@@ -2,202 +2,95 @@
 
 [Getting started](../README.md) · [Engine reference](engine.md)
 
-`songya-mcp` serves MCP over stdio. Initialization and `memory://guide` provide
-compact agent instructions. Tool discovery describes each argument.
+`songya-mcp` serves MCP over stdio. Initialization and `memory://guide` provide compact agent instructions. Tool discovery describes the arguments.
 
-## Save a memory
+## Records and capture
 
-Memories hold experiences, facts, preferences and history. Each memory links to
-all relevant entities, including the people whose experiences or preferences it
-describes. A memory can grow over time and connect to several people and places.
-Entity descriptions briefly identify who or what the entity is. Find its linked
-memories with `search_memory({"kind":"memories","related_to":"ENTITY_ID"})`.
+- **Memory:** an event, experience, fact or preference, understandable on its own.
+- **Entity:** a particular person, place, organization, object or other thing, with a brief identifying description. Its experiences belong in linked memories.
+- **Topic:** a subject connecting memories.
+- **Story:** an ordered narrative composition of connected memories.
+
+Before every save, call `prepare_memory` with the information to keep. Review its bounded shortlist, then save once, including any new connected entities/topics. Reuse existing records. Save snippets as information arrives; enrich an existing memory for additional information, correct its prose when facts change, and create connected memories for distinct events. Do not invent facts, identities, dates or causes.
 
 ```json
-{
-  "text": "Alex Morgan and Sam Lee enjoy the lentil soup at Cedar Café.",
-  "user": "ari",
-  "entities": [
-    { "name": "Alex Morgan", "type": "person", "relation": "about" },
-    { "name": "Sam Lee", "type": "person", "relation": "about" },
-    { "name": "Cedar Café", "type": "place", "relation": "at" }
-  ]
-}
+{"name":"prepare_memory","arguments":{"text":"Alex and Sam enjoy the soup at Cedar Café.","user":"ari"}}
+{"name":"save_memory","arguments":{"text":"Alex and Sam enjoy the soup at Cedar Café.","user":"ari","relations":[{"type":"related_to","target":"Alex"},{"type":"related_to","target":"Sam"},{"type":"related_to","target":{"kind":"entities","name":"Cedar Café","type":"place"}}]}}
 ```
 
-Pass this object to `save_memory`. Songya creates the memory and its connections
-in one durable write. A unique exact name or alias reuses an existing entity;
-matching is case-insensitive. An `id` selects a specific existing entity. Simple
-lists such as `"entities":["Sam Lee"]` also work. Include `relation` to preserve
-the participant's role in the memory.
+A target is an existing record ID, an entity name, or a named object with `kind` (`entities` or `topics`), `name`, and optional `type`, `description`, `aliases`. Unique exact names/aliases reuse existing identities; matching is case-insensitive. New IDs are assigned by the engine. Ambiguous or unusable connections remain in `unresolved_connections` with diagnostics; healthy connections and prose still save.
 
-Save directly. Use `search_memory` or `prepare_memory` to find a record when
-needed. To enrich an existing memory, supply its `id` and `append`. Omitted
-entities and metadata stay intact. Long prose is preserved in full; returned
-previews are bounded and full reads are paged. The memory's linked entities
-remain brief identity records as its history grows.
+Memories and stories require an owning `user`; Clara supplies the current user automatically. Use `user:"clara"` for Clara's experiences. Ownership selects a collection; entity connections identify participants. Reflecting on another person's experience does not make the writer a participant. Entities and topics are shared. Selection is unrestricted; `user:"all"` selects everyone. Updating without a user preserves ownership.
 
-`time` describes when something happened. It accepts words such as `"last summer"`
-or an object with `description`, `earliest` and `latest`. Preserve approximate
-wording; known exact dates use equal bounds. IDs and creation/update times are
-automatic. `title`, custom `metadata` and `relations` are optional.
+## Writes and connections
 
-Ambiguous or unavailable capture participants remain in `unresolved_connections`
-with their details. Unresolved relation targets remain in the relation list.
-Diagnostics explain incomplete connections while healthy work still saves.
+| Tool | Main arguments |
+| --- | --- |
+| `save_memory` | `text`, optional `title`, `time`, `user`, `metadata`, `relations` |
+| `save_entity` | `name`, optional `type`, `aliases`, `description`, `metadata`, `relations` |
+| `save_topic` | `name`, optional `aliases`, `description`, `metadata`, `relations` |
+| `save_story` | `title`, optional `text`, `user`, `metadata`, ordered `relations` |
 
-Memories and stories require an owning `user`. Integrations can fill it from the
-current user; Clara does this automatically. Entities and topics are shared.
-Searches select a user's memories/stories and shared records; `user:"all"`
-selects everyone. Selection is unrestricted.
+All four accept an existing `id` to update, and `append` to enrich prose. `text` or `description` replaces supplied prose; omission preserves it. Omitted metadata and relations stay intact. Supplied relations replace the list; when enriching with `append`, they add connections. `[]` clears the list. Inline identity enrichment preserves existing connections.
 
-## Dedicated writes
+Entity/topic `description` is their Markdown body, also used by search and the library table. Do not duplicate it in metadata.
 
-| Tool          | Arguments                                                                                                                |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `save_memory` | `text`, optional `title`, `time`, `entities`, `topics`, `user`, `metadata`, `relations`; `id` updates an existing memory |
-| `save_entity` | `name`, optional `type`, `aliases`, `description`, `metadata`, `relations`; `id` selects an existing entity              |
-| `save_topic`  | `name`, optional `aliases`, `description`, `metadata`, `relations`; `id` selects an existing topic                       |
-| `save_story`  | `title`, optional `text`, ordered `members`, `user`, `metadata`, `relations`; `id` updates an existing story             |
+All authoritative connections use `relations: [{type, target}]`. Store one connection and let Songya derive its reverse:
 
-All four support `append` to add prose. Entity prose is a brief identifying description. `text` or `description` replaces supplied
-prose; omission preserves it. Omitted metadata stays intact. Standalone entity
-and topic saves reuse unique matching names, or create a new record.
+| Type | Meaning of A → B | Derived reverse |
+| --- | --- | --- |
+| `after` | A happened after B | `before` |
+| `caused_by` | B caused A | `causes` |
+| `part_of` | A is a component or sub-event of B | `contains` |
+| `related_to` | General association, including entities and topics | `related_to` |
+| `possibly_same_as` | Possible identity match, without merging | `possibly_same_as` |
+
+A story's `related_to` links to memories/stories define reading order. Other links associate identities or subjects. Story prose is introductory text; narrative order does not assert chronology.
 
 ```json
-{"name":"save_entity","arguments":{"name":"Sam Lee","type":"person","description":"A school friend."}}
-{"name":"save_topic","arguments":{"name":"Gardening","description":"Plants and gardens."}}
-{"name":"save_memory","arguments":{"id":"MEMORY_ID","append":"They also enjoy the café’s salad."}}
-{"name":"save_story","arguments":{"user":"ari","title":"Visits with Sam","members":["FIRST_MEMORY_ID","SECOND_MEMORY_ID"]}}
+{"name":"save_story","arguments":{"title":"Visits with Sam","user":"ari","relations":[{"type":"related_to","target":"FIRST_MEMORY_ID"},{"type":"related_to","target":"SECOND_MEMORY_ID"}]}}
+{"name":"save_memory","arguments":{"id":"MEMORY_ID","append":"They also enjoy the salad."}}
 ```
 
-Supplied story `members` replace the ordered membership. Omitting them preserves
-existing membership, including when the narrative text is edited. Explicit `[]`
-clears membership. Original narratives remain available in retained write data.
+## Event time
 
-## Connections and corrections
-
-`relations` is the explicit connection list on each save tool. Omission preserves
-it; a supplied list replaces it; `[]` clears it. Targets accept existing record
-IDs or ordinary entity names. Names are resolved or created in the same durable
-write. Relationship labels describe the source record's connection to its target.
-For example, a café can be `liked_by` a person; a visit memory can be `with` a
-person and `at` a café.
+`time` has three nullable fields. Use an exact `date` or range bounds; leave unknown values null. IDs and creation/update timestamps are automatic.
 
 ```json
-{"name":"save_entity","arguments":{"id":"CAFE_ID","relations":[{"type":"liked_by","target":"Sam Lee"}]}}
-{"name":"save_entity","arguments":{"id":"CAFE_ID","relations":[]}}
+{"date":"2024-12-31","earliest":null,"latest":null}
+{"date":null,"earliest":"2024-12-01","latest":"2024-12-31"}
+{"date":null,"earliest":"2024-01-01","latest":null}
+{"date":null,"earliest":null,"latest":"2024-12-31"}
 ```
 
-On memory updates, supplied `entities` and `topics` add connections while
-preserving existing links. A supplied `relations` list first replaces the
-explicit list; any participants supplied in the same call are then connected.
+The third example is the agreed “after 2024” convention. `after` orders events without dates; `caused_by` also orders cause before consequence. `part_of` groups events. Contradictions produce diagnostics while independent records remain usable.
 
-## Results and retrieval
+## Retrieval
 
-Tool results are in `structuredContent.data`. A save returns `status`, the main
-record's `id`, `operation_id`, saved prose/time/relations, connected entities and
-topics, and diagnostics. `status:"committed"` confirms publication. Long returned
-prose sets `text_truncated`; read the record for its full contents.
-
-Start with `recall_memory` for a person, place or subject. It resolves names and
-aliases and returns connected accounts with record IDs, event times and semantic
-metadata such as emotions and uncertainty. Enclosing stories supply surrounding
-context; several stories may contribute. Prose is
-preserved, with repeated records referenced by ID. Story order is narrative order.
+Tool results are in `structuredContent.data`. A save returns status, ID, operation ID, prose/time/relations and diagnostics. `status:"committed"` confirms publication. Previews are bounded; read the record for full content.
 
 ```json
-{"name":"recall_memory","arguments":{"text":"Sam Lee","user":"ari"}}
-{"name":"recall_memory","arguments":{"text":"Sam Lee","user":"ari","offset":16384}}
-```
-
-Follow the returned `next` as `offset`, keeping `text` and `user` unchanged. Recall
-returns up to 16 KiB of narrative by default (also the maximum); JSON escaping can
-shorten a page. Offsets count bytes in the labelled narrative. Concurrent edits
-can change that narrative; restart from offset zero to read its current version.
-Missing or damaged records produce diagnostics while readable accounts continue.
-
-For focused inspection:
-
-```json
-{"name":"prepare_memory","arguments":{"text":"Sam Lee","user":"ari"}}
+{"name":"recall_memory","arguments":{"text":"Sam","user":"ari"}}
 {"name":"search_memory","arguments":{"text":"Sam","kind":"entities"}}
 {"name":"search_memory","arguments":{"kind":"topics"}}
-{"name":"read_memory","arguments":{"id":"MEMORY_ID"}}
-{"name":"explore_memory","arguments":{"id":"MEMORY_ID","direction":"both"}}
-{"name":"memory_timeline","arguments":{"user":"ari","text":"dinner"}}
+{"name":"search_memory","arguments":{"kind":"memories","related_to":"ENTITY_ID"}}
+{"name":"search_memory","arguments":{"mode":"semantic","text":"orchestral performer"}}
+{"name":"read_memory","arguments":{"id":"RECORD_ID","view":"source"}}
+{"name":"explore_memory","arguments":{"id":"RECORD_ID","direction":"both"}}
+{"name":"memory_timeline","arguments":{"user":"ari"}}
 {"name":"compose_story","arguments":{"id":"STORY_ID"}}
 ```
 
-Preparation is optional: it finds candidates, ambiguities and possible duplicate
-names. Its `query` identifies what was searched. Search without text lists records.
-Ordinary reads return prose; `view:"source"` selects original metadata and Markdown.
-Reads and story composition default to 8 KiB, up to 12 KiB per page.
-Graph directions are `incoming`, `outgoing` or `both`; edges include record titles.
-Timelines use stated event bounds and `before`/`after` connections; uncertain order stays uncertain.
+Recall returns connected accounts and story context. Semantic recall adds a bounded story introduction and neighboring events. Direct edits refresh automatically. Search without text lists records. Configure embeddings in the store's `config.json`; saving never waits for embeddings. `memory_maintenance(action="embed")` refreshes missing vectors.
 
-## Semantic search
+Follow `next` as `offset` with the same query/user when `truncated` is true. Recall/text/source/story offsets count bytes; search/graph/timeline offsets count items. Numeric strings work. Recall caps at 16 KiB; MCP reads/composition default to 8 KiB and cap at 12 KiB. Missing data produces diagnostics while healthy work continues.
 
-Configure the embedding model and endpoint in the store's `config.json`, as shown
-in [Embeddings](../README.md#embeddings). The defaults are `BAAI/bge-m3` and
-`http://127.0.0.1:18200/v1`.
+## Organization, imports and recovery
 
-```json
-{"name":"search_memory","arguments":{"mode":"semantic","text":"orchestral performer","kind":"memories","user":"ari"}}
-{"name":"search_memory","arguments":{"mode":"semantic","text":"a musician","kind":"entities"}}
-{"name":"memory_maintenance","arguments":{"action":"embed"}}
-```
+`organize_memory(action="merge", sources=[...])` combines reviewed records; `action="split"` takes a source and reviewed parts. Retired records remain readable and redirects preserve references. Splits inherit ownership; merges inherit a common owner, or require explicit `metadata.user` across owners.
 
-Semantic retrieval covers entities and memories, with the usual user, relationship
-and page filters. Results carry `mode:"semantic"`, cosine scores and excerpts from
-the best matching chunks. `incomplete:true` and diagnostics identify missing
-vectors. A service failure can return `mode:"lexical"` with diagnostics. Search
-without a mode retains lexical retrieval; search without text lists records.
+Configure import roots with `--import-root notes=/absolute/path`. `import_memories(action="preview", root="notes")` lists sources; `action="apply"` takes a path and user. Optional reviewed parts use exact byte ranges (`start` inclusive, `end` exclusive), kind and metadata. Originals are retained with a checksum and coverage mapping.
 
-`embed` refreshes all users' missing or damaged entity and memory vectors and
-returns the model, record/chunk counts, dimensions and diagnostics. Its
-`incomplete` flag identifies unfinished indexing or an unavailable cache. Indexing
-never changes canonical records. Saving records does not wait for embeddings.
+Clients can attach a stable `songya/request-key` in MCP `_meta` to writes. Retry identical arguments with that key. Clara supplies its durable invocation ID. Without client metadata, Songya assigns an independent operation ID. Identical prose in separate operations can describe separate memories.
 
-## Organization and imports
-
-```json
-{"name":"organize_memory","arguments":{"action":"merge","sources":["FIRST_ID","SECOND_ID"],"metadata":{"title":"Combined account"}}}
-{"name":"organize_memory","arguments":{"action":"split","source":"SOURCE_ID","parts":[{"text":"First part"},{"text":"Second part"}]}}
-```
-
-Original records remain readable under retired IDs. Merge returns `id`; split
-returns ordered replacement `ids`. Splits inherit their source user; merges
-inherit a common user. Cross-user merges need an explicit `metadata.user`.
-
-Configure optional import roots with `--import-root notes=/absolute/source/path`:
-
-```json
-{"name":"import_memories","arguments":{"action":"preview","root":"notes"}}
-{"name":"read_memory","arguments":{"root":"notes","source":"old.md"}}
-{"name":"import_memories","arguments":{"action":"apply","root":"notes","path":"old.md","user":"ari"}}
-```
-
-Omit `parts` to import the entire file. Reviewed parts use exact byte ranges,
-`start` inclusive and `end` exclusive, with optional `kind` and `metadata`.
-The original is preserved. Results include mapped IDs, coverage, and an archive
-checksum, readable with `read_memory({"archive":"CHECKSUM"})`.
-
-## Recovery and clients
-
-Clients can attach a stable `songya/request-key` in MCP `_meta` to each write.
-Reuse it with identical arguments when retrying the same operation. Clara forwards
-its durable tool invocation ID automatically. Distinct operations receive distinct
-keys, so identical words can describe separate memories. Without client metadata,
-Songya creates an independent operation ID and returns it in the result.
-
-Use `memory_maintenance` with `action:"receipt"` and `key:OPERATION_ID` to inspect
-an outcome. `recover` resumes retained work; `status` reports diagnostics;
-`rebuild` refreshes the disposable index. `abandon` deliberately withdraws an
-uncommitted operation while retaining its proposed data. `read_memory` with `key`,
-`id` and `view:"proposed"`, `"before"` or `"original_text"` inspects retained data.
-These are recovery operations; ordinary saves handle their bookkeeping internally.
-
-Follow `next` when `truncated` is true. Recall/text/source/story offsets count bytes;
-search, graph and timeline offsets count items. Numeric strings are accepted.
-`memory://records/{id}/{offset}` provides source pages; binary pages use `base64`.
+`memory_maintenance(action="receipt", key=...)` inspects an outcome; `recover` resumes pending work; `status` reports diagnostics; `rebuild` refreshes the disposable index. `abandon` withdraws uncommitted work while retaining proposed data. `read_memory` with `key`, `id`, and `view:"proposed"`, `"before"` or `"original_text"` reads retained work. Ordinary saves handle this bookkeeping automatically.

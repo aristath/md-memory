@@ -67,7 +67,7 @@ func encodeValue(value any) (*yaml.Node, []string) {
 					tag = "!!float"
 				}
 				return &yaml.Node{Kind: yaml.ScalarNode, Tag: tag, Value: string(typed)}
-			case time.Time, time.Duration, Relation, Metadata:
+			case time.Time, time.Duration, Relation, Metadata, EpisodeTime:
 				return yamlValue(typed)
 			}
 			if source != nil {

@@ -2,7 +2,7 @@
 
 A memory engine that keeps connected records in Markdown files. Use it from an
 MCP client, its standalone browser editor, or as a Go library. Memories, entities,
-topics, and stories share one store, with open metadata and relationships.
+topics, and stories share one store, with open metadata and five structural relationship types.
 
 Durability comes first: preserve original content, recover interrupted writes,
 and keep healthy records usable when something else is damaged. Lexical search,
@@ -53,8 +53,7 @@ unsaved work. Drafts are not saved to disk until you press Save.
 
 **Delete permanently** removes the live record immediately, without trash or a
 soft-delete state. The engine refuses deletion while other records link to it,
-including relationship fields, story references and Markdown `[[record_id]]`
-references in any record type. Blockers are listed with links so you can open and
+including ordered story relations and retired-record redirects. Blockers are listed with links so you can open and
 edit them. Deletion never cascades or edits those referring records. Unreadable
 sources or unfinished writes can defer deletion; healthy reads and edits continue.
 Deleted records stay deleted through normal restart/recovery. Existing transaction
@@ -111,10 +110,9 @@ references. Follow `next` as `offset` to continue larger accounts.
 
 Ask your client to save a memory, for example:
 
-> Remember that I had coffee with John today. Check existing records first and
-> preserve any uncertainty about which John I mean.
+> Remember that I had coffee with John today. Check existing records first.
 
-Use `save_memory` with text, time, entities and topics. The engine creates and
+Use `prepare_memory` before saving, then `save_memory` with text, time and relations. The engine creates and
 connects the records automatically. Read the [MCP guide](docs/mcp.md) for the tools, concrete requests,
 responses, retry handling, and optional imports.
 

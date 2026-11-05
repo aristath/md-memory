@@ -127,8 +127,8 @@ func TestStoryDetectsRecursionThroughRetiredAlias(t *testing.T) {
 	}
 	story := createRecord(t, store, Stories, nil, "")
 	alias := createRecord(t, store, Stories, map[string]any{"redirects": []string{story.ID}}, "Old story")
-	body := "Head [[" + alias.ID + "]] Tail"
-	if _, err := store.Update(story.ID, story.Revision, nil, body); err != nil {
+	body := "Head Tail"
+	if _, err := store.Update(story.ID, story.Revision, map[string]any{"relations": []Relation{{"related_to", alias.ID}}}, body); err != nil {
 		t.Fatal(err)
 	}
 	page, err := store.Compose(context.Background(), story.ID, 0, 4096)
@@ -207,7 +207,7 @@ func TestDamagedBatchJournalLeavesAnExplicitlyUnconfirmedReadableSnapshot(t *tes
 	}
 	healthy := createRecord(t, store, Memories, nil, "Healthy committed account")
 	changed := createRecord(t, store, Memories, nil, "Original account")
-	request := BatchRequest{User: "test", Key: "damaged-journal", Changes: []Change{{ID: changed.ID, Revision: changed.Revision, Body: textPointer("Retained proposal"), Fields: map[string]any{"redirects": []string{healthy.ID}, "time": map[string]any{"earliest": "2090-01-01", "latest": "2090-01-01"}, "relations": []Relation{{Type: "before", Target: healthy.ID}}}}}}
+	request := BatchRequest{User: "test", Key: "damaged-journal", Changes: []Change{{ID: changed.ID, Revision: changed.Revision, Body: textPointer("Retained proposal"), Fields: map[string]any{"redirects": []string{healthy.ID}, "time": map[string]any{"earliest": "2090-01-01", "latest": "2090-01-01"}, "relations": []Relation{{Type: "after", Target: healthy.ID}}}}}}
 	root, err := os.OpenRoot(store.path)
 	if err != nil {
 		t.Fatal(err)

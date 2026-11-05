@@ -2,6 +2,7 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -59,7 +60,7 @@ func TestHTTPDocumentEditingAndDeletion(t *testing.T) {
 		}
 	}
 	target, _ := store.Create(songya.Entities, map[string]any{"name": "Alex"}, "")
-	incoming, _ := store.Create(songya.Stories, map[string]any{"user": "ari", "title": "A story"}, "[["+target.ID+"]]")
+	incoming, _ := store.Create(songya.Stories, map[string]any{"user": "ari", "title": "A story", "relations": []songya.Relation{{Type: "related_to", Target: target.ID}}}, "")
 	request := httptest.NewRequest("DELETE", "/api/records/"+target.ID, nil)
 	request.Header.Set("If-Match", target.Revision)
 	response := httptest.NewRecorder()
@@ -67,7 +68,7 @@ func TestHTTPDocumentEditingAndDeletion(t *testing.T) {
 	if response.Code != 409 || !strings.Contains(response.Body.String(), incoming.ID) || !strings.Contains(response.Body.String(), "A story") {
 		t.Fatal(response.Body.String())
 	}
-	if _, err := store.Update(incoming.ID, incoming.Revision, nil, ""); err != nil {
+	if _, err := store.Update(incoming.ID, incoming.Revision, map[string]any{"relations": []songya.Relation{}}, ""); err != nil {
 		t.Fatal(err)
 	}
 	response = httptest.NewRecorder()
@@ -82,7 +83,7 @@ func TestTableProjectsMetadataAndRevisionFromTheCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	record, err := store.Create(songya.Entities, map[string]any{"name": "Cedar", "description": "A tree", "type": "plant taxon", "aliases": []string{"Cedrus", "Atlas cedar"}}, "Botanical notes")
+	record, err := store.Create(songya.Entities, map[string]any{"name": "Cedar", "description": "Stale metadata", "type": "plant taxon", "aliases": []string{"Cedrus", "Atlas cedar"}}, "A tree")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,6 +101,15 @@ func TestTableProjectsMetadataAndRevisionFromTheCatalog(t *testing.T) {
 			t.Fatal("table lost metadata or revision", result)
 		}
 	}
+	description := "A tall conifer."
+	if receipt, err := store.SaveNamed(context.Background(), songya.Entities, songya.NamedInput{ID: record.ID, Description: &description}); err != nil || receipt.Status != "committed" {
+		t.Fatal(receipt, err)
+	}
+	code, result := call(t, Handler(store), "GET", "/api/records?q=conifer", nil)
+	rows := result["records"].([]any)
+	if code != 200 || len(rows) != 1 || rows[0].(map[string]any)["description"] != description {
+		t.Fatal("MCP-style description edit did not reach the table/search", result)
+	}
 }
 
 func TestGraphIncludesAllRecordKindsAndStoredConnections(t *testing.T) {
@@ -108,16 +118,16 @@ func TestGraphIncludesAllRecordKindsAndStoredConnections(t *testing.T) {
 	entity, _ := store.Create(songya.Entities, map[string]any{"name": "Alex", "aliases": []string{"Alexander"}}, "Private body")
 	topic, _ := store.Create(songya.Topics, map[string]any{"name": "Travel"}, "")
 	memory, err := store.Create(songya.Memories, map[string]any{
-		"user": "ari", "title": "A trip", "entities": []string{entity.ID}, "topics": []string{topic.ID},
-		"relations": []songya.Relation{{Type: "about", Target: entity.ID}, {Type: "about", Target: entity.ID}},
+		"user": "ari", "title": "A trip",
+		"relations": []songya.Relation{{Type: "related_to", Target: entity.ID}, {Type: "related_to", Target: topic.ID}, {Type: "related_to", Target: entity.ID}},
 	}, "Private memory")
 	if err != nil {
 		t.Fatal(err)
 	}
-	story, _ := store.Create(songya.Stories, map[string]any{"user": "clara", "title": "Journey"}, "[["+memory.ID+"]]")
+	story, _ := store.Create(songya.Stories, map[string]any{"user": "clara", "title": "Journey", "relations": []songya.Relation{{Type: "related_to", Target: memory.ID}}}, "")
 	redirect, _ := store.Create(songya.Entities, map[string]any{"name": "Old Alex", "redirects": []string{entity.ID}}, "")
 	// A missing target must not stop the rest of the graph from being displayed.
-	if err := os.WriteFile(filepath.Join(root, "entities", "e_123456789abc.md"), []byte("---\nname: Lonely\nrelations:\n  - type: about\n    target: m_missing\n---\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "entities", "e_123456789abc.md"), []byte("---\nname: Lonely\nrelations:\n  - type: related_to\n    target: m_missing\n---\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	code, result := call(t, Handler(store), "GET", "/api/graph", nil)
@@ -141,12 +151,11 @@ func TestGraphIncludesAllRecordKindsAndStoredConnections(t *testing.T) {
 		t.Fatal("Graph lost searchable aliases", nodes[entity.ID])
 	}
 	want := map[[3]string]bool{
-		{memory.ID, "entities", entity.ID}:       true,
-		{memory.ID, "topics", topic.ID}:          true,
-		{memory.ID, "about", entity.ID}:          true,
-		{story.ID, "contains", memory.ID}:        true,
-		{redirect.ID, "redirects", entity.ID}:    true,
-		{"e_123456789abc", "about", "m_missing"}: true,
+		{memory.ID, "related_to", entity.ID}:          true,
+		{memory.ID, "related_to", topic.ID}:           true,
+		{story.ID, "related_to", memory.ID}:           true,
+		{redirect.ID, "redirects", entity.ID}:         true,
+		{"e_123456789abc", "related_to", "m_missing"}: true,
 	}
 	for _, value := range result["links"].([]any) {
 		link := value.(map[string]any)
@@ -220,7 +229,7 @@ func TestDraftConnectionsUseCurrentSourceIncludingRedirects(t *testing.T) {
 	if len(links) != 1 || links[0].(map[string]any)["type"] != "redirects" || links[0].(map[string]any)["target_title"] != "Target" {
 		t.Fatal("redirect missing from draft", draft)
 	}
-	input["action"], input["type"], input["target"] = "remove", "redirects", target.ID
+	input["source"] = "---\nname: Draft\n---\n"
 	code, draft = call(t, h, "POST", "/api/draft", input)
 	if code != 200 || len(draft["links"].([]any)) != 0 {
 		t.Fatal("removed redirect still in draft", draft)
