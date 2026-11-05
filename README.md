@@ -180,3 +180,22 @@ GOFLAGS=-race GORACE=atexit_sleep_ms=0 go test -count=1 ./mcpserver
 
 Tests use temporary stores and import fixtures. Project priorities are in
 [AGENTS.md](AGENTS.md).
+
+### Application recall
+
+`Store.RecallSemantic(ctx, queries, owners)` batches individual source-message
+queries through one catalogue/vector pass. Owners are explicit; shared entities
+remain available. It ranks memories and entities semantically, promotes connected
+accounts using the three best entity matches, and includes at most one bounded
+containing-story passage. Results retain record IDs, owners, event times and
+semantic metadata. Missing embeddings produce partial diagnostics, never lexical
+scores. Query vectors reuse the same model/endpoint/content cache as records.
+
+`go run ./cmd/songya-query` reads one JSON request from stdin: `store`, optional
+`config`, and `command` (`configuration`, `list`, `read`, `stats` or `recall`). Recall also takes
+`owners` and `queries:[{text,limit}]`. Configuration inspection excludes credentials.
+This application boundary exposes no write commands.
+
+`OpenExisting` lets query clients inspect an existing store without creating
+record directories or publishing pending work. Missing sources remain explicit
+diagnostics. Normal `Open` retains automatic recovery for writers and the MCP.

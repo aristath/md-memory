@@ -490,3 +490,33 @@ func (s *Store) ReadSource(source string) ([]byte, error) {
 	}
 	return data, err
 }
+
+// ForUsers selects explicit owners and shared identities. An empty selection
+// includes only shared records; all is the explicit unrestricted selector.
+func (c Catalog) ForUsers(owners []string) Catalog {
+	allowed := map[string]bool{}
+	for _, owner := range owners {
+		allowed[strings.TrimSpace(owner)] = true
+	}
+	selected := Catalog{Diagnostics: c.Diagnostics}
+	for _, r := range c.Records {
+		if !userOwned(r.Kind) || allowed[r.User] || allowed["all"] {
+			selected.Records = append(selected.Records, r)
+		}
+	}
+	return selected
+}
+
+// Select applies the engine's lexical ranking/filters without another scan.
+// Applications can page/project the returned records before crossing a boundary.
+func (c Catalog) Select(q Query) []Record {
+	bySource := map[string]Record{}
+	for _, r := range c.Records {
+		bySource[r.Source] = r
+	}
+	records := []Record{}
+	for _, match := range rankMatches(c, q) {
+		records = append(records, bySource[match.Source])
+	}
+	return records
+}

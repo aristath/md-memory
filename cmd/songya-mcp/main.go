@@ -12,8 +12,6 @@ import (
 	"strings"
 	"syscall"
 
-	"go.yaml.in/yaml/v3"
-
 	"github.com/aristath/songya"
 	"github.com/aristath/songya/mcpserver"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -46,17 +44,11 @@ func main() {
 	if path == "" {
 		path = filepath.Join(*storePath, "config.json")
 	}
-	var config struct {
-		Embeddings songya.EmbeddingConfig `yaml:"embeddings"`
+	config, issue := songya.LoadEmbeddingConfig(path)
+	if issue != nil {
+		log.Print("Embedding configuration needs repair; readable values and defaults remain usable")
 	}
-	if data, err := os.ReadFile(path); err == nil {
-		if yaml.Unmarshal(data, &config) != nil {
-			log.Print("Embedding configuration needs repair; readable values and defaults remain usable")
-		}
-	} else if !os.IsNotExist(err) {
-		log.Print("Embedding configuration unavailable; using defaults")
-	}
-	store, err := songya.Open(*storePath, config.Embeddings)
+	store, err := songya.Open(*storePath, config)
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -424,3 +424,20 @@ func (s *Store) semanticSearch(ctx context.Context, c Catalog, q Query) (SearchR
 	}
 	return result, nil
 }
+
+// LoadEmbeddingConfig reads the same store configuration used by the MCP server.
+// Readable fields are retained when a damaged field needs repair.
+func LoadEmbeddingConfig(path string) (EmbeddingConfig, error) {
+	var config struct {
+		Embeddings EmbeddingConfig `yaml:"embeddings"`
+	}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return config.Embeddings.defaults(), nil
+	}
+	if err != nil {
+		return config.Embeddings.defaults(), err
+	}
+	err = yaml.Unmarshal(data, &config)
+	return config.Embeddings.defaults(), err
+}

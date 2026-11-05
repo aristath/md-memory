@@ -537,3 +537,63 @@ func TestStoreProcess(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenExistingDoesNotReplaceMissingSourcesOrPublishRecovery(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "absent")
+	if _, err := OpenExisting(missing); err == nil {
+		t.Fatal("missing source opened")
+	}
+	if _, err := os.Stat(missing); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("query created missing store: %v", err)
+	}
+	path := t.TempDir()
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entity, err := store.Create(Entities, map[string]any{"name": "Alex"}, "A musician")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(path, "memories")); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := OpenExisting(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := reader.Scan(context.Background())
+	if err != nil || len(catalog.Records) != 1 || catalog.Records[0].ID != entity.ID || len(catalog.Diagnostics) == 0 {
+		t.Fatalf("healthy record or missing-source diagnostic lost: %+v, %v", catalog, err)
+	}
+	if _, err := os.Stat(filepath.Join(path, "memories")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("query recreated missing record directory: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(path, "memories"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	name := filepath.Join("memories", "m_7k3m9x2q6v4c.md")
+	if err := os.Mkdir(filepath.Join(path, pendingName(name)), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, temporaryName(name, "", []byte(sample))), []byte(sample), 0600); err != nil {
+		t.Fatal(err)
+	}
+	reader, err = OpenExisting(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reader.Scan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(path, name)); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("query published recovery work: %v", err)
+	}
+	writer, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Read("m_7k3m9x2q6v4c"); err != nil {
+		t.Fatalf("normal writer did not recover: %v", err)
+	}
+}

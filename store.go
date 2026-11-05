@@ -82,6 +82,17 @@ func (s *Store) Diagnostics() []string {
 // Open opens the root and lock. Problems in individual directories are reported
 // through Diagnostics rather than disabling healthy parts of the store.
 func Open(path string, configuration ...EmbeddingConfig) (*Store, error) {
+	return openStore(path, configuration, true)
+}
+
+// OpenExisting opens without creating record directories or publishing recovery
+// work. Query clients can report missing sources instead of silently replacing
+// them with empty directories. Normal writers keep Open's automatic recovery.
+func OpenExisting(path string, configuration ...EmbeddingConfig) (*Store, error) {
+	return openStore(path, configuration, false)
+}
+
+func openStore(path string, configuration []EmbeddingConfig, initialize bool) (*Store, error) {
 	if path == "" {
 		return nil, errors.New("store path must not be empty")
 	}
@@ -89,8 +100,10 @@ func Open(path string, configuration ...EmbeddingConfig) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(path, 0700); err != nil {
-		return nil, err
+	if initialize {
+		if err := os.MkdirAll(path, 0700); err != nil {
+			return nil, err
+		}
 	}
 	path, err = filepath.EvalSymlinks(path)
 	if err != nil {
@@ -106,7 +119,9 @@ func Open(path string, configuration ...EmbeddingConfig) (*Store, error) {
 	}
 	s := &Store{path: path, needsInit: true, embeddings: config.defaults()}
 	s.note("close root", root.Close())
-	_ = s.Recover()
+	if initialize {
+		_ = s.Recover()
+	}
 	return s, nil
 }
 
