@@ -11,10 +11,11 @@ ownership selection use engine queries; column filters and sorting refine the
 returned rows without changing the records.
 
 Titles open read-only inspection; Edit and New record open a native modal dialog.
-The browser keeps focus inside it. Close or Escape retains unsaved drafts, and
-reopening a record restores them. The background table retains its filters and
-sorting while a modal is open. Table deletion uses the same engine checks as the
-editor; blocked deletion opens the record with navigable referring records.
+The browser keeps focus inside it. Close, Escape or clicking the backdrop retains
+unsaved drafts locally without a server request; reopening a record restores them.
+The background table retains its filters and sorting while a modal is open.
+Table deletion uses the same engine checks as the editor; blocked deletion opens
+the record with navigable referring records.
 
 The compiled executable embeds `web/assets`, including the generated JavaScript,
 editor styles and third-party license notices. Builds and tests use no live store.

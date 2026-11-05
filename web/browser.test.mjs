@@ -819,3 +819,48 @@ test("table deletion shows navigable blockers and removes only an unreferenced r
   await context.close();
   assert.deepEqual(errors, []);
 });
+
+test("backdrop and Escape close the modal while keeping drafts locally", async () => {
+  const record = await save(source("Modal dismissal"));
+  const { page, context } = await pageFor();
+  await editRecord(page, "Modal dismissal");
+  const modal = page.getByRole("dialog");
+  await page.locator(".ProseMirror").fill("An unsaved local draft.");
+  // Closing must not depend on composing the draft on the server.
+  await page.route("**/api/draft", (route) => route.abort());
+  await modal
+    .getByRole("heading", { name: "Modal dismissal", exact: true })
+    .click();
+  assert.equal(await modal.isVisible(), true);
+  await page.mouse.click(4, 4);
+  await modal.waitFor({ state: "hidden" });
+  await editRecord(page, "Modal dismissal");
+  assert.match(
+    await page.locator(".ProseMirror").innerText(),
+    /unsaved local draft/,
+  );
+  await page.unroute("**/api/draft");
+  await page.getByRole("tab", { name: "Source", exact: true }).click();
+  await page.locator(".cm-content").focus();
+  await page.keyboard.press("Escape");
+  await modal.waitFor({ state: "hidden" });
+  await editRecord(page, "Modal dismissal");
+  assert.match(
+    await page.locator(".cm-content").innerText(),
+    /unsaved local draft/,
+  );
+  await page.getByRole("tab", { name: "Visual", exact: true }).click();
+  await page.locator(".ProseMirror").focus();
+  await page.keyboard.press("Escape");
+  await modal.waitFor({ state: "hidden" });
+  await page
+    .getByRole("button", { name: "Modal dismissal", exact: true })
+    .click();
+  await modal.waitFor();
+  await page.mouse.click(4, 4);
+  await modal.waitFor({ state: "hidden" });
+  const stored = await (await fetch(url + "/api/records/" + record.id)).json();
+  assert.equal(stored.source, record.source);
+  await context.close();
+  assert.deepEqual(errors, []);
+});

@@ -36,7 +36,8 @@ story; **Type** shows the open metadata value, such as person or plant taxon.
 Click a title to inspect the record in a read-only modal, or **Edit** to open the
 editor modal. **Visual** edits formatted Markdown; **Source** edits the complete
 Markdown/YAML document with syntax highlighting. Both modes share the same draft.
-Closing the modal with **Close** or Escape keeps unsaved work in the current tab.
+Using **Close**, Escape or clicking outside the modal keeps unsaved work in the
+current tab.
 Metadata has text, number and boolean controls, with YAML values for lists and
 nested/custom structures.
 Creation/update timestamps are automatic and read-only. IDs come from filenames.

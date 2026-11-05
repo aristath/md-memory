@@ -567,17 +567,10 @@ Alpine.data("songya", () => {
           target: this.target.id,
         });
     },
-    async back() {
+    back() {
       if (this.busy || this.loading) return;
-      this.loading = true;
-      try {
-        await this.stash();
-        this.closeDialog();
-      } catch (e) {
-        this.failure = e.message;
-      } finally {
-        this.loading = false;
-      }
+      this.remember();
+      this.closeDialog();
     },
     label(record) {
       return record.title || record.id || "Untitled";

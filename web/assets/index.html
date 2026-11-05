@@ -188,6 +188,8 @@
       x-ref="editorDialog"
       aria-labelledby="record-heading"
       @cancel.prevent="back()"
+      @keydown.escape.capture.prevent.stop="back()"
+      @click.self="back()"
     >
       <div class="messages" aria-live="polite">
         <p class="success" x-show="notice" x-text="notice" x-cloak></p>
