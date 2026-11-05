@@ -136,6 +136,29 @@ Reads and story composition default to 8 KiB, up to 12 KiB per page.
 Graph directions are `incoming`, `outgoing` or `both`; edges include record titles.
 Timelines use stated event bounds and `before`/`after` connections; uncertain order stays uncertain.
 
+## Semantic search
+
+Configure the embedding model and endpoint in the store's `config.json`, as shown
+in [Embeddings](../README.md#embeddings). The defaults are `BAAI/bge-m3` and
+`http://127.0.0.1:18200/v1`.
+
+```json
+{"name":"search_memory","arguments":{"mode":"semantic","text":"orchestral performer","kind":"memories","user":"ari"}}
+{"name":"search_memory","arguments":{"mode":"semantic","text":"a musician","kind":"entities"}}
+{"name":"memory_maintenance","arguments":{"action":"embed"}}
+```
+
+Semantic retrieval covers entities and memories, with the usual user, relationship
+and page filters. Results carry `mode:"semantic"`, cosine scores and excerpts from
+the best matching chunks. `incomplete:true` and diagnostics identify missing
+vectors. A service failure can return `mode:"lexical"` with diagnostics. Search
+without a mode retains lexical retrieval; search without text lists records.
+
+`embed` refreshes all users' missing or damaged entity and memory vectors and
+returns the model, record/chunk counts, dimensions and diagnostics. Its
+`incomplete` flag identifies unfinished indexing or an unavailable cache. Indexing
+never changes canonical records. Saving records does not wait for embeddings.
+
 ## Organization and imports
 
 ```json

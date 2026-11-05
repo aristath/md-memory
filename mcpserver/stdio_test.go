@@ -30,9 +30,9 @@ func binary(t *testing.T) string {
 	}
 	return path
 }
-func connect(t *testing.T, ctx context.Context, bin, store, source string) *mcp.ClientSession {
+func connect(t *testing.T, ctx context.Context, bin, store, source string, extra ...string) *mcp.ClientSession {
 	t.Helper()
-	arguments := []string{"--store", store}
+	arguments := append([]string{"--store", store}, extra...)
 	if source != "" {
 		arguments = append(arguments, "--import-root", "notes="+source)
 	}

@@ -54,10 +54,11 @@ func recordName(id string) (string, error) {
 
 // Store holds no open files between calls. Diagnostics is safe across goroutines.
 type Store struct {
-	path      string
-	issues    sync.Map
-	initMu    sync.Mutex
-	needsInit bool
+	path       string
+	embeddings EmbeddingConfig
+	issues     sync.Map
+	initMu     sync.Mutex
+	needsInit  bool
 }
 
 func (s *Store) note(path string, err error) {
@@ -80,7 +81,7 @@ func (s *Store) Diagnostics() []string {
 
 // Open opens the root and lock. Problems in individual directories are reported
 // through Diagnostics rather than disabling healthy parts of the store.
-func Open(path string) (*Store, error) {
+func Open(path string, configuration ...EmbeddingConfig) (*Store, error) {
 	if path == "" {
 		return nil, errors.New("store path must not be empty")
 	}
@@ -99,7 +100,11 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{path: path, needsInit: true}
+	config := EmbeddingConfig{}
+	if len(configuration) > 0 {
+		config = configuration[0]
+	}
+	s := &Store{path: path, needsInit: true, embeddings: config.defaults()}
 	s.note("close root", root.Close())
 	_ = s.Recover()
 	return s, nil

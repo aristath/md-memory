@@ -14,6 +14,7 @@ limits. For executable Go examples, see [example_test.go](../example_test.go).
 - [Durable writes and recovery](#durable-writes-and-recovery)
 - [Discovery and search](#discovery-and-search)
 - [Connected recall](#connected-recall)
+- [Embeddings](#embeddings)
 - [Graph, episode time, and stories](#graph-episode-time-and-stories)
 - [Related changes and retry safety](#related-changes-and-retry-safety)
 - [Organization and import](#organization-and-import)
@@ -295,6 +296,28 @@ source paths, revisions, excerpts, and diagnostics. Engine list/search/graph pag
 default to 10 items and cap at 50; follow `next` while `truncated` is true.
 Pagination is over the current view. A direct edit between pages can change that
 view, so refresh rather than treating offsets as a permanent snapshot.
+
+## Embeddings
+
+Open with `Open(path, EmbeddingConfig{Model: "BAAI/bge-m3", BaseURL:
+"http://127.0.0.1:18200/v1"})`. Omitted configuration uses those defaults. Optional
+`APIKey` authenticates requests; `ChunkSize` defaults to 2,000 characters with ten
+percent overlap. Dimensions follow the provider's response.
+
+`Search(ctx, Query{Mode: "semantic", Text: "orchestral performer"})` ranks entity
+names/descriptions and memory contents by their best chunk's cosine similarity.
+Names include aliases; memory inputs include titles, event time and semantic
+metadata. The ordinary user/kind/relationship/page filters apply.
+
+`IndexEmbeddings(ctx)` warms or repairs all active entity and memory vectors.
+Record text, endpoint and model identify cached vectors; direct file edits and
+model changes automatically select fresh data. Queries are not persisted in the
+vector cache. Interrupted indexing retains completed cache entries for reuse.
+
+`.index/embeddings` is disposable. A damaged entry is regenerated independently;
+an unwritable cache still permits current-request retrieval. Endpoint failures
+leave ordinary reads and writes available. Search results explicitly identify
+semantic or lexical mode, partial coverage and recoverable diagnostics.
 
 ## Connected recall
 

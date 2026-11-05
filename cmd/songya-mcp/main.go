@@ -7,8 +7,12 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
+
 	"strings"
 	"syscall"
+
+	"go.yaml.in/yaml/v3"
 
 	"github.com/aristath/songya"
 	"github.com/aristath/songya/mcpserver"
@@ -30,6 +34,7 @@ func main() {
 	flags := flag.NewFlagSet("songya-mcp", flag.ExitOnError)
 	flags.SetOutput(os.Stderr)
 	storePath := flags.String("store", "", "authoritative memory store directory (required)")
+	configPath := flags.String("config", "", "configuration file (default: STORE/config.json)")
 	roots := rootsFlag{}
 	flags.Var(roots, "import-root", "optional named import root; repeat for more roots")
 	_ = flags.Parse(os.Args[1:])
@@ -37,7 +42,21 @@ func main() {
 		flags.Usage()
 		os.Exit(2)
 	}
-	store, err := songya.Open(*storePath)
+	path := *configPath
+	if path == "" {
+		path = filepath.Join(*storePath, "config.json")
+	}
+	var config struct {
+		Embeddings songya.EmbeddingConfig `yaml:"embeddings"`
+	}
+	if data, err := os.ReadFile(path); err == nil {
+		if yaml.Unmarshal(data, &config) != nil {
+			log.Print("Embedding configuration needs repair; readable values and defaults remain usable")
+		}
+	} else if !os.IsNotExist(err) {
+		log.Print("Embedding configuration unavailable; using defaults")
+	}
+	store, err := songya.Open(*storePath, config.Embeddings)
 	if err != nil {
 		log.Fatal(err)
 	}

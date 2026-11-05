@@ -5,8 +5,9 @@ MCP client or as a Go library. Memories, entities, topics, and stories share one
 store, with open metadata and relationships.
 
 Durability comes first: preserve original content, recover interrupted writes,
-and keep healthy records usable when something else is damaged. Search, graph
-traversal, partial timelines, and story composition run locally without a model.
+and keep healthy records usable when something else is damaged. Lexical search,
+graph traversal, partial timelines and story composition run locally. Optional
+semantic search uses a configured embedding service.
 
 The repository and Go module use `github.com/aristath/songya`; the MCP
 executable is `songya-mcp`.
@@ -47,8 +48,8 @@ locations; this is the common `mcpServers` shape:
 ```
 
 The server creates missing store directories. Your client launches it over stdio;
-it needs no network port, authentication service, or inference model. Running the
-executable directly waits for MCP protocol messages on stdin.
+it opens no network listener. Running the executable directly waits for MCP
+protocol messages on stdin. Semantic search calls the embedding service below.
 
 After connecting, use `recall_memory({"text":"John"})` to retrieve connected
 accounts by name or subject. It includes surrounding story context and record
@@ -62,6 +63,35 @@ Ask your client to save a memory, for example:
 Use `save_memory` with text, time, entities and topics. The engine creates and
 connects the records automatically. Read the [MCP guide](docs/mcp.md) for the tools, concrete requests,
 responses, retry handling, and optional imports.
+
+## Embeddings
+
+Place `config.json` in the store, or pass `--config /path/to/songya.json`:
+
+```json
+{
+  "embeddings": {
+    "model": "BAAI/bge-m3",
+    "base_url": "http://127.0.0.1:18200/v1"
+  }
+}
+```
+
+These defaults match Clara's embedding setup. `api_key` is optional. Restart the
+MCP server after changing its configuration. The endpoint serves the model through
+an OpenAI-compatible `/embeddings` API; Songya does not download model weights.
+
+`search_memory({"text":"orchestral performer","mode":"semantic"})` searches
+entity names, aliases and descriptions, and memory titles, contents and semantic
+metadata. Entity and memory vectors refresh as their text changes. Use
+`memory_maintenance({"action":"embed"})` to index all existing records ahead of
+time. Otherwise semantic searches embed missing content when needed.
+
+Long text uses overlapping chunks of 2,000 characters; `chunk_size` adjusts this
+for another model. Vectors are rebuildable files under `.index/embeddings`.
+Changing the model or endpoint uses a separate cache. Reads and saves keep working
+when the service or cache is unavailable; search reports partial results or an
+explicit lexical fallback with diagnostics.
 
 ## Use the Go library
 

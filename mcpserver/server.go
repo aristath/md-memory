@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"net/url"
 	"sort"
@@ -38,7 +39,7 @@ Memories and stories require an owning user; integrations can supply the current
 
 recall_memory(text) returns connected accounts for a name, subject or record ID, including story context. Pass next as offset with the same text and user to continue. Stories preserve narrative order.
 
-search_memory(text,kind) finds record excerpts; omit text to list. read_memory(id) returns prose; view=source returns the original metadata and Markdown. search_memory(kind=memories,related_to=ENTITY_ID) finds an entity’s memories. explore_memory(id) follows connections. Follow next when results are truncated.`
+search_memory(text,mode=semantic) finds memories and entities by meaning. Omit text to list; kind selects a record type. read_memory(id) returns prose; view=source returns the original metadata and Markdown. search_memory(kind=memories,related_to=ENTITY_ID) finds an entity’s memories. explore_memory(id) follows connections. Follow next when results are truncated.`
 
 // App keeps import access separate from record-store access. Import roots are
 // supplied by the process owner, never accepted as arbitrary client paths.
@@ -145,7 +146,7 @@ func normalize(value any, key string) any {
 			}
 			return int(n)
 		}
-	case "user", "key", "original_text", "name", "description", "title", "relation", "id", "kind", "ref", "body", "append", "story", "text", "direction", "type", "related_to", "action", "root", "path", "source", "view", "archive", "relation_type", "target":
+	case "user", "key", "original_text", "name", "description", "title", "relation", "id", "kind", "ref", "body", "append", "story", "text", "direction", "type", "related_to", "action", "root", "path", "source", "view", "archive", "relation_type", "target", "mode":
 		switch v := value.(type) {
 		case bool:
 			return strconv.FormatBool(v)
@@ -505,13 +506,17 @@ func New(lifetime context.Context, store *songya.Store, roots map[string]string)
 		receipt, err := store.SaveStory(ctx, input)
 		return savedWrite(ctx, store, receipt, "story", err)
 	})
-	querySchema := schema(map[string]any{"user": str("User filter; all or omitted selects everyone. Entities and topics are shared."), "text": str("Lexical search; omit to list"), "kind": str("Record directory: memories, entities, topics or stories. Use entities for entity lookup."), "related_to": str("Optional outgoing target ID"), "relation_type": str("Optional relationship type"), "include_retired": map[string]any{"type": "boolean"}, "offset": count(), "limit": count()})
+	querySchema := schema(map[string]any{"user": str("User filter; all or omitted selects everyone. Entities and topics are shared."), "text": str("Search text; omit to list"), "kind": str("Record directory: memories, entities, topics or stories. Use entities for entity lookup."), "related_to": str("Optional outgoing target ID"), "relation_type": str("Optional relationship type"), "include_retired": map[string]any{"type": "boolean"}, "offset": count(), "limit": count()})
+	searchProperties := maps.Clone(querySchema["properties"].(map[string]any))
+	searchProperties["mode"] = str("lexical (default) or semantic embeddings for memories and entities")
+	searchSchema := schema(searchProperties)
+
 	tool(server, "recall_memory", "Recall a person, place or subject by name or record ID. Returns connected prose with record IDs, event times and story context. Follow next as offset with the same text and user when truncated.", schema(map[string]any{"text": str("Name, subject or record ID to recall"), "user": str("User filter; all or omitted selects everyone"), "offset": count(), "limit": count()}, "text"), true, func(ctx context.Context, input songya.RecallQuery) (any, error) {
 		page, err := store.Recall(ctx, input)
 
 		return page, err
 	})
-	tool(server, "search_memory", "Bounded lexical retrieval across names, aliases, descriptions, prose and episode time. Find entities with kind=entities and a name or alias in text; omit text to list them. Direct file edits are refreshed automatically.", querySchema, true, func(ctx context.Context, input songya.Query) (any, error) {
+	tool(server, "search_memory", "Search names, aliases, descriptions and prose. Use mode=semantic to retrieve memories and entities by meaning. Find entities with kind=entities and a name or alias in text; omit text to list them. Direct file edits are refreshed automatically.", searchSchema, true, func(ctx context.Context, input songya.Query) (any, error) {
 		input.Limit = limit(input.Limit, 8, 8)
 		return store.Search(ctx, input)
 	})
@@ -614,7 +619,7 @@ func New(lifetime context.Context, store *songya.Store, roots map[string]string)
 			return nil, fmt.Errorf("choose preview or apply")
 		}
 	})
-	tool(server, "memory_maintenance", "Inspect diagnostics or a durable request receipt, retry recovery, or rebuild the disposable index. Never retry an accepted write under a new key.", schema(map[string]any{"action": str("status, receipt, recover, abandon or rebuild"), "key": str("Request key for receipt or deliberate abandonment"), "view": str("source returns a byte page of the full receipt"), "offset": count(), "limit": count()}, "action"), false, func(ctx context.Context, input struct {
+	tool(server, "memory_maintenance", "Inspect diagnostics or a durable request receipt, retry recovery, or rebuild the disposable index. Never retry an accepted write under a new key.", schema(map[string]any{"action": str("status, receipt, recover, abandon, rebuild or embed"), "key": str("Request key for receipt or deliberate abandonment"), "view": str("source returns a byte page of the full receipt"), "offset": count(), "limit": count()}, "action"), false, func(ctx context.Context, input struct {
 		Action string `json:"action"`
 		View   string `json:"view"`
 		Key    string `json:"key"`
@@ -643,11 +648,13 @@ func New(lifetime context.Context, store *songya.Store, roots map[string]string)
 		case "recover":
 			err := store.Recover()
 			return map[string]any{"diagnostics": store.Diagnostics()}, err
+		case "embed":
+			return store.IndexEmbeddings(ctx)
 		case "rebuild":
 			catalog, err := store.Rebuild(ctx)
 			return map[string]any{"records": len(catalog.Records), "diagnostics": catalog.Diagnostics}, err
 		default:
-			return nil, fmt.Errorf("choose status, receipt, recover, abandon or rebuild")
+			return nil, fmt.Errorf("choose status, receipt, recover, abandon, rebuild or embed")
 		}
 	})
 	server.AddResource(&mcp.Resource{URI: "memory://guide", Name: "Memory engine guide", MIMEType: "text/markdown"}, func(_ context.Context, request *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {

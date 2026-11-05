@@ -20,7 +20,7 @@ import (
 	"time"
 )
 
-const indexFormat = 3
+const indexFormat = 4
 
 // Diagnostic identifies a recoverable problem without hiding healthy records.
 type Diagnostic struct {
@@ -43,6 +43,7 @@ type Record struct {
 	Pending     bool        `json:"pending,omitempty"`
 	Unconfirmed bool        `json:"unconfirmed,omitempty"`
 	Title       string      `json:"title"`
+	Name        string      `json:"name,omitempty"`
 	Aliases     []string    `json:"aliases,omitempty"`
 	Description string      `json:"description,omitempty"`
 	Relations   []Relation  `json:"relations,omitempty"`
@@ -91,8 +92,9 @@ func recordFromDocument(source string, d *Document, kind Destination) Record {
 	if userOwned(kind) {
 		r.User = metadata.User
 	}
+	r.Name = strings.Join(nodeStrings("name", d), " ")
 	if r.Title == "" {
-		r.Title = strings.Join(nodeStrings("name", d), " ")
+		r.Title = r.Name
 	}
 	r.Context = recallContext(d)
 	r.Aliases = nodeStrings("aliases", d)
@@ -286,6 +288,7 @@ func clip(value string, maximum int) string {
 }
 
 type Query struct {
+	Mode           string      `json:"mode,omitempty"`
 	User           string      `json:"user,omitempty"`
 	Text           string      `json:"text,omitempty"`
 	Kind           Destination `json:"kind,omitempty"`
@@ -307,12 +310,14 @@ type Match struct {
 	Aliases          []string    `json:"aliases,omitempty"`
 	Excerpt          string      `json:"excerpt"`
 	Redirects        []string    `json:"redirects,omitempty"`
-	Score            int         `json:"score"`
+	Score            float64     `json:"score"`
 	Reasons          []string    `json:"reasons,omitempty"`
 	Diagnostics      []string    `json:"diagnostics,omitempty"`
 	DetailsTruncated bool        `json:"details_truncated,omitempty"`
 }
 type SearchResult struct {
+	Mode        string       `json:"mode"`
+	Incomplete  bool         `json:"incomplete,omitempty"`
 	Matches     []Match      `json:"matches"`
 	Next        int          `json:"next,omitempty"`
 	Truncated   bool         `json:"truncated"`
@@ -425,7 +430,7 @@ func rankMatches(c Catalog, q Query) []Match {
 		for _, warning := range r.Diagnostics[:min(4, len(r.Diagnostics))] {
 			warnings = append(warnings, clip(warning, 512))
 		}
-		matches = append(matches, Match{User: clip(r.User, 160), ID: r.ID, Source: r.Source, Kind: r.Kind, Revision: r.Revision, Pending: r.Pending, Unconfirmed: r.Unconfirmed, Title: clip(r.Title, 160), Aliases: aliases, Excerpt: clip(excerpt, 512), Redirects: redirects, Score: score, Reasons: reasons, Diagnostics: warnings, DetailsTruncated: detailsTruncated || len(r.User) > 160})
+		matches = append(matches, Match{User: clip(r.User, 160), ID: r.ID, Source: r.Source, Kind: r.Kind, Revision: r.Revision, Pending: r.Pending, Unconfirmed: r.Unconfirmed, Title: clip(r.Title, 160), Aliases: aliases, Excerpt: clip(excerpt, 512), Redirects: redirects, Score: float64(score), Reasons: reasons, Diagnostics: warnings, DetailsTruncated: detailsTruncated || len(r.User) > 160})
 	}
 	sort.Slice(matches, func(i, j int) bool {
 		if matches[i].Score != matches[j].Score {
@@ -439,7 +444,7 @@ func rankMatches(c Catalog, q Query) []Match {
 func searchCatalog(c Catalog, q Query) SearchResult {
 	matches := rankMatches(c, q)
 	start, end := pageRange(q.Offset, q.Limit, len(matches))
-	result := SearchResult{Matches: append([]Match{}, matches[start:end]...), Truncated: end < len(matches), Diagnostics: boundedDiagnostics(c.Diagnostics)}
+	result := SearchResult{Mode: "lexical", Matches: append([]Match{}, matches[start:end]...), Truncated: end < len(matches), Diagnostics: boundedDiagnostics(c.Diagnostics)}
 	if result.Truncated {
 		result.Next = end
 	}
@@ -449,6 +454,9 @@ func (s *Store) Search(ctx context.Context, q Query) (SearchResult, error) {
 	catalog, err := s.Scan(ctx)
 	if err != nil {
 		return SearchResult{}, err
+	}
+	if strings.EqualFold(strings.TrimSpace(q.Mode), "semantic") && strings.TrimSpace(q.Text) != "" {
+		return s.semanticSearch(ctx, catalog, q)
 	}
 	return searchCatalog(catalog, q), nil
 }
