@@ -13,7 +13,7 @@ Go alone builds the application from the checked-in assets:
 
 ```sh
 go build -o songya-web ./cmd/songya-web
-./songya-web --store /path/to/store --listen 127.0.0.1:8080
+./songya-web --store /path/to/store --listen 127.0.0.1:8664
 ```
 
 To change frontend sources, install Node and npm and work in `web`:

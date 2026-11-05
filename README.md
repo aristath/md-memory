@@ -20,7 +20,7 @@ go install github.com/aristath/songya/cmd/songya-web@latest
 songya-web --store /absolute/path/to/memory-store
 ```
 
-Open <http://127.0.0.1:8080>. Change the address with `--listen 127.0.0.1:8090`.
+Open <http://127.0.0.1:8664>. Change the address with `--listen 127.0.0.1:8665`.
 The executable contains the HTML, CSS, Alpine.js and both editors. It needs no
 Node runtime, CDN, frontend service or Clara installation. Point it at the same
 store as the MCP to edit that store; engine writers coordinate across processes.

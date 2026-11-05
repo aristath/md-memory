@@ -18,7 +18,7 @@ import (
 
 func main() {
 	storePath := flag.String("store", "", "Songya store directory")
-	address := flag.String("listen", "127.0.0.1:8080", "HTTP listening address")
+	address := flag.String("listen", "127.0.0.1:8664", "HTTP listening address")
 	flag.Parse()
 	if *storePath == "" {
 		log.Fatal("provide --store /path/to/store")
