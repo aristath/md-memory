@@ -1,10 +1,12 @@
 package mcpserver_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,9 +17,48 @@ import (
 	"time"
 
 	"github.com/aristath/songya"
+	"github.com/aristath/songya/web"
 	"github.com/gofrs/flock"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+func TestStdioAndWebShareStore(t *testing.T) {
+	path := t.TempDir()
+	store, err := songya.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := web.Handler(store)
+	input, _ := json.Marshal(map[string]any{"key": "web-create", "kind": "memories", "source": "---\nuser: ari\ntitle: Shared store\ncustom: {nested: [3, false]}\n---\nCreated in the browser"})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest("POST", "/api/records", bytes.NewReader(input)))
+	var saved map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &saved); err != nil || response.Code != 200 {
+		t.Fatalf("web create: %d %s %v", response.Code, response.Body.String(), err)
+	}
+	id := saved["id"].(string)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	session := connect(t, ctx, binary(t), path, "")
+	read, result := invoke(t, ctx, session, "read_memory", map[string]any{"id": id, "view": "source"})
+	if result.IsError || !strings.Contains(payload(t, read)["text"].(string), "Created in the browser") {
+		t.Fatal("MCP cannot read the web write", read)
+	}
+	written := keyed(t, ctx, session, "save_memory", "mcp-update", map[string]any{"id": id, "user": "ari", "text": "Updated through MCP"})
+	if written["status"] != "committed" {
+		t.Fatal(written)
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest("GET", "/api/records/"+id, nil))
+	var opened map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &opened); err != nil || response.Code != 200 {
+		t.Fatalf("web read: %d %s %v", response.Code, response.Body.String(), err)
+	}
+	source := opened["source"].(string)
+	if !strings.Contains(source, "Updated through MCP") || !strings.Contains(source, "nested:") || opened["version"] == saved["version"] {
+		t.Fatal("web did not observe the MCP edit or metadata was lost", opened)
+	}
+}
 
 func binary(t *testing.T) string {
 	t.Helper()

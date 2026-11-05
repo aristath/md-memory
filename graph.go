@@ -220,3 +220,28 @@ func (s *Store) Graph(ctx context.Context, q GraphQuery) (GraphResult, error) {
 	}
 	return graphFromCatalog(c, q), nil
 }
+
+// Connections returns all direct source links touching id, without paging or
+// redirect resolution. Editors use the actual stored targets when changing links.
+func (c Catalog) Connections(id string) []Edge {
+	records := catalogMap(c)
+	edges := []Edge{}
+	seen := map[Edge]bool{}
+	for _, r := range c.Records {
+		relations := append([]Relation{}, r.Relations...)
+		for _, target := range r.Redirects {
+			relations = append(relations, Relation{Type: "redirects", Target: target})
+		}
+		for _, relation := range relations {
+			if r.ID != id && relation.Target != id {
+				continue
+			}
+			edge := Edge{Source: r.ID, SourceTitle: r.Title, Target: relation.Target, TargetTitle: records[relation.Target].Title, Type: relation.Type, Resolved: records[relation.Target].ID != ""}
+			if !seen[edge] {
+				edges = append(edges, edge)
+				seen[edge] = true
+			}
+		}
+	}
+	return edges
+}

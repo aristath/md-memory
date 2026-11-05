@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sōngyā · Memory</title>
+    <link rel="stylesheet" href="/assets/editors.css" />
+    <link rel="stylesheet" href="/assets/app.css" />
+    <script defer src="/assets/app.js"></script>
+  </head>
+  <body x-data="songya">
+    <header class="masthead">
+      <a class="brand" href="/" @click.prevent="back()"
+        ><svg viewBox="0 0 40 32" aria-hidden="true">
+          <path
+            d="M3 24L13 13 15 4 24 10 32 9 28 15 36 23 25 21 17 29 16 20Z"
+            fill="currentColor"
+          />
+          <path
+            d="M18 13L25 18 19 23"
+            fill="none"
+            stroke="white"
+            stroke-width="2"
+          /></svg
+        ><span>Sōngyā</span></a
+      ><span class="tagline">A place for what stays with you.</span
+      ><button class="primary" @click="create()" :disabled="busy||loading">
+        New record
+      </button>
+    </header>
+    <div class="messages" aria-live="polite">
+      <p class="success" x-show="notice" x-text="notice" x-cloak></p>
+      <p
+        class="error"
+        role="alert"
+        x-show="failure"
+        x-text="failure"
+        x-cloak
+      ></p>
+    </div>
+    <main :class="{'show-editor':mobileEditor}">
+      <aside class="library" aria-label="Record library">
+        <div class="library-heading">
+          <h1>Library</h1>
+          <span x-text="records.length+' records'"></span>
+        </div>
+        <label class="search"
+          ><span class="sr-only">Search records</span
+          ><input
+            type="search"
+            placeholder="Find a memory, person, place…"
+            x-model="q"
+            @input.debounce.200ms="refresh()"
+        /></label>
+        <div class="filters">
+          <label
+            >Type<select aria-label="Type" x-model="kind" @change="refresh()">
+              <option value="">All records</option>
+              <option value="memories">Memories</option>
+              <option value="entities">Entities</option>
+              <option value="topics">Topics</option>
+              <option value="stories">Stories</option>
+            </select></label
+          ><label
+            >Owner<select
+              aria-label="Owner"
+              x-model="owner"
+              @change="refresh()"
+            >
+              <option value="">Everyone</option>
+              <template x-for="user in Object.keys(owners).sort()" :key="user"
+                ><option :value="user" x-text="user"></option
+              ></template></select
+          ></label>
+        </div>
+        <p class="muted" x-show="diagnostics.length">
+          Some sources need attention. Readable records remain available.
+        </p>
+        <div class="record-list">
+          <template x-for="record in records" :key="record.source"
+            ><button
+              class="record"
+              :class="{'selected':record.id===selected?.id}"
+              @click="open(record.id)"
+              :disabled="!record.id||busy"
+            >
+              <span class="record-kind" x-text="record.kind"></span
+              ><strong x-text="label(record)"></strong
+              ><span class="preview" x-text="record.preview"></span
+              ><span
+                class="owner"
+                x-text="record.user||'Shared'"
+              ></span></button
+          ></template>
+          <p class="empty" x-show="!records.length">
+            No records here yet. Create one, or try another search.
+          </p>
+        </div>
+      </aside>
+      <section class="workspace" aria-label="Record editor">
+        <div class="welcome" x-show="!selected">
+          <svg viewBox="0 0 40 32" aria-hidden="true">
+            <path
+              d="M3 24L13 13 15 4 24 10 32 9 28 15 36 23 25 21 17 29 16 20Z"
+              fill="currentColor"
+            />
+          </svg>
+          <h2>Make room for a memory.</h2>
+          <p>Open a record from your library, or start something new.</p>
+          <button @click="create()">New record</button>
+        </div>
+        <div class="editor-shell" x-show="selected" x-cloak>
+          <div class="editor-heading">
+            <button class="back" @click="back()">Library</button>
+            <div class="identity">
+              <span class="muted" x-text="selected?.id||'New record'"></span>
+              <h2 x-text="title()"></h2>
+            </div>
+            <span class="unsaved" x-show="dirty">Unsaved</span
+            ><button
+              class="primary"
+              @click="save()"
+              :disabled="busy||loading||!dirty"
+              x-text="busy?'Working…':'Save'"
+            ></button>
+          </div>
+          <button
+            class="reload"
+            x-show="conflict && selected?.id"
+            @click="reload()"
+          >
+            Load saved version
+          </button>
+          <p
+            class="record-warning"
+            x-show="recordIssues.length"
+            x-text="recordIssues.join('; ')"
+          ></p>
+          <div class="editor-tools">
+            <div class="mode-switch" role="tablist" aria-label="Editor mode">
+              <button
+                role="tab"
+                :aria-selected="mode==='visual'"
+                @click="switchMode('visual')"
+              >
+                Visual</button
+              ><button
+                role="tab"
+                :aria-selected="mode==='source'"
+                @click="switchMode('source')"
+              >
+                Source
+              </button>
+            </div>
+            <button
+              :aria-expanded="showMetadata"
+              @click="panel('showMetadata')"
+            >
+              Metadata</button
+            ><button
+              :aria-expanded="showConnections"
+              @click="panel('showConnections')"
+            >
+              Connections
+            </button>
+          </div>
+          <fieldset
+            :disabled="busy||loading"
+            class="record-details"
+            x-show="showMetadata && mode==='visual'"
+          >
+            <legend class="sr-only">Record metadata</legend>
+            <label x-show="!selected?.id"
+              >Record type<select
+                aria-label="Record type"
+                :value="selected?.kind||'memories'"
+                @change="setKind($event.target.value)"
+              >
+                <option value="memories">Memory</option>
+                <option value="entities">Entity</option>
+                <option value="topics">Topic</option>
+                <option value="stories">Story</option>
+              </select></label
+            >
+            <p class="muted">
+              Lists and nested fields use YAML values. Creation and update times
+              are automatic.
+            </p>
+            <template x-for="(field,index) in fields" :key="index"
+              ><div class="metadata-field">
+                <input
+                  list="metadata-keys"
+                  aria-label="Metadata name"
+                  x-model="field.key"
+                  :readonly="field.system"
+                  @input="metadataChanged()"
+                />
+                <div class="field-value">
+                  <select
+                    class="value-type"
+                    x-show="!field.system"
+                    :aria-label="'Value type '+field.key"
+                    x-model="field.type"
+                    @change="changeFieldType(field)"
+                  >
+                    <option value="text">Text</option>
+                    <option value="number">Number</option>
+                    <option value="boolean">True / false</option>
+                    <option value="yaml">YAML</option></select
+                  ><input
+                    x-show="!field.system && (field.type==='text'||field.type==='number')"
+                    :aria-label="'Metadata '+field.key"
+                    x-model="field.text"
+                    @input="fieldChanged(field)"
+                  /><select
+                    x-show="!field.system && field.type==='boolean'"
+                    :aria-label="'Metadata '+field.key"
+                    x-model="field.text"
+                    @change="fieldChanged(field)"
+                  >
+                    <option value="true">True</option>
+                    <option value="false">False</option></select
+                  ><textarea
+                    x-show="field.system||field.type==='yaml'"
+                    :aria-label="'Metadata '+field.key"
+                    x-model="field.value"
+                    :readonly="field.system"
+                    @input="metadataChanged()"
+                    rows="2"
+                    spellcheck="false"
+                  ></textarea
+                  ><small x-show="field.type==='yaml'&&!field.system"
+                    >YAML value</small
+                  >
+                </div>
+                <button
+                  x-show="!field.system"
+                  @click="removeField(index)"
+                  :aria-label="'Remove '+field.key"
+                >
+                  Remove</button
+                ><span x-show="field.system" class="muted">Automatic</span>
+              </div></template
+            >
+            <datalist id="metadata-keys">
+              <option value="title"></option>
+              <option value="user"></option>
+              <option value="name"></option>
+              <option value="description"></option>
+              <option value="time"></option>
+              <option value="type"></option>
+              <option value="aliases"></option>
+              <option value="relations"></option>
+              <option value="entities"></option>
+              <option value="topics"></option>
+              <option value="broader"></option></datalist
+            ><button @click="addField()">Add metadata</button>
+          </fieldset>
+          <div
+            :inert="busy||loading"
+            class="connections"
+            x-show="showConnections && mode==='visual'"
+          >
+            <h3>Connections</h3>
+            <p class="muted">
+              Choose a record and describe how it relates to this one.
+            </p>
+            <label
+              >Find a record<input
+                type="search"
+                x-model="targetQuery"
+                @input.debounce.150ms="searchTargets()"
+                placeholder="Name, title or text"
+            /></label>
+            <div class="target-results" x-show="!target">
+              <template x-for="record in targets" :key="record.source"
+                ><button @click="target=record">
+                  <strong x-text="label(record)"></strong
+                  ><small
+                    x-text="record.kind+' / '+(record.user||'Shared')+' / '+record.id"
+                  ></small></button
+              ></template>
+            </div>
+            <div class="add-connection" x-show="target">
+              <span x-text="target?.title||target?.id"></span
+              ><label
+                >Relationship<input
+                  list="relation-types"
+                  x-model="relation" /></label
+              ><datalist id="relation-types">
+                <option value="about"></option>
+                <option value="with"></option>
+                <option value="at"></option>
+                <option value="motivated_by"></option>
+                <option value="after"></option>
+                <option value="entities"></option>
+                <option value="topics"></option>
+                <option value="contains"></option>
+                <option value="mentions"></option></datalist
+              ><button @click="addConnection()" :disabled="busy||loading">
+                Add connection</button
+              ><button @click="target=null">Cancel</button>
+            </div>
+            <h4>Links from this record</h4>
+            <template x-for="(edge,index) in outgoing()" :key="index"
+              ><div class="edge">
+                <span x-text="edge.type"></span
+                ><button
+                  @click="open(edge.target)"
+                  x-text="edge.target_title||edge.target"
+                ></button
+                ><button
+                  @click="connection('remove',edge)"
+                  :disabled="busy||loading"
+                  :aria-label="'Remove connection '+edge.target"
+                >
+                  Remove
+                </button>
+              </div></template
+            >
+            <p class="muted" x-show="!outgoing().length">
+              No outgoing connections.
+            </p>
+            <h4>Linked from</h4>
+            <template x-for="(edge,index) in incoming()" :key="index"
+              ><div class="edge">
+                <span x-text="edge.type"></span
+                ><button
+                  @click="open(edge.source)"
+                  x-text="edge.source_title||edge.source"
+                ></button></div
+            ></template>
+            <p class="muted" x-show="!incoming().length">No incoming links.</p>
+          </div>
+          <div
+            :inert="busy||loading"
+            class="prose-wrap"
+            x-show="mode==='visual'"
+          >
+            <p class="error" x-show="visualIssue" x-text="visualIssue"></p>
+            <div x-ref="visual" class="visual-editor"><div x-ignore></div></div>
+          </div>
+          <div
+            :inert="busy||loading"
+            class="source-editor"
+            x-show="mode==='source'"
+          >
+            <div x-ref="source"><div x-ignore></div></div>
+          </div>
+          <div class="editor-footer">
+            <span class="muted">Changes stay in your draft until you save.</span
+            ><button
+              x-show="dirty && !conflict"
+              :disabled="busy||loading"
+              @click="discard()"
+              x-text="selected?.id?'Discard changes':'Discard draft'"
+            ></button>
+            <button
+              class="danger"
+              x-show="selected?.id"
+              :disabled="busy||selected?.pending"
+              @click="remove()"
+            >
+              Delete permanently
+            </button>
+          </div>
+          <div class="blockers" x-show="blockers.length">
+            <h3>Linked from these records</h3>
+            <p>
+              Open each record and remove its connection before deleting this
+              one.
+            </p>
+            <template x-for="record in blockers" :key="record.source"
+              ><button
+                @click="open(record.id)"
+                :disabled="!record.id || record.pending"
+              >
+                <strong x-text="label(record)"></strong
+                ><small
+                  x-text="record.kind+' / '+(record.id||record.source)"
+                ></small></button
+            ></template>
+          </div>
+          <details x-show="diagnostics.length">
+            <summary>Sources needing attention</summary>
+            <template x-for="(issue,index) in diagnostics" :key="index"
+              ><p
+                x-text="issue.path ? issue.path+': '+issue.message : issue"
+              ></p
+            ></template>
+          </details>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

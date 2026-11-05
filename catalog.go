@@ -20,7 +20,7 @@ import (
 	"time"
 )
 
-const indexFormat = 4
+const indexFormat = 5
 
 // Diagnostic identifies a recoverable problem without hiding healthy records.
 type Diagnostic struct {
@@ -105,7 +105,11 @@ func recordFromDocument(source string, d *Document, kind Destination) Record {
 			r.Relations = append(r.Relations, Relation{Type: name, Target: target})
 		}
 	}
-	if kind == Stories {
+	{
+		referenceType := "mentions"
+		if kind == Stories {
+			referenceType = "contains"
+		}
 		seen := map[string]bool{}
 		for cursor := 0; cursor < len(r.Body); {
 			match := storyReference.FindStringSubmatchIndex(r.Body[cursor:])
@@ -115,7 +119,7 @@ func recordFromDocument(source string, d *Document, kind Destination) Record {
 			target := r.Body[cursor+match[2] : cursor+match[3]]
 			if !seen[target] {
 				seen[target] = true
-				r.Relations = append(r.Relations, Relation{Type: "contains", Target: target})
+				r.Relations = append(r.Relations, Relation{Type: referenceType, Target: target})
 			}
 			cursor += match[1]
 		}
@@ -165,6 +169,11 @@ func (s *Store) scan(ctx context.Context, rebuild bool) (Catalog, error) {
 	} else {
 		coordination = append(coordination, Diagnostic{".lock", "scan could not coordinate with writers: " + lockErr.Error()})
 	}
+	return s.scanRoot(ctx, root, rebuild, coordination)
+}
+
+// scanRoot shares the caller's lock, including an exclusive writer lock.
+func (s *Store) scanRoot(ctx context.Context, root *os.Root, rebuild bool, coordination []Diagnostic) (Catalog, error) {
 	cached := map[string]Record{}
 	cacheName := filepath.Join(".index", "catalog.json")
 	var envelope struct {

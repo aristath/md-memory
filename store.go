@@ -366,6 +366,7 @@ func readCopy(root *os.Root, id, name string) (*Document, error) {
 		}
 	}
 	doc := Parse(data)
+	doc.source = data
 	doc.ID, doc.Pending = id, pending
 	doc.Unconfirmed = warning != ""
 	if issue := batchReadIssue(root, name); issue != nil {

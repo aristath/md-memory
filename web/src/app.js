@@ -1,0 +1,576 @@
+import Alpine from "alpinejs";
+import { codeEditor, richEditor } from "./editors.js";
+
+async function request(path, options = {}) {
+  const response = await fetch(path, {
+    ...options,
+    headers: { "Content-Type": "application/json", ...options.headers },
+  });
+  const value = await response.json();
+  if (!response.ok)
+    throw Object.assign(new Error(value.error || "Request failed"), value, {
+      status: response.status,
+    });
+  return value;
+}
+Alpine.data("songya", () => {
+  let code,
+    rich,
+    editGeneration = 0,
+    listing = 0,
+    attempt = null,
+    base = "",
+    body = "",
+    metadataStamp = "";
+  const drafts = new Map();
+  return {
+    records: [],
+    owners: {},
+    q: "",
+    kind: "",
+    owner: "",
+    selected: null,
+    source: "",
+    fields: [],
+    mode: "visual",
+    dirty: false,
+    busy: false,
+    notice: "",
+    failure: "",
+    diagnostics: [],
+    links: [],
+    blockers: [],
+    mobileEditor: false,
+    showMetadata: false,
+    showConnections: false,
+    targetQuery: "",
+    targets: [],
+    target: null,
+    relation: "about",
+    visualIssue: "",
+    recordIssues: [],
+    loading: false,
+    conflict: false,
+    async init() {
+      await this.refresh();
+      window.addEventListener("beforeunload", (e) => {
+        if (
+          this.dirty ||
+          attempt ||
+          [...drafts.values()].some((d) => d.dirty || d.attempt)
+        ) {
+          e.preventDefault();
+          e.returnValue = "";
+        }
+      });
+    },
+    async refresh() {
+      const ticket = ++listing;
+      try {
+        const result = await request(
+          "/api/records?" +
+            new URLSearchParams({
+              q: this.q,
+              kind: this.kind,
+              user: this.owner,
+            }),
+        );
+        if (ticket !== listing) return;
+        this.records = result.records;
+        this.owners = result.owners;
+        this.diagnostics = result.diagnostics || [];
+      } catch (e) {
+        if (ticket === listing) this.failure = e.message;
+      }
+    },
+    remember() {
+      if (!this.selected) return;
+      if (!this.dirty && !attempt) {
+        drafts.delete(this.selected.id || "new");
+        return;
+      }
+      drafts.set(this.selected.id || "new", {
+        selected: { ...this.selected },
+        source: this.source,
+        base,
+        attempt,
+        dirty: this.dirty,
+        fields: structuredClone(Alpine.raw(this.fields)),
+        body,
+        links: structuredClone(Alpine.raw(this.links)),
+        issues: this.recordIssues,
+        mode: this.mode,
+        stamp: metadataStamp,
+      });
+    },
+    async stash() {
+      try {
+        await this.flush();
+      } catch (e) {
+        this.notice = "Draft kept in this tab. " + e.message;
+      }
+      this.remember();
+    },
+    async open(id, force = false) {
+      if (this.busy || this.loading) return;
+      this.loading = true;
+      this.failure = "";
+      this.notice = "";
+      try {
+        if (!force) await this.stash();
+        else this.remember();
+        let saved = force ? null : drafts.get(id);
+        if (!saved || (!saved.dirty && !saved.attempt)) {
+          const record = await request(
+            "/api/records/" + encodeURIComponent(id),
+          );
+          saved = {
+            selected: {
+              id: record.id,
+              kind: record.kind,
+              version: record.version,
+              pending: record.pending,
+            },
+            source: record.source,
+            base: record.source,
+            fields: record.draft.fields,
+            body: record.draft.body,
+            links: record.links,
+            issues: record.diagnostics,
+            mode: "visual",
+            dirty: false,
+            attempt: null,
+          };
+        }
+        this.install(saved);
+        if (force) {
+          drafts.delete(id);
+        }
+        this.blockers = [];
+        this.mobileEditor = true;
+      } catch (e) {
+        this.failure = e.message;
+      } finally {
+        this.loading = false;
+      }
+    },
+    install(saved) {
+      this.conflict = false;
+      this.recordIssues = saved.issues || [];
+      this.selected = saved.selected;
+      this.source = saved.source;
+      base = saved.base;
+      attempt = saved.attempt;
+      body = saved.body;
+      this.fields = saved.fields;
+      metadataStamp = saved.stamp || JSON.stringify(this.fields);
+      this.links = saved.links || [];
+      this.mode = saved.mode;
+      this.dirty = saved.dirty;
+      this.mount();
+    },
+    async create() {
+      if (this.busy || this.loading) return;
+      this.loading = true;
+      try {
+        await this.stash();
+        const saved = drafts.get("new");
+        if (saved?.dirty) {
+          this.install(saved);
+        } else {
+          const result = await request("/api/draft", {
+            method: "POST",
+            body: JSON.stringify({ source: '---\ntitle: ""\nuser: ""\n---\n' }),
+          });
+          this.install({
+            selected: { id: "", kind: "memories", version: "" },
+            source: result.source,
+            base: "",
+            fields: result.draft.fields,
+            body: result.draft.body,
+            links: [],
+            mode: "visual",
+            dirty: true,
+            attempt: null,
+          });
+        }
+        this.mobileEditor = true;
+        this.showMetadata = true;
+        this.failure = "";
+        this.notice = "";
+      } catch (e) {
+        this.failure = e.message;
+      } finally {
+        this.loading = false;
+      }
+    },
+    mount() {
+      code?.destroy();
+      rich?.destroy();
+      code = null;
+      rich = null;
+      this.visualIssue = "";
+      this.$nextTick(() => {
+        if (!this.selected) return;
+        if (this.mode === "source") {
+          code = codeEditor(
+            this.$refs.source.firstElementChild,
+            this.source,
+            (text) => {
+              this.source = text;
+              this.dirty = text !== base || !!attempt;
+              editGeneration++;
+            },
+            this.fields
+              .filter((field) => field.system)
+              .map((field) => field.protected),
+          );
+        } else {
+          try {
+            rich = richEditor(
+              this.$refs.visual.firstElementChild,
+              body,
+              (text) => {
+                body = text;
+                this.dirty = true;
+                editGeneration++;
+              },
+            );
+          } catch {
+            this.visualIssue =
+              "This Markdown needs the Source editor. Your text is preserved.";
+          }
+        }
+      });
+    },
+    async flush() {
+      if (!this.selected) return;
+      if (this.mode === "source") {
+        const value = await request("/api/draft", {
+          method: "POST",
+          body: JSON.stringify({
+            source: this.source,
+            id: this.selected.id,
+            kind: this.selected.kind,
+          }),
+        });
+        body = value.draft.body;
+        this.fields = value.draft.fields;
+        metadataStamp = JSON.stringify(this.fields);
+        this.links = value.links || this.links;
+        return;
+      }
+      const changedFields = JSON.stringify(this.fields) !== metadataStamp;
+      const result = await request("/api/draft", {
+        method: "POST",
+        body: JSON.stringify({
+          source: this.source,
+          id: this.selected.id,
+          kind: this.selected.kind,
+          ...(this.dirty ? { body } : {}),
+          ...(changedFields ? { fields: this.fields } : {}),
+        }),
+      });
+      this.source = result.source;
+      body = result.draft.body;
+      this.fields = result.draft.fields;
+      metadataStamp = JSON.stringify(this.fields);
+      this.dirty = this.source !== base || !!attempt;
+      this.links = result.links || this.links;
+    },
+    async switchMode(mode) {
+      if (mode === this.mode || this.busy || this.loading) return;
+      this.loading = true;
+      try {
+        await this.flush();
+        this.mode = mode;
+        this.mount();
+      } catch (e) {
+        this.failure = e.message;
+      } finally {
+        this.loading = false;
+      }
+    },
+    async panel(name) {
+      if (this.mode === "source") {
+        await this.switchMode("visual");
+        if (this.mode !== "visual") return;
+        this[name] = true;
+      } else this[name] = !this[name];
+      if (name === "showConnections") await this.searchTargets();
+    },
+    changeFieldType(field) {
+      if (field.type === "boolean")
+        field.text = field.text === "true" ? "true" : "false";
+      if (field.type !== "yaml") this.fieldChanged(field);
+      else this.metadataChanged();
+    },
+    setKind(kind) {
+      this.selected.kind = kind;
+      const owned = kind === "memories" || kind === "stories";
+      if (!owned) this.fields = this.fields.filter((f) => f.key !== "user");
+      else if (!this.fields.some((f) => f.key === "user"))
+        this.fields.push({
+          index: -1,
+          key: "user",
+          value: '""',
+          text: "",
+          type: "text",
+          system: false,
+        });
+      if (!owned && !this.fields.some((f) => f.key === "name"))
+        this.fields.unshift({
+          index: -1,
+          key: "name",
+          value: '""',
+          text: "",
+          type: "text",
+          system: false,
+        });
+      this.metadataChanged();
+    },
+    fieldChanged(field) {
+      field.value =
+        field.type === "text" ? JSON.stringify(field.text) : field.text;
+      this.metadataChanged();
+    },
+    metadataChanged() {
+      this.dirty = true;
+    },
+    addField() {
+      this.fields.push({
+        index: -1,
+        key: "",
+        value: '""',
+        type: "text",
+        text: "",
+        system: false,
+      });
+      this.metadataChanged();
+    },
+    removeField(index) {
+      this.fields.splice(index, 1);
+      this.metadataChanged();
+    },
+    async save() {
+      if (this.busy || this.loading || !this.selected) return;
+      this.busy = true;
+      this.failure = "";
+      this.notice = "";
+      try {
+        await this.flush();
+        const current = this.source;
+        attempt ||= {
+          key:
+            crypto.randomUUID?.() ||
+            Array.from(crypto.getRandomValues(new Uint8Array(16)), (n) =>
+              n.toString(16).padStart(2, "0"),
+            ).join(""),
+          id: this.selected.id,
+          kind: this.selected.kind,
+          version: this.selected.version,
+          source: current,
+        };
+        const submitted = attempt;
+        const generation = editGeneration;
+        const result = await request("/api/records", {
+          method: "POST",
+          body: JSON.stringify(submitted),
+        });
+        this.selected = {
+          id: result.id,
+          kind: result.kind,
+          version: result.version,
+        };
+        base = result.source;
+        attempt = null;
+        // Resolve the original attempt first; edits made after a lost reply remain a draft.
+        if (current === submitted.source && generation === editGeneration) {
+          this.source = result.source;
+          body = result.draft.body;
+          this.fields = result.draft.fields;
+          metadataStamp = JSON.stringify(this.fields);
+          this.dirty = false;
+          this.mount();
+        } else {
+          this.dirty = true;
+          this.notice =
+            "Previous save confirmed. Your newer changes are still unsaved.";
+        }
+        drafts.delete("new");
+        this.remember();
+        if (!this.notice) this.notice = "Saved";
+        await this.refresh();
+        const record = await request("/api/records/" + result.id);
+        this.links = record.links;
+      } catch (e) {
+        if (e.rejected) attempt = null;
+        this.failure = e.message;
+        this.conflict = e.status === 409;
+      } finally {
+        this.busy = false;
+      }
+    },
+    async remove() {
+      if (this.busy || this.loading || !this.selected?.id) return;
+      if (this.dirty) {
+        this.failure = "Save your changes before deleting this record.";
+        return;
+      }
+      this.busy = true;
+      this.failure = "";
+      this.blockers = [];
+      try {
+        await request("/api/records/" + this.selected.id, {
+          method: "DELETE",
+          headers: { "If-Match": this.selected.version },
+        });
+        drafts.delete(this.selected.id);
+        this.selected = null;
+        this.source = "";
+        this.dirty = false;
+        code?.destroy();
+        rich?.destroy();
+        code = null;
+        rich = null;
+        this.mobileEditor = false;
+        this.notice = "Deleted permanently";
+        await this.refresh();
+      } catch (e) {
+        this.failure = e.message;
+        this.blockers = e.blockers || [];
+        this.diagnostics = e.diagnostics || [];
+      } finally {
+        this.busy = false;
+      }
+    },
+    async searchTargets() {
+      const query = this.targetQuery;
+      try {
+        const result = await request(
+          "/api/records?" + new URLSearchParams({ q: query }),
+        );
+        if (query === this.targetQuery)
+          this.targets = result.records.filter(
+            (r) => r.id !== this.selected?.id && r.id,
+          );
+      } catch (e) {
+        this.failure = e.message;
+      }
+    },
+    async connection(action, edge) {
+      if (this.busy || this.loading) return;
+      this.loading = true;
+      try {
+        await this.flush();
+        const result = await request("/api/draft", {
+          method: "POST",
+          body: JSON.stringify({
+            source: this.source,
+            id: this.selected.id,
+            kind: this.selected.kind,
+            action,
+            type: edge.type,
+            target: edge.target,
+          }),
+        });
+        this.source = result.source;
+        body = result.draft.body;
+        this.fields = result.draft.fields;
+        metadataStamp = JSON.stringify(this.fields);
+        this.links = result.links;
+        this.dirty = this.source !== base || !!attempt;
+        this.mount();
+        this.target = null;
+        this.targets = [];
+        this.targetQuery = "";
+      } catch (e) {
+        this.failure = e.message;
+      } finally {
+        this.loading = false;
+      }
+    },
+    async addConnection() {
+      if (this.target)
+        await this.connection("add", {
+          type: this.relation || "about",
+          target: this.target.id,
+        });
+    },
+    async back() {
+      if (this.busy || this.loading) return;
+      this.loading = true;
+      try {
+        await this.stash();
+        this.mobileEditor = false;
+      } catch (e) {
+        this.failure = e.message;
+      } finally {
+        this.loading = false;
+      }
+    },
+    label(record) {
+      return record.title || record.id || "Untitled";
+    },
+    title() {
+      for (const key of ["title", "name"]) {
+        const f = this.fields.find((f) => f.key === key);
+        if (!f) continue;
+        let value = f.value;
+        try {
+          value = JSON.parse(value);
+        } catch {
+          value = value.trim();
+        }
+        if (value) return String(value);
+      }
+      return "Untitled";
+    },
+    async discard() {
+      if (this.busy || this.loading) return;
+      if (this.selected?.id) {
+        await this.reload();
+        return;
+      }
+      if (!confirm("Discard this unsaved draft?")) return;
+      const pending = !!attempt;
+      drafts.delete("new");
+      attempt = null;
+      this.selected = null;
+      this.dirty = false;
+      code?.destroy();
+      rich?.destroy();
+      code = null;
+      rich = null;
+      this.mobileEditor = false;
+      this.failure = "";
+      this.notice = pending
+        ? "Local draft discarded. A save awaiting confirmation may already be in the library."
+        : "Draft discarded";
+      await this.refresh();
+    },
+    async reload() {
+      if (
+        this.selected?.id &&
+        confirm(
+          "Replace this draft with the saved record? Unsaved changes will be discarded.",
+        )
+      ) {
+        await this.open(this.selected.id, true);
+      }
+    },
+
+    outgoing() {
+      return this.links.filter(
+        (e) => e.source === this.selected?.id || e.source === "draft",
+      );
+    },
+    incoming() {
+      return this.links.filter(
+        (e) => e.target === this.selected?.id && e.source !== this.selected?.id,
+      );
+    },
+  };
+});
+window.Alpine = Alpine;
+Alpine.start();

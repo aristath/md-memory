@@ -191,6 +191,29 @@ coordination lock.
 The cache may be rebuilt; blocked record directories retain their contents, and
 errors affect operations on that directory only.
 
+## Full-document editing and deletion
+
+`SaveSource(ctx, key, id, kind, revision, source)` creates or replaces a complete
+Markdown/YAML document through the existing batch receipts. Omit `id` for a new
+engine-assigned filename. Existing records require the revision from `Read`.
+Metadata omitted from a full source replacement is removed; arbitrary YAML trees
+and the body remain available. IDs and creation/update timestamps stay managed by
+the engine. `Document.OriginalSource()` returns the bytes captured by `Read`,
+matching that snapshot's revision without a second filesystem read.
+
+`Delete(ctx, id, revision)` permanently removes a record after checking incoming
+links under the same cross-process writer lock. Other records' explicit links,
+identity/topic references, redirects and canonical Markdown references prevent
+deletion. Its own outgoing/self links do not. `DeleteBlocked` supplies referring
+records and diagnostics for navigation and repair. Pending proposals and unreadable
+sources cannot be interpreted as absence of links. Deletion never cascades,
+rewrites referring records or creates a trash state. Directory syncing completes
+before success. Existing terminal receipts do not republish deleted records.
+
+`Catalog.Connections(id)` returns complete direct links, retaining stored target
+IDs. It is useful for editing links before redirect resolution. The standalone
+[browser editor](ui.md) uses these engine operations directly.
+
 ## Updates
 
 `Document.Revision` is the SHA-256 of the exact committed file bytes. It is never
@@ -339,8 +362,9 @@ to read the new version. Invalid UTF-8 pages retain their bytes in `Base64`.
 (default 1, maximum 5). No inverse relationship or symmetry is invented.
 `entities`, `topics`, and topic `broader` lists are also exposed as edges named
 for their metadata fields. Exact story references produce derived `contains`
-edges, so a memory's backlinks also identify its containing stories. These edges
-are not copied into source metadata. A retired starting ID resolves to its sole
+edges; canonical references in other record bodies produce `mentions` edges. A
+memory's backlinks also identify its containing stories. These edges are not
+copied into source metadata. A retired starting ID resolves to its sole
 known replacement; ambiguous replacements remain explicit. `Resolve(ctx, id)` exposes
 the full redirect result. Missing or cyclic targets remain inspectable.
 An edge's `resolved` flag concerns target availability, not the truth of a

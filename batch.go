@@ -19,6 +19,7 @@ import (
 
 // A nil body preserves the existing body on update, and means empty on creation.
 type Change struct {
+	source       *string        // Full document used internally by SaveSource.
 	Ref          string         `json:"ref,omitempty"`
 	ID           string         `json:"id,omitempty"`
 	Kind         Destination    `json:"kind,omitempty"`
@@ -174,6 +175,7 @@ func requestRevision(ctx context.Context, request BatchRequest) (string, error) 
 	// Encode flexible metadata through the same safe data boundary as ordinary
 	// writes, rather than invoking arbitrary Go JSON/YAML callbacks.
 	type intent struct {
+		Source    *string `json:",omitempty"`
 		Ref, ID   string
 		Kind      Destination
 		Revision  string
@@ -193,7 +195,7 @@ func requestRevision(ctx context.Context, request BatchRequest) (string, error) 
 		if err != nil {
 			return "", err
 		}
-		item := intent{Ref: change.Ref, ID: change.ID, Kind: change.Kind, Revision: change.Revision, Fields: string(data), BodySet: change.Body != nil, Append: []byte(change.Append), Relations: change.AddRelations}
+		item := intent{Source: change.source, Ref: change.Ref, ID: change.ID, Kind: change.Kind, Revision: change.Revision, Fields: string(data), BodySet: change.Body != nil, Append: []byte(change.Append), Relations: change.AddRelations}
 		if change.Body != nil {
 			item.Body = []byte(*change.Body)
 		}
@@ -398,6 +400,19 @@ func prepareBatch(ctx context.Context, root *os.Root, request BatchRequest, revi
 		} else {
 			doc = &Document{}
 		}
+		if change.source != nil {
+			created, _ := normalizeNode(metadataField(&doc.Frontmatter, "created_at"))
+			doc = Parse([]byte(*change.source))
+			// Identity comes from the filename; creation time belongs to the engine.
+			for i := len(doc.Frontmatter.Content) - 2; i >= 0; i -= 2 {
+				if key, ok := fieldName(doc.Frontmatter.Content[i]); ok && key == "id" {
+					doc.Frontmatter.Content = append(doc.Frontmatter.Content[:i], doc.Frontmatter.Content[i+2:]...)
+				}
+			}
+			if base != "" {
+				_ = doc.Set("created_at", created)
+			}
+		}
 		fields := batchFields(change.Fields, journal.Refs)
 		if userOwned(kindOf(change.ID)) {
 			if user, supplied := change.Fields["user"]; supplied {
@@ -416,19 +431,27 @@ func prepareBatch(ctx context.Context, root *os.Root, request BatchRequest, revi
 			}
 			body += change.Append
 		}
-		for ref, id := range journal.Refs {
-			body = strings.ReplaceAll(body, "[[$"+ref+"]]", "[["+id+"]]")
+		if change.source == nil {
+			for ref, id := range journal.Refs {
+				body = strings.ReplaceAll(body, "[[$"+ref+"]]", "[["+id+"]]")
+			}
 		}
 		if base == "" {
 			created := time.Now().UTC()
 			fields["created_at"], fields["updated_at"] = created, created
 			delete(fields, "id")
-			if _, ok := fields["title"]; !ok {
+			if _, ok := fields["title"]; !ok && (change.source == nil || metadataField(&doc.Frontmatter, "title") == nil) {
 				fields["title"] = ""
 			}
-			node, warnings := encodeValue(fields)
-			assignNode(&doc.Frontmatter, node)
-			doc.warnings = warnings
+			if change.source == nil {
+				node, warnings := encodeValue(fields)
+				assignNode(&doc.Frontmatter, node)
+				doc.warnings = warnings
+			} else {
+				for key, value := range fields {
+					_ = doc.Set(key, value)
+				}
+			}
 			doc.Body = body
 		} else {
 			applyFields(doc, fields, body)
@@ -507,15 +530,18 @@ func (s *Store) ApplyBatch(ctx context.Context, request BatchRequest) (Receipt, 
 		directory := batchDirectory(request.Key)
 		journal, err := loadJournal(root, directory)
 		if err == nil {
+			receipt = receiptFor(journal, "blocked", nil)
 			if journal.Request != digest {
 				return fmt.Errorf("request key %q already belongs to different changes", request.Key)
 			}
 		} else {
 			if !errors.Is(err, fs.ErrNotExist) {
+				receipt.Status = "blocked"
 				return err
 			}
 			// An existing damaged preparation is never mistaken for a fresh request.
 			if entries, listErr := fs.ReadDir(root.FS(), directory); listErr == nil && len(entries) > 0 {
+				receipt.Status = "blocked"
 				return fmt.Errorf("retained preparation at %s requires recovery", directory)
 			}
 			journal, err = prepareBatch(ctx, root, request, digest)
@@ -525,6 +551,8 @@ func (s *Store) ApplyBatch(ctx context.Context, request BatchRequest) (Receipt, 
 			if err := ctx.Err(); err != nil {
 				return err
 			}
+			// Once persistence begins, a failed sync may still leave recoverable work.
+			receipt = receiptFor(journal, "pending", nil)
 			if err := root.Mkdir(directory, 0700); err != nil && !errors.Is(err, fs.ErrExist) {
 				return err
 			}

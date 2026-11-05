@@ -27,6 +27,7 @@ type Metadata struct {
 // Document keeps the complete YAML tree and Markdown body, including damaged
 // fields. Diagnostics reports problems without making the record unavailable.
 type Document struct {
+	source      []byte
 	ID          string `yaml:"-"`
 	Revision    string `yaml:"-"`
 	Pending     bool   `yaml:"-"`
@@ -366,3 +367,7 @@ func (d *Document) Marshal() ([]byte, error) {
 
 // Record returns the same tolerant metadata view used by search and timelines.
 func (d *Document) Record(kind Destination) Record { return recordFromDocument("", d, kind) }
+
+// OriginalSource returns the exact snapshot captured by Read, before parsing or
+// edits. Its revision belongs to these same bytes, including malformed headers.
+func (d *Document) OriginalSource() []byte { return append([]byte(nil), d.source...) }

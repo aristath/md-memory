@@ -1,8 +1,8 @@
 # sōngyā Memory Engine
 
 A memory engine that keeps connected records in Markdown files. Use it from an
-MCP client or as a Go library. Memories, entities, topics, and stories share one
-store, with open metadata and relationships.
+MCP client, its standalone browser editor, or as a Go library. Memories, entities,
+topics, and stories share one store, with open metadata and relationships.
 
 Durability comes first: preserve original content, recover interrupted writes,
 and keep healthy records usable when something else is damaged. Lexical search,
@@ -12,6 +12,52 @@ semantic search uses a configured embedding service.
 The repository and Go module use `github.com/aristath/songya`; the MCP
 executable is `songya-mcp`.
 There is no Clara dependency or integration.
+
+## Standalone browser editor
+
+```sh
+go install github.com/aristath/songya/cmd/songya-web@latest
+songya-web --store /absolute/path/to/memory-store
+```
+
+Open <http://127.0.0.1:8080>. Change the address with `--listen 127.0.0.1:8090`.
+The executable contains the HTML, CSS, Alpine.js and both editors. It needs no
+Node runtime, CDN, frontend service or Clara installation. Point it at the same
+store as the MCP to edit that store; engine writers coordinate across processes.
+The editor listens on loopback by default. There are no accounts or per-user
+access restrictions. Owner filters group memories and stories; entities and
+topics remain shared.
+
+Browse or search all four record types. Open a record and choose **Visual** to edit
+formatted Markdown, or **Source** to edit the full Markdown/YAML document with
+syntax highlighting. Both views share the same draft. Metadata has text, number
+and boolean controls, with YAML values for lists and nested/custom structures.
+Creation/update timestamps are automatic and read-only. IDs come from filenames.
+
+**Connections** searches for targets by name or text, accepts custom relationship
+types, and shows outgoing connections and incoming links. Opening another record
+keeps unsaved drafts in the current browser tab. **Save** explicitly publishes
+changes. Failed saves retain the draft; uncertain writes reuse the original
+request on retry, while rejected input can be corrected. Conflicts preserve your draft; **Load saved version** explicitly replaces it
+with the current stored record after confirmation. **Discard draft/changes**
+explicitly abandons local edits. The browser warns before leaving a tab with
+unsaved work. Drafts are not saved to disk until you press Save.
+
+**Delete permanently** removes the live record immediately, without trash or a
+soft-delete state. The engine refuses deletion while other records link to it,
+including relationship fields, story references and Markdown `[[record_id]]`
+references in any record type. Blockers are listed with links so you can open and
+edit them. Deletion never cascades or edits those referring records. Unreadable
+sources or unfinished writes can defer deletion; healthy reads and edits continue.
+Deleted records stay deleted through normal restart/recovery. Existing transaction
+receipts retain their original audit bytes; deletion does not expose a restore UI.
+
+Raw HTML is shown as inert source content in the visual editor, never executed.
+Use Source for exact HTML or Markdown constructs outside the visual editor's
+CommonMark controls. Merely switching views does not rewrite the document.
+
+Build from a checkout with `go build -o songya-web ./cmd/songya-web`.
+See [UI development](docs/ui.md) for asset builds and browser tests.
 
 ## Start with MCP
 
