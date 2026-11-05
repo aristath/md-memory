@@ -28,6 +28,34 @@ func Handler(store *songya.Store) http.Handler {
 		_ = page.Execute(w, nil)
 	})
 	mux.Handle("GET /assets/", http.StripPrefix("/assets/", http.FileServerFS(files)))
+	mux.HandleFunc("GET /api/graph", func(w http.ResponseWriter, r *http.Request) {
+		catalog, err := store.Scan(r.Context())
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		nodes := []map[string]any{}
+		links := []map[string]string{}
+		seen := map[[3]string]bool{}
+		for _, record := range catalog.Records {
+			if record.ID == "" {
+				continue
+			}
+			nodes = append(nodes, map[string]any{"id": record.ID, "title": record.Title, "aliases": record.Aliases, "kind": record.Kind})
+			relations := append([]songya.Relation{}, record.Relations...)
+			for _, target := range record.Redirects {
+				relations = append(relations, songya.Relation{Type: "redirects", Target: target})
+			}
+			for _, relation := range relations {
+				key := [3]string{record.ID, relation.Type, relation.Target}
+				if !seen[key] {
+					links = append(links, map[string]string{"source": record.ID, "target": relation.Target, "type": relation.Type})
+					seen[key] = true
+				}
+			}
+		}
+		write(w, map[string]any{"nodes": nodes, "links": links})
+	})
 	mux.HandleFunc("GET /api/records", func(w http.ResponseWriter, r *http.Request) {
 		catalog, err := store.Scan(r.Context())
 		if err != nil {

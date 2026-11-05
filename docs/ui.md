@@ -4,7 +4,20 @@ The `songya-web` command serves Go templates, CSS and an Alpine.js component ove
 Go's standard HTTP server. `web.Handler` is also available to Go applications.
 Its HTTP handlers call the Songya engine directly. The MCP is independent.
 
-The front page is a sortable, filterable table with title, description, record
+The front page starts with a 50vh graph on a black background. Its 3D / 2D toggle
+switches between locally bundled [3d-force-graph](https://github.com/vasturiano/3d-force-graph)
+and [force-graph](https://github.com/vasturiano/force-graph). Entities are
+green, memories amber, topics white and stories red; nodes grow with their incoming
+and outgoing connection counts. Hover shows the name/title, and clicking opens
+read-only inspection. The graph shows the whole store independently of table
+filters and refreshes after saves and deletions. No CDN is required.
+Its search matches names/titles, aliases and IDs, highlighting matches while
+dimming other points. Select a result or press Enter to move the camera to it;
+click the point to inspect. Clear the search or press Escape to restore the overview.
+Search is retained when switching views. The 2D view works without WebGL;
+the table and editors also remain usable if graph rendering is unavailable.
+
+Below it is a sortable, filterable table with title, description, record
 kind, metadata type, aliases, owner and row actions. The Go catalogue supplies
 metadata and the exact revision used for row deletion. Full-content search and
 ownership selection use engine queries; column filters and sorting refine the

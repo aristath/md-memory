@@ -1,5 +1,6 @@
 import Alpine from "alpinejs";
 import { codeEditor, richEditor } from "./editors.js";
+import { memoryGraph } from "./graph.js";
 
 async function request(path, options = {}) {
   const response = await fetch(path, {
@@ -16,8 +17,12 @@ async function request(path, options = {}) {
 Alpine.data("songya", () => {
   let code,
     rich,
+    graph,
+    graphData,
+    graphRecords = [],
     editGeneration = 0,
     listing = 0,
+    graphListing = 0,
     attempt = null,
     base = "",
     body = "",
@@ -56,7 +61,13 @@ Alpine.data("songya", () => {
     recordIssues: [],
     loading: false,
     conflict: false,
+    graphStatus: "Loading graph…",
+    graphQuery: "",
+    graphMatches: [],
+    graphSearchOpen: false,
+    graphMode: "3d",
     async init() {
+      this.refreshGraph();
       await this.refresh();
       window.addEventListener("beforeunload", (e) => {
         if (
@@ -68,6 +79,65 @@ Alpine.data("songya", () => {
           e.returnValue = "";
         }
       });
+    },
+    async refreshGraph() {
+      const ticket = ++graphListing;
+      try {
+        const data = await request("/api/graph");
+        if (ticket !== graphListing) return;
+        graphData = data;
+        graphRecords = data.nodes;
+        this.renderGraph();
+      } catch {
+        if (ticket === graphListing)
+          this.graphStatus =
+            "Graph unavailable. You can still browse the library.";
+      }
+    },
+    renderGraph() {
+      if (!graphData) return;
+      try {
+        graph ||= memoryGraph(
+          this.$refs.graph,
+          (id) => this.open(id, false, true),
+          this.graphMode,
+        );
+        graph.update(graphData);
+        if (this.graphQuery) this.searchGraph();
+        this.graphStatus = graphData.nodes.length ? "" : "No records yet.";
+      } catch {
+        this.graphStatus =
+          "Graph unavailable. You can still browse the library.";
+      }
+    },
+    switchGraph(mode) {
+      if (this.graphMode === mode && graph) return;
+      graph?.destroy();
+      graph = null;
+      this.$refs.graph.replaceChildren();
+      this.graphMode = mode;
+      this.renderGraph();
+    },
+    searchGraph() {
+      const query = this.graphQuery.trim().toLocaleLowerCase();
+      this.graphSearchOpen = !!query;
+      this.graphMatches = query
+        ? graphRecords
+            .filter((node) =>
+              [node.title, node.id, ...(node.aliases || [])].some((text) =>
+                (text || "").toLocaleLowerCase().includes(query),
+              ),
+            )
+            .sort((a, b) => (a.title || a.id).localeCompare(b.title || b.id))
+        : [];
+      graph?.highlight(query ? this.graphMatches.map((node) => node.id) : null);
+      if (!query) graph?.focus();
+    },
+    focusGraph(id) {
+      if (id) {
+        graph?.focus(id);
+        this.graphSearchOpen = false;
+      }
     },
     async refresh() {
       const ticket = ++listing;
@@ -468,6 +538,7 @@ Alpine.data("songya", () => {
         drafts.delete("new");
         this.remember();
         if (!this.notice) this.notice = "Saved";
+        this.refreshGraph();
         await this.refresh();
         const record = await request("/api/records/" + result.id);
         this.links = record.links;
@@ -501,6 +572,7 @@ Alpine.data("songya", () => {
         drafts.delete(record.id);
         if (this.selected?.id === record.id) this.closeDialog();
         this.notice = "Deleted permanently";
+        this.refreshGraph();
         await this.refresh();
       } catch (e) {
         if (!this.dialogOpen && (e.blockers?.length || e.diagnostics?.length)) {

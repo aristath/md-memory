@@ -101,6 +101,66 @@ func TestTableProjectsMetadataAndRevisionFromTheCatalog(t *testing.T) {
 		}
 	}
 }
+
+func TestGraphIncludesAllRecordKindsAndStoredConnections(t *testing.T) {
+	root := t.TempDir()
+	store, _ := songya.Open(root)
+	entity, _ := store.Create(songya.Entities, map[string]any{"name": "Alex", "aliases": []string{"Alexander"}}, "Private body")
+	topic, _ := store.Create(songya.Topics, map[string]any{"name": "Travel"}, "")
+	memory, err := store.Create(songya.Memories, map[string]any{
+		"user": "ari", "title": "A trip", "entities": []string{entity.ID}, "topics": []string{topic.ID},
+		"relations": []songya.Relation{{Type: "about", Target: entity.ID}, {Type: "about", Target: entity.ID}},
+	}, "Private memory")
+	if err != nil {
+		t.Fatal(err)
+	}
+	story, _ := store.Create(songya.Stories, map[string]any{"user": "clara", "title": "Journey"}, "[["+memory.ID+"]]")
+	redirect, _ := store.Create(songya.Entities, map[string]any{"name": "Old Alex", "redirects": []string{entity.ID}}, "")
+	// A missing target must not stop the rest of the graph from being displayed.
+	if err := os.WriteFile(filepath.Join(root, "entities", "e_123456789abc.md"), []byte("---\nname: Lonely\nrelations:\n  - type: about\n    target: m_missing\n---\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, result := call(t, Handler(store), "GET", "/api/graph", nil)
+	if code != 200 {
+		t.Fatal(code, result)
+	}
+	nodes := map[string]map[string]any{}
+	for _, node := range result["nodes"].([]any) {
+		n := node.(map[string]any)
+		nodes[n["id"].(string)] = n
+		if _, ok := n["body"]; ok {
+			t.Fatal("Graph unnecessarily exposes full bodies")
+		}
+	}
+	for id, kind := range map[string]string{entity.ID: "entities", topic.ID: "topics", memory.ID: "memories", story.ID: "stories"} {
+		if nodes[id]["kind"] != kind || nodes[id]["title"] == "" {
+			t.Fatal("Missing graph identity", id, nodes)
+		}
+	}
+	if aliases := nodes[entity.ID]["aliases"].([]any); len(aliases) != 1 || aliases[0] != "Alexander" {
+		t.Fatal("Graph lost searchable aliases", nodes[entity.ID])
+	}
+	want := map[[3]string]bool{
+		{memory.ID, "entities", entity.ID}:       true,
+		{memory.ID, "topics", topic.ID}:          true,
+		{memory.ID, "about", entity.ID}:          true,
+		{story.ID, "contains", memory.ID}:        true,
+		{redirect.ID, "redirects", entity.ID}:    true,
+		{"e_123456789abc", "about", "m_missing"}: true,
+	}
+	for _, value := range result["links"].([]any) {
+		link := value.(map[string]any)
+		key := [3]string{link["source"].(string), link["type"].(string), link["target"].(string)}
+		if !want[key] {
+			t.Fatal("Unexpected or duplicate graph link", key)
+		}
+		delete(want, key)
+	}
+	if len(want) != 0 {
+		t.Fatal("Graph lost stored connections", want)
+	}
+}
+
 func TestBundledAssetsAndCrossSiteWrites(t *testing.T) {
 	store, _ := songya.Open(t.TempDir())
 	h := Handler(store)

@@ -51,8 +51,9 @@ after(async () => {
   }
   if (root) rmSync(root, { recursive: true, force: true });
 });
-async function pageFor(viewport = { width: 1320, height: 900 }) {
+async function pageFor(viewport = { width: 1320, height: 900 }, init) {
   const context = await browser.newContext({ viewport });
+  if (init) await context.addInitScript(init);
   const requests = [];
   context.on("request", (request) => requests.push(request.url()));
   await context.route("**/*", (route) =>
@@ -106,6 +107,49 @@ async function editRecord(page, title) {
     .getByRole("button", { name: "Edit " + title, exact: true })
     .click();
   await page.getByRole("dialog").waitFor();
+}
+
+// Locate a rendered sphere in a screenshot, rather than exposing renderer internals.
+async function graphPoint(page, color) {
+  const canvas = page.locator(".graph-canvas canvas");
+  const png = (await canvas.screenshot()).toString("base64");
+  return page.evaluate(
+    async ({ png, color }) => {
+      const image = new Image();
+      image.src = "data:image/png;base64," + png;
+      await image.decode();
+      const canvas = document.createElement("canvas");
+      canvas.width = image.width;
+      canvas.height = image.height;
+      const context = canvas.getContext("2d");
+      context.drawImage(image, 0, 0);
+      const pixels = context.getImageData(0, 0, image.width, image.height).data;
+      let sumX = 0,
+        sumY = 0,
+        count = 0;
+      for (let y = 15; y < image.height - 45; y++) {
+        for (let x = 15; x < image.width - 15; x++) {
+          const i = (y * image.width + x) * 4;
+          const [r, g, b] = pixels.slice(i, i + 3);
+          const score =
+            color === "green"
+              ? g - Math.max(r, b)
+              : color === "red"
+                ? r - Math.max(g, b)
+                : color === "amber"
+                  ? Math.min(r, g) - b
+                  : Math.min(r, g, b) - Math.max(r, g, b) * 0.5;
+          if (score > 50) {
+            sumX += x;
+            sumY += y;
+            count++;
+          }
+        }
+      }
+      return count ? { x: sumX / count, y: sumY / count } : null;
+    },
+    { png, color },
+  );
 }
 
 test("serves offline bundled editors; creates and visually edits a real memory", async () => {
@@ -861,6 +905,229 @@ test("backdrop and Escape close the modal while keeping drafts locally", async (
   await modal.waitFor({ state: "hidden" });
   const stored = await (await fetch(url + "/api/records/" + record.id)).json();
   assert.equal(stored.source, record.source);
+  await context.close();
+  assert.deepEqual(errors, []);
+});
+
+test("graph views render, preserve search when switching, and open safe hover labels in the inspector", async () => {
+  const title = "Graph <b>Alex</b>";
+  const entity = await save(
+    source(title, "", "aliases: [GraphAlias]\n"),
+    "entities",
+  );
+  const topic = await save(source("Graph topic"), "topics");
+  const memory = await save(
+    source(
+      "Graph memory",
+      "A connected afternoon.",
+      `entities: [${entity.id}]\ntopics: [${topic.id}]\n`,
+    ),
+  );
+  const story = await save(
+    source("Graph story", `[[${memory.id}]]`),
+    "stories",
+  );
+  const ids = new Set([entity.id, topic.id, memory.id, story.id]);
+  const data = await (await fetch(url + "/api/graph")).json();
+  data.nodes = data.nodes.filter((node) => ids.has(node.id));
+  data.links = data.links.filter((link) => ids.has(link.source));
+  data.links.push({ source: memory.id, target: "m_missing", type: "about" });
+  const { page, context } = await pageFor();
+  await page.route("**/api/graph", (route) => route.fulfill({ json: data }));
+  await page.reload();
+  await page.locator(".graph-canvas canvas").waitFor();
+  await page.waitForTimeout(3000); // Let the force layout settle and the camera fit.
+  const graph = page.getByRole("region", { name: "Memory graph", exact: true });
+  const bounds = await graph.boundingBox();
+  assert.equal(bounds.height, 450);
+  assert.equal(
+    await graph.evaluate((el) => getComputedStyle(el).backgroundColor),
+    "rgb(0, 0, 0)",
+  );
+  for (const color of ["green", "amber", "white", "red"]) {
+    assert.ok(
+      await graphPoint(page, color),
+      "Missing rendered " + color + " sphere",
+    );
+  }
+  const point = await graphPoint(page, "green");
+  const canvas = await page.locator(".graph-canvas canvas").boundingBox();
+  await page.mouse.move(canvas.x + point.x, canvas.y + point.y);
+  const tooltip = page.locator(".float-tooltip-kap");
+  await tooltip.getByText(title, { exact: true }).waitFor();
+  assert.equal(await tooltip.locator("b").count(), 0);
+  await page.mouse.click(canvas.x + point.x, canvas.y + point.y);
+  const modal = page.getByRole("dialog");
+  await modal.getByRole("heading", { name: title, exact: true }).waitFor();
+  assert.equal(
+    await modal.locator(".ProseMirror").getAttribute("contenteditable"),
+    "false",
+  );
+  await page.keyboard.press("Escape");
+  await modal.waitFor({ state: "hidden" });
+  const search = page.getByRole("searchbox", {
+    name: "Search graph",
+    exact: true,
+  });
+  const results = page.locator("#graph-matches");
+  const rowCount = await page.locator("tbody tr.record").count();
+  await search.fill("gRaPhAlIaS");
+  await results
+    .getByRole("button", { name: title + " entities", exact: true })
+    .waitFor();
+  assert.equal(await results.locator("button").count(), 1);
+  assert.equal(await page.locator("tbody tr.record").count(), rowCount);
+  await search.press("Enter");
+  await results.waitFor({ state: "hidden" });
+  await page.waitForTimeout(750); // Camera transition finishes at 650ms.
+  const focused = await graphPoint(page, "green");
+  assert.ok(Math.abs(focused.x - canvas.width / 2) < 15);
+  assert.ok(Math.abs(focused.y - canvas.height / 2) < 15);
+  assert.equal(await graphPoint(page, "red"), null);
+  await page.mouse.move(canvas.x + focused.x, canvas.y + focused.y);
+  await tooltip.getByText(title, { exact: true }).waitFor();
+  await page.mouse.click(canvas.x + focused.x, canvas.y + focused.y);
+  await modal.getByRole("heading", { name: title, exact: true }).waitFor();
+  await page.keyboard.press("Escape");
+  await modal.waitFor({ state: "hidden" });
+  await search.fill("no-such-record");
+  await results.getByText("No matches", { exact: true }).waitFor();
+  await search.fill(entity.id);
+  await results
+    .getByRole("button", { name: title + " entities", exact: true })
+    .click();
+  await results.waitFor({ state: "hidden" });
+  await search.focus();
+  await search.press("Escape");
+  assert.equal(await search.inputValue(), "");
+  await page.waitForTimeout(600);
+  for (const color of ["green", "amber", "white", "red"]) {
+    assert.ok(await graphPoint(page, color), "Clear did not restore " + color);
+  }
+  await search.fill("GraphAlias");
+  const views = page.getByRole("group", { name: "Graph view", exact: true });
+  for (const mode of ["2D", "3D"]) {
+    await views.getByRole("button", { name: mode, exact: true }).click();
+    assert.equal(
+      await views
+        .getByRole("button", { name: mode, exact: true })
+        .getAttribute("aria-pressed"),
+      "true",
+    );
+    assert.equal(await search.inputValue(), "GraphAlias");
+    assert.equal(await page.locator(".graph-canvas canvas").count(), 1);
+    assert.equal(
+      await page
+        .locator(".graph-canvas canvas")
+        .evaluate(
+          (canvas, mode) =>
+            !!canvas.getContext(mode === "2D" ? "2d" : "webgl2"),
+          mode,
+        ),
+      true,
+    );
+    await page.waitForTimeout(3000);
+    await search.focus();
+    await search.press("Enter");
+    await page.waitForTimeout(750);
+    const point = await graphPoint(page, "green");
+    assert.ok(
+      Math.abs(point.x - canvas.width / 2) < 15,
+      mode + " search did not center x",
+    );
+    assert.ok(
+      Math.abs(point.y - canvas.height / 2) < 15,
+      mode + " search did not center y",
+    );
+    assert.equal(await graphPoint(page, "red"), null);
+    await page.mouse.move(canvas.x + point.x, canvas.y + point.y);
+    await tooltip.getByText(title, { exact: true }).waitFor();
+    assert.equal(await tooltip.locator("b").count(), 0);
+    await page.mouse.click(canvas.x + point.x, canvas.y + point.y);
+    await modal.getByRole("heading", { name: title, exact: true }).waitFor();
+    await page.keyboard.press("Escape");
+    await modal.waitFor({ state: "hidden" });
+    if (mode === "2D") {
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.waitForFunction(
+        () =>
+          document.querySelector(".graph-canvas canvas").getBoundingClientRect()
+            .width === 390,
+      );
+      const input = await search.boundingBox();
+      const toggle = await views.boundingBox();
+      assert.ok(input.x + input.width <= toggle.x);
+      await page.screenshot({
+        path: "/tmp/songya-ui-review/graph-2d-phone.png",
+        fullPage: true,
+      });
+      await page.setViewportSize({ width: 1320, height: 900 });
+    }
+  }
+  await search.focus();
+  await search.press("Escape");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForFunction(
+    () =>
+      document.querySelector(".graph-canvas canvas").getBoundingClientRect()
+        .width === 390,
+  );
+  assert.equal((await graph.boundingBox()).height, 422);
+  await page.screenshot({
+    path: "/tmp/songya-ui-review/graph-phone.png",
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 1320, height: 900 });
+  await page.screenshot({
+    path: "/tmp/songya-ui-review/graph.png",
+    fullPage: true,
+  });
+  await context.close();
+  assert.deepEqual(errors, []);
+});
+
+test("WebGL failure leaves the library and inspector working", async () => {
+  await save(source("No WebGL", "The library remains usable."));
+  const { page, context } = await pageFor(undefined, () => {
+    const original = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function (type, ...args) {
+      if (type.startsWith("webgl")) return null;
+      return original.call(this, type, ...args);
+    };
+  });
+  await page
+    .getByText("Graph unavailable. You can still browse the library.", {
+      exact: true,
+    })
+    .waitFor();
+  await editRecord(page, "No WebGL");
+  assert.match(
+    await page.locator(".ProseMirror").innerText(),
+    /library remains usable/,
+  );
+  await page.keyboard.press("Escape");
+  await page
+    .getByRole("group", { name: "Graph view", exact: true })
+    .getByRole("button", { name: "2D", exact: true })
+    .click();
+  await page.waitForFunction(
+    () => !window.Alpine.$data(document.body).graphStatus,
+  );
+  assert.equal(
+    await page
+      .locator(".graph-canvas canvas")
+      .evaluate((canvas) => !!canvas.getContext("2d")),
+    true,
+  );
+  const search = page.getByRole("searchbox", {
+    name: "Search graph",
+    exact: true,
+  });
+  await search.fill("No WebGL");
+  await page
+    .locator("#graph-matches")
+    .getByRole("button", { name: "No WebGL memories", exact: true })
+    .waitFor();
   await context.close();
   assert.deepEqual(errors, []);
 });

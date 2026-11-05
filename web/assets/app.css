@@ -105,6 +105,120 @@ small,
   font-weight: 650;
   text-decoration: none;
 }
+.memory-graph {
+  position: relative;
+  height: 50vh;
+  background: #000;
+  color: #fff;
+  overflow: hidden;
+}
+.graph-canvas {
+  width: 100%;
+  height: 100%;
+}
+.graph-search {
+  position: absolute;
+  top: 1rem;
+  left: 1rem;
+  width: min(320px, calc(100% - 8.5rem));
+  color: #e5eaf0;
+}
+.graph-search input {
+  background: #111820;
+  color: #fff;
+  border-color: #39424b;
+}
+.graph-search input::placeholder {
+  color: #a1aab5;
+}
+.graph-view {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  display: flex;
+  gap: 0.2rem;
+}
+.graph-view button {
+  background: #111820;
+  border-color: #39424b;
+  color: #a1aab5;
+}
+.graph-view button:hover,
+.graph-view button[aria-pressed="true"] {
+  background: #293440;
+  color: #fff;
+}
+#graph-matches {
+  margin-top: 0.35rem;
+  background: #111820f5;
+  border: 1px solid #39424b;
+  border-radius: 3px;
+}
+#graph-matches p {
+  margin: 0;
+  padding: 0.5rem 0.65rem;
+  font-size: 0.75rem;
+  color: #a1aab5;
+}
+.graph-results {
+  max-height: min(230px, 28vh);
+  overflow: auto;
+}
+.graph-results button {
+  display: block;
+  width: 100%;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.graph-results button:hover,
+.graph-results button:focus-visible {
+  background: #26313c;
+}
+.graph-results small {
+  display: block;
+  color: #a1aab5;
+}
+.graph-status {
+  position: absolute;
+  inset: 40% 1rem auto;
+  text-align: center;
+  color: #a9b3bc;
+  pointer-events: none;
+}
+.graph-legend {
+  position: absolute;
+  bottom: 0.75rem;
+  left: 1rem;
+  display: flex;
+  gap: 1rem;
+  font-size: 0.75rem;
+  pointer-events: none;
+}
+.graph-legend span {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.graph-legend i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+.entity-dot {
+  background: #62c983;
+}
+.memory-dot {
+  background: #e9aa44;
+}
+.topic-dot {
+  background: #fff;
+}
+.story-dot {
+  background: #ed7474;
+}
 main {
   padding: 1.5rem;
 }

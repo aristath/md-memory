@@ -15,6 +15,61 @@
         New record
       </button>
     </header>
+    <section class="memory-graph" aria-label="Memory graph">
+      <div class="graph-canvas" x-ref="graph"></div>
+      <div class="graph-view" role="group" aria-label="Graph view">
+        <button :aria-pressed="graphMode==='3d'" @click="switchGraph('3d')">
+          3D
+        </button>
+        <button :aria-pressed="graphMode==='2d'" @click="switchGraph('2d')">
+          2D
+        </button>
+      </div>
+      <div
+        class="graph-search"
+        role="search"
+        aria-label="Search graph"
+        @click.outside="graphSearchOpen=false"
+      >
+        <input
+          type="search"
+          aria-label="Search graph"
+          aria-controls="graph-matches"
+          placeholder="Find a name, title or alias…"
+          x-model="graphQuery"
+          @input="searchGraph()"
+          @focus="graphSearchOpen=true"
+          @keydown.enter.prevent="focusGraph(graphMatches[0]?.id)"
+          @keydown.escape.prevent.stop="graphQuery=''; searchGraph()"
+          :disabled="!!graphStatus"
+        />
+        <div
+          id="graph-matches"
+          x-show="graphQuery.trim()&&graphSearchOpen"
+          x-cloak
+        >
+          <p
+            aria-live="polite"
+            x-text="graphMatches.length ? graphMatches.length+' matches · select to locate' : 'No matches'"
+          ></p>
+          <div class="graph-results">
+            <template x-for="record in graphMatches" :key="record.id">
+              <button @click="focusGraph(record.id)">
+                <span x-text="record.title||record.id"></span>
+                <small x-text="record.kind"></small>
+              </button>
+            </template>
+          </div>
+        </div>
+      </div>
+      <p class="graph-status" x-show="graphStatus" x-text="graphStatus"></p>
+      <div class="graph-legend" aria-label="Graph colors">
+        <span><i class="entity-dot"></i>Entities</span>
+        <span><i class="memory-dot"></i>Memories</span>
+        <span><i class="topic-dot"></i>Topics</span>
+        <span><i class="story-dot"></i>Stories</span>
+      </div>
+    </section>
     <div x-show="!dialogOpen">
       <div class="messages" aria-live="polite">
         <p class="success" x-show="notice" x-text="notice" x-cloak></p>
