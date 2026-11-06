@@ -16,7 +16,7 @@ type MemoryInput struct {
 	Key       string          `json:"-"`
 	ID        string          `json:"id,omitempty"`
 	User      string          `json:"user,omitempty"`
-	Title     string          `json:"title,omitempty"`
+	Title     *string         `json:"title,omitempty"`
 	Text      *string         `json:"text,omitempty"`
 	Append    string          `json:"append,omitempty"`
 	Time      any             `json:"time,omitempty"`
@@ -63,8 +63,8 @@ func (s *Store) SaveMemory(ctx context.Context, input MemoryInput) (Receipt, err
 	if input.User != "" {
 		fields["user"] = input.User
 	}
-	if input.Title != "" {
-		fields["title"] = input.Title
+	if input.Title != nil {
+		fields["title"] = *input.Title
 	}
 	if input.Time != nil {
 		fields["time"] = input.Time
@@ -75,7 +75,18 @@ func (s *Store) SaveMemory(ctx context.Context, input MemoryInput) (Receipt, err
 		request.Account = *input.Text
 	}
 	request.prepare = func(root *os.Root) ([]Change, error) {
-		memory := Change{Ref: "memory", ID: input.ID, Kind: Memories, Fields: fields, Body: input.Text, Append: input.Append}
+		if input.ID != "" && input.Time != nil {
+			name, err := recordName(input.ID)
+			if err != nil {
+				return nil, err
+			}
+			doc, err := readCopy(root, input.ID, name)
+			if err != nil {
+				return nil, err
+			}
+			fields["time"] = patchEventTime(metadataField(&doc.Frontmatter, "time"), input.Time)
+		}
+		memory := Change{Ref: "memory", ID: input.ID, Kind: Memories, Fields: fields, Body: input.Text, Append: input.Append, preserveUnchanged: true}
 		if input.Relations != nil {
 			memory.Fields["relations"] = input.Relations
 		}

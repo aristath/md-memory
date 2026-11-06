@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -44,7 +45,7 @@ func TestBatchCaptureRetriesAndResolvesLocalReferences(t *testing.T) {
 		t.Fatal(err)
 	}
 	retry, err := reopened.ApplyBatch(ctx, request)
-	if err != nil || retry.Refs["episode"] != episode.ID || retry.Records[0] != first.Records[0] {
+	if err != nil || retry.Refs["episode"] != episode.ID || !reflect.DeepEqual(retry.Records[0], first.Records[0]) {
 		t.Fatal("restart/retry did not reuse durable receipt")
 	}
 	catalog, err := reopened.Scan(ctx)

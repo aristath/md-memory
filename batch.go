@@ -19,16 +19,17 @@ import (
 
 // A nil body preserves the existing body on update, and means empty on creation.
 type Change struct {
-	enrich       bool           // Inline identity enrichment adds connections to the existing description.
-	source       *string        // Full document used internally by SaveSource.
-	Ref          string         `json:"ref,omitempty"`
-	ID           string         `json:"id,omitempty"`
-	Kind         Destination    `json:"kind,omitempty"`
-	Revision     string         `json:"-"`
-	Fields       map[string]any `json:"fields,omitempty"`
-	Body         *string        `json:"body,omitempty"`
-	Append       string         `json:"append,omitempty"`
-	AddRelations []Relation     `json:"add_relations,omitempty"`
+	enrich            bool           // Inline identity enrichment adds connections to the existing description.
+	preserveUnchanged bool           // Memory saves must not touch timestamps for an unchanged account.
+	source            *string        // Full document used internally by SaveSource.
+	Ref               string         `json:"ref,omitempty"`
+	ID                string         `json:"id,omitempty"`
+	Kind              Destination    `json:"kind,omitempty"`
+	Revision          string         `json:"-"`
+	Fields            map[string]any `json:"fields,omitempty"`
+	Body              *string        `json:"body,omitempty"`
+	Append            string         `json:"append,omitempty"`
+	AddRelations      []Relation     `json:"add_relations,omitempty"`
 }
 type BatchRequest struct {
 	prepare func(*os.Root) ([]Change, error)
@@ -38,8 +39,10 @@ type BatchRequest struct {
 	Changes []Change `json:"changes"`
 }
 type SavedRecord struct {
-	ID       string `json:"id"`
-	Revision string `json:"-"`
+	ID            string   `json:"id"`
+	Revision      string   `json:"-"`
+	Outcome       string   `json:"outcome"`
+	ChangedFields []string `json:"changed_fields"`
 }
 type Receipt struct {
 	Key         string            `json:"key"`
@@ -421,6 +424,9 @@ func prepareBatch(ctx context.Context, root *os.Root, request BatchRequest, revi
 		if err != nil {
 			return journal, err
 		}
+		if base != "" && change.preserveUnchanged && len(changedRecordFields(before, data)) == 0 {
+			data = before
+		}
 		journal.Entries = append(journal.Entries, batchEntry{ID: change.ID, Source: name, Base: base, Revision: dataRevision(data), Before: before, After: data})
 	}
 	if len(journal.Entries) == 0 {
@@ -433,7 +439,17 @@ func prepareBatch(ctx context.Context, root *os.Root, request BatchRequest, revi
 func receiptFor(journal batchJournal, status string, err error) Receipt {
 	receipt := Receipt{Key: journal.Key, Status: status, Refs: journal.Refs, Records: []SavedRecord{}}
 	for _, entry := range journal.Entries {
-		receipt.Records = append(receipt.Records, SavedRecord{entry.ID, entry.Revision})
+		outcome := "updated"
+		fields := changedRecordFields(entry.Before, entry.After)
+		if entry.Base == "" {
+			outcome = "created"
+		} else if len(fields) == 0 {
+			outcome = "unchanged"
+		}
+		if status != "committed" {
+			outcome = status
+		}
+		receipt.Records = append(receipt.Records, SavedRecord{ID: entry.ID, Revision: entry.Revision, Outcome: outcome, ChangedFields: fields})
 		for _, warning := range Parse(entry.After).Diagnostics() {
 			receipt.Diagnostics = append(receipt.Diagnostics, Diagnostic{entry.ID, warning})
 		}

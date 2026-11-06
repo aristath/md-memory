@@ -31,7 +31,13 @@ Memories and stories require an owning `user`; Clara supplies the current user a
 | `save_topic` | `name`, optional `aliases`, `description`, `metadata`, `relations` |
 | `save_story` | `title`, optional `text`, `user`, `metadata`, ordered `relations` |
 
-All four accept an existing `id` to update, and `append` to enrich prose. `text` or `description` replaces supplied prose; omission preserves it. Omitted metadata and relations stay intact. Supplied relations replace the list; when enriching with `append`, they add connections. `[]` clears the list. Inline identity enrichment preserves existing connections.
+All four accept an existing `id` to update, and `append` to enrich prose. For `save_memory`:
+
+- **Create:** omit `id`, supply standalone prose in `text` and an owner (or let the integration supply it). Empty content cannot create a memory. Equivalent content supplied through `append` is retained rather than rejected.
+- **Append:** supply `id` and `append`. This literally adds a blank line and the new prose, preserving existing content.
+- **Update:** supply `id` and the fields to change. `text` replaces the full prose, including an empty string to clear it. When both `text` and `append` are supplied, replacement happens first, then append. Date-only, connection-only, title-only, ownership-only and metadata-only updates are supported.
+
+Preserve the account's meaning, attribution and meaningful quotations; prose must stand on its own without inventing facts. Omitted fields preserve existing information. `title:""` clears the memory title. Custom metadata patches supplied top-level keys, including explicit null values; omitted keys and `metadata:{}` preserve existing values. Supplied relations replace the list; with nonempty `append`, they add connections. `[]` always clears the list. For a connection-only addition, read the old connections and supply every connection to keep plus the new one. Inline identity enrichment preserves existing connections.
 
 Entity/topic `description` is their Markdown body, also used by search and the library table. Do not duplicate it in metadata.
 
@@ -54,7 +60,21 @@ A story's `related_to` links to memories/stories define reading order. Other lin
 
 ## Event time
 
-`time` has three nullable fields. Use an exact `date` or range bounds; leave unknown values null. IDs and creation/update timestamps are automatic.
+`time` describes when the event happened, separately from automatic creation/update timestamps. Record supported dates in these structured fields as well as prose. Use an exact `date` or inclusive range bounds. Combine all known timing, including related events and relative expressions, rather than defaulting to the beginning of a known year. Preserve the original temporal wording and explain the basis of inferred bounds in prose; never invent an exact date.
+
+For memory updates, omitted `time` preserves it. Supplied components patch only those components; component `null` explicitly clears it. `time:null` clears all three. When changing an exact date into a range, explicitly supply `date:null`. Switching to an exact date should clear any obsolete bounds. Unreadable values remain available with diagnostics and in retained write snapshots.
+
+Keep separately dated events in separate, connected memories. For example:
+
+```json
+{"name":"save_memory","arguments":{"text":"Ari was born in Thessaloniki on 6 March 1981.","user":"ari","time":{"date":"1981-03-06"}}}
+{"name":"save_memory","arguments":{"text":"Ari's family moved to Mytilene a few months after his birth, still in 1981. May is the earliest plausible month for this account; the exact date is unknown.","user":"ari","time":{"date":null,"earliest":"1981-05-01","latest":"1981-12-31"},"relations":[{"type":"after","target":"BIRTH_MEMORY_ID"}]}}
+{"name":"save_memory","arguments":{"id":"MEMORY_ID","time":{"latest":"1981-11-30"}}}
+{"name":"save_memory","arguments":{"id":"MEMORY_ID","text":"The complete corrected account, including details to keep."}}
+{"name":"save_memory","arguments":{"id":"MEMORY_ID","relations":[{"type":"related_to","target":"EXISTING_ENTITY_ID"},{"type":"related_to","target":"NEW_ENTITY_ID"}]}}
+```
+
+Replace example IDs with IDs returned by the store. The May bound follows the stated interpretation of this account, not a universal definition of “a few months.” The lower bound cannot precede the known birth. The date-only update preserves the earliest bound, prose and connections.
 
 ```json
 {"date":"2024-12-31","earliest":null,"latest":null}
@@ -67,7 +87,9 @@ The third example is the agreed “after 2024” convention. `after` orders even
 
 ## Retrieval
 
-Tool results are in `structuredContent.data`. A save returns status, ID, operation ID, prose/time/relations and diagnostics. `status:"committed"` confirms publication. Previews are bounded; read the record for full content.
+Tool results are in `structuredContent.data`. A save returns publication `status`, ID, operation ID, `outcome`, `changed_fields`, resulting prose/time/relations and diagnostics. `status:"committed"` confirms durability, not that new facts were added. For a committed operation, `outcome` is `created`, `updated`, or `unchanged`; `changed_fields` lists changed data fields, excluding automatic timestamps and source bookkeeping. Unfinished writes retain their pending/blocked outcome and recovery receipt; they are never described as completed updates.
+
+An ID-only call or an update supplying identical values returns `unchanged`, an empty `changed_fields`, and actionable guidance; it does not rewrite the memory or advance its timestamp. Compare the returned content and time with the facts intended for saving. Do not claim new facts were saved or repeat the same unchanged call. Previews are bounded; read the record for full content. Retrying an accepted request key returns the original saved snapshot and outcome, even after later edits, without replaying the write.
 
 ```json
 {"name":"recall_memory","arguments":{"text":"Sam","user":"ari"}}

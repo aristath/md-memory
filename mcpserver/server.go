@@ -34,9 +34,13 @@ A target is an existing record ID, an entity name, or an object with kind (entit
 
 save_memory({"text":"Alex and Sam enjoy the lentil soup at Cedar Café.","relations":[{"type":"related_to","target":"Alex"},{"type":"related_to","target":"Sam"},{"type":"related_to","target":{"kind":"entities","name":"Cedar Café","type":"place"}}]})
 
-Use id and append to enrich a memory. text replaces its prose. Omitted relations stay intact; append adds connections, other saves replace supplied relations, [] clears them. Entity/topic saves use name, optional identifying description and the same relations. save_story uses title, optional text and ordered relations to memories/stories.
+save_memory creates a memory with text and no id; appends new prose with id and append; or updates selected fields with id and the fields to change. text replaces the full prose; text plus append replaces first, then appends. Omitted fields stay intact. Include enough context for the memory to stand alone, preserving meaning, attribution and meaningful quotations. Use separate connected memories for distinct events, especially when they have different dates. Entity/topic saves use name and description; save_story uses title, introductory text and ordered relations.
 
-Event time has date, earliest and latest. Exact date: {"date":"2024-12-31","earliest":null,"latest":null}. A range uses null date and known bounds; unknown values are null. “After 2024” uses earliest:"2024-01-01", latest:null. after links order undated events; caused_by connects a consequence to its cause.
+Use structured time as well as prose whenever event dates or bounds are supported. date is exact; earliest/latest are inclusive bounds, not asserted exact dates. Combine all temporal information, including related events and relative expressions; preserve the original wording and explain inferred bounds in prose. Do not invent precision. Example: Ari was born on 6 March 1981; his family moved to Mytilene a few months later, still in 1981. With May understood as the earliest plausible month for this account, save birth with time:{"date":"1981-03-06"}, and a separate move memory with time:{"date":null,"earliest":"1981-05-01","latest":"1981-12-31"}, prose explaining the bounds, and an after relation to the birth memory. The earliest bound cannot precede the known birth. This example is not a universal definition of "a few months".
+
+Omitting time preserves it; supplied components patch only those components. Component null clears it; time:null clears all three. Clear date explicitly when changing an exact date to bounds. Omitted relations stay intact; nonempty append adds supplied relations, other saves replace them; [] always clears. Metadata patches supplied keys; omission preserves other keys. IDs and save timestamps are automatic and separate from event time.
+
+Check outcome and changed_fields against the requested information. created/updated confirm a durable change; unchanged means no fields changed. Inspect the returned prose/time/relations, retrieving full text when truncated. Do not claim new facts were saved or repeat the same unchanged call. A publication status of committed alone does not establish that new facts were added.
 
 Memories/stories have an owning user; integrations can supply it. Entities/topics are shared. user:"all" selects everyone. Ownership is separate from linked participants.
 
@@ -75,6 +79,9 @@ type recordPage struct {
 }
 
 func normalize(value any, key string) any {
+	if key == "time" && value == nil {
+		return map[string]any{"date": nil, "earliest": nil, "latest": nil}
+	}
 	if key == "relations" {
 		switch v := value.(type) {
 		case string:
@@ -224,6 +231,11 @@ func tool[T any](server *mcp.Server, name, description string, input any, readOn
 
 func result(value any, err error) *mcp.CallToolResult {
 	summary := "ok"
+	if saved, ok := value.(map[string]any); ok {
+		if outcome, ok := saved["outcome"].(string); ok {
+			summary = outcome
+		}
+	}
 	if receipt, ok := value.(songya.Receipt); ok {
 		if receipt.Status == "" {
 			receipt.Status = "not_accepted"
@@ -483,9 +495,9 @@ func New(lifetime context.Context, store *songya.Store, roots map[string]string)
 		prepared, err := store.Prepare(ctx, input.Text, input.User, limit(input.Limit, 8, 8))
 		return map[string]any{"query": prepared.Query, "user": prepared.User, "matches": prepared.Matches, "ambiguities": prepared.Ambiguities, "possible_duplicates": prepared.PossibleDuplicates, "diagnostics": prepared.Diagnostics, "truncated": prepared.Truncated, "next": prepared.Next}, err
 	})
-	tool(server, "save_memory", "Save experiences, facts, preferences or history as a memory linked to all relevant entities. Songya creates or reuses identities. Use id and append to enrich an existing memory.", memorySchema(), false, func(ctx context.Context, input songya.MemoryInput) (any, error) {
-		if input.ID == "" && input.Text == nil {
-			return nil, fmt.Errorf("provide the memory in text")
+	tool(server, "save_memory", memoryDescription, memorySchema(), false, func(ctx context.Context, input songya.MemoryInput) (any, error) {
+		if input.ID == "" && (input.Text == nil || strings.TrimSpace(*input.Text) == "") && strings.TrimSpace(input.Append) == "" {
+			return map[string]any{"status": "not_accepted"}, fmt.Errorf("provide the new memory's content in text; to modify an existing memory, supply id and the fields to change")
 		}
 		input.Key = requestKey(ctx)
 		receipt, err := store.SaveMemory(ctx, input)

@@ -14,6 +14,29 @@ type EpisodeTime struct {
 	Latest   *string `json:"latest" yaml:"latest"`
 }
 
+// A supplied component patches the existing event time; omission preserves it.
+// Malformed values follow the ordinary retention path instead of losing data.
+func patchEventTime(previous *yaml.Node, value any) any {
+	patch, _ := encodeValue(value)
+	if patch.Kind != yaml.MappingNode || len(duplicateFields(patch)) > 0 {
+		return value
+	}
+	base, issue := eventTimeNode(previous)
+	if issue != "" {
+		// Keep unreadable prior information beside the repaired components.
+		base = yamlValue(map[string]any{"unparsed_previous_time": previous})
+	}
+	doc := &Document{Frontmatter: *base}
+	for i := 0; i+1 < len(patch.Content); i += 2 {
+		name, ok := fieldName(patch.Content[i])
+		if !ok {
+			return value
+		}
+		_ = doc.Set(name, patch.Content[i+1])
+	}
+	return &doc.Frontmatter
+}
+
 func dateValue(value *string) string {
 	if value == nil {
 		return ""

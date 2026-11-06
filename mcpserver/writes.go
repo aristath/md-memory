@@ -24,6 +24,12 @@ func savedWrite(ctx context.Context, store *songya.Store, receipt songya.Receipt
 	diagnostics := append([]songya.Diagnostic{}, receipt.Diagnostics...)
 	records := map[string]songya.Record{}
 	for _, saved := range receipt.Records {
+		if saved.ID == id {
+			value["outcome"], value["changed_fields"] = saved.Outcome, saved.ChangedFields
+			if saved.Outcome == "unchanged" {
+				diagnostics = append(diagnostics, songya.Diagnostic{Path: id, Message: "No memory fields changed. To add information, supply append; to replace prose, supply text; or supply the time, relations, title, user or metadata to update. Do not repeat the same call expecting new facts to be saved."})
+			}
+		}
 		data, err := store.BatchData(ctx, receipt.Key, saved.ID, "proposed")
 		if err != nil {
 			diagnostics = append(diagnostics, songya.Diagnostic{Path: saved.ID, Message: "Saved snapshot unavailable; read the record by ID: " + err.Error()})
@@ -78,16 +84,47 @@ func clipText(text string, n int) string {
 }
 
 func memorySchema() map[string]any {
-	return schema(map[string]any{
-		"id": str("Existing memory ID to update; omit for a new memory"), "user": str("Owner of a new memory"), "title": str("Optional title"), "text": str("The memory in the user's own words; replaces prose when supplied"), "append": str("Enrich this memory with more detail; existing prose and links stay intact"),
-		"time": schema(map[string]any{
-			"date":     nullableDate("Exact event date"),
-			"earliest": nullableDate("Earliest event date; null for an open bound"),
-			"latest":   nullableDate("Latest event date; null for an open bound"),
-		}),
-		"metadata": object(), "relations": relationsSchema(),
+	timing := schema(map[string]any{
+		"date":     nullableDate("Exact event date; use null when only bounds are known"),
+		"earliest": nullableDate("Earliest supported date, using relative timing and related events too"),
+		"latest":   nullableDate("Latest supported date"),
 	})
+	timing["type"] = []string{"object", "null"}
+	timing["description"] = "When the event happened, not when saved. Omission preserves time. Supplied components update only those components; null clears a component. time:null clears all three. To switch from an exact date to a range, include date:null. Keep temporal wording and the basis of inferred bounds in prose."
+	value := schema(map[string]any{
+		"id":     str("Existing memory ID for append or update; omit to create a new memory"),
+		"user":   str("Owner: required for creation unless supplied by the integration. Omit on update to preserve ownership; supply only to change it"),
+		"title":  str("Memory title; omission preserves it"),
+		"text":   str("Complete standalone memory prose. Preserve meaning, attribution and meaningful quotations without inventing facts. Creates a memory without id; replaces the entire prose with id. Omit to preserve prose; an empty string explicitly clears it on update"),
+		"append": str("Additional prose to append literally, separated by a blank line. Supply id to enrich an existing memory. Existing prose stays intact unless text is also supplied: text replaces first, then append is added"),
+		"time":   timing, "metadata": object(), "relations": relationsSchema(),
+	})
+	updates := []any{}
+	for _, name := range []string{"text", "append", "time", "relations", "title", "metadata", "user"} {
+		updates = append(updates, map[string]any{"required": []string{name}})
+	}
+	value["anyOf"] = []any{
+		map[string]any{"required": []string{"text"}, "not": map[string]any{"required": []string{"id"}}},
+		map[string]any{"required": []string{"id"}, "anyOf": updates},
+	}
+	value["examples"] = []any{
+		map[string]any{"text": "Ari was born in Thessaloniki on 6 March 1981.", "user": "ari", "time": map[string]any{"date": "1981-03-06"}},
+		map[string]any{"id": "EXISTING_MEMORY_ID", "append": "His family moved a few months after his birth."},
+		map[string]any{"id": "EXISTING_MEMORY_ID", "text": "The complete corrected account, including the details to keep."},
+		map[string]any{"id": "EXISTING_MEMORY_ID", "time": map[string]any{"date": nil, "earliest": "1981-05-01", "latest": "1981-12-31"}},
+		map[string]any{"id": "EXISTING_MEMORY_ID", "relations": []any{map[string]any{"type": "related_to", "target": "EXISTING_ENTITY_ID"}, map[string]any{"type": "related_to", "target": "NEW_ENTITY_ID"}}},
+	}
+	return value
 }
+
+const memoryDescription = `Create, append to, or update a lasting memory. Before saving, prepare_memory finds relevant existing records; read enough of a record before changing it.
+CREATE: omit id; supply standalone prose in text and a user unless the integration supplies it. Include known event dates in time and connections in relations.
+APPEND: supply id and append with the new information. This literally adds a blank line and the additional prose. Supplied relations are added, preserving existing connections.
+UPDATE: supply id and the fields to change. text replaces all prose; include everything to keep. If text and append are both supplied, replace first, then append. Date-only, connection-only, title-only and metadata-only updates are allowed. Supplied relations replace the list without nonempty append; relations:[] always clears it. To add only a connection, read and include the existing connections to keep along with the new one.
+Omitted fields are preserved. Metadata patches supplied keys, including explicit null values; metadata:{} preserves it. time patches supplied components; component null clears it; time:null clears all event dates. title:"" clears the title. IDs and save timestamps are automatic.
+Use separate connected memories for separately dated events. Derive supported date bounds from the whole account, including relative timing; preserve original temporal wording and explain inferred bounds in prose. Never invent an exact date.
+Check outcome and changed_fields against the facts you meant to save. created/updated mean changed data was durably committed; unchanged means no fields changed. Do not claim new facts were saved or repeat an unchanged call.`
+
 func namedSchema(entity bool) map[string]any {
 	fields := map[string]any{"id": str("Existing ID; omit to reuse a unique matching name or create a record"), "name": str("Name, e.g. Alex Morgan or Cedar Café"), "aliases": array(str("Other known name")), "description": str("Brief identifying description; experiences, preferences and history belong in linked memories"), "append": str("Add a brief identifying detail"), "metadata": object(), "relations": relationsSchema()}
 	if entity {
