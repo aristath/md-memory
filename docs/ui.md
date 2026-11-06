@@ -2,7 +2,8 @@
 
 The `songya-web` command serves Go templates, CSS and an Alpine.js component over
 Go's standard HTTP server. `web.Handler` is also available to Go applications.
-Its HTTP handlers call the Songya engine directly. The MCP is independent.
+The library calls the Songya engine directly. Chat connects to the same Songya MCP
+server through an in-process MCP client session.
 
 The front page starts with a 50vh 2D graph on a black background. Its 2D / 3D toggle
 switches between locally bundled [3d-force-graph](https://github.com/vasturiano/3d-force-graph)
@@ -28,13 +29,59 @@ browser's own controls visible. Search and view switching remain available. Use
 the same button or Escape to restore the normal graph; Escape closes an open
 record first. Background controls are inert while the graph is expanded.
 
-Below it is a sortable, filterable table with title, description, record
+Below the graph, **Chat** is the default tab; **List** opens the sortable,
+filterable table with title, description, record
 kind, metadata type, aliases, owner and row actions. The Go catalogue supplies
 metadata and the exact revision used for row deletion. Full-content search and
 ownership selection use engine queries; column filters and sorting refine the
 returned rows without changing the records.
 Entity and topic descriptions come from their Markdown bodies, so edits update
 the table and description filter directly.
+
+## Chat
+
+Choose **Talking as** to set the owner for a conversation. Existing owners and
+conversation users appear in the dropdown; **Add user** accepts a new owner name.
+Shared entities and topics keep their normal Songya meaning. User selection is
+an ownership label, not authentication, and is independent of graph/list filters.
+Each user can keep multiple conversations, selected from **Conversation**.
+
+**Chat settings** saves an OpenAI-compatible API base URL, optional API key and
+model name in `chat-settings.json` at the store root. Use the API base (for example
+`http://inference-host:8080/v1`), not a browser chat URL. **Test connection and load
+models** saves the settings and queries the provider's models endpoint. Providers
+without model listing can still use a manually entered model. A blank key keeps
+the saved key; the checkbox explicitly clears it. Credentials are kept on the
+server in a file with mode `0600`; browser responses report only whether a key is
+set. No process-environment configuration is used.
+
+The client is the official `openai-go/v3` SDK, using streamed Chat Completions and
+function calling. The provider/model must support both. Songya supplies the actual
+MCP tool schemas and initialization guide, executes completed tool calls through
+MCP, and returns their real results to the model. The editable Markdown system
+prompt is `chat-system.md` at the store root, seeded from `web/chat-system.md` when
+missing. Changes apply to newly accepted turns; recovery uses the prompt captured
+with the accepted turn.
+
+Messages and partial replies are saved in `.chats/<conversation-id>.json` with
+mode `0600`. A turn is accepted only after its message and request identity are
+synced. Browser disconnects do not cancel accepted work. Reopening the page loads
+saved history and reconnects to streaming progress; interrupted pending work
+resumes after service restart. Stable MCP request keys recover original write
+receipts if a memory was saved before its tool result could be recorded.
+
+**Pause** retains the conversation, partial reply and completed memory operations;
+it does not undo writes. **Continue saved turn** resumes paused or failed work.
+An incomplete model stream never executes a partial tool call. Lost message
+acknowledgements are retried with the same identity. Local unsent drafts are
+retained where browser storage is available. Replies scroll automatically while
+following the latest text; scrolling up pauses following, and **Jump to latest**
+restores it. Memory operations refresh the graph and library after the turn ends.
+Damaged conversation files are retained and reported independently, so other
+conversations and the memory library remain available.
+
+Applications embedding `web.Handler` should call its returned application's
+`Close` method during shutdown to release background recovery workers.
 
 Titles open read-only inspection; Edit and New record open a native modal dialog.
 The browser keeps focus inside it. Close, Escape or clicking the backdrop retains

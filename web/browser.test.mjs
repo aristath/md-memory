@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn, execFileSync } from "node:child_process";
 import { once } from "node:events";
+import { createServer } from "node:http";
 import { chromium } from "playwright";
 let root, processHandle, url, browser;
 const errors = [];
@@ -51,7 +52,11 @@ after(async () => {
   }
   if (root) rmSync(root, { recursive: true, force: true });
 });
-async function pageFor(viewport = { width: 1320, height: 900 }, init) {
+async function pageFor(
+  viewport = { width: 1320, height: 900 },
+  init,
+  tab = "list",
+) {
   const context = await browser.newContext({ viewport });
   if (init) await context.addInitScript(init);
   const requests = [];
@@ -69,7 +74,13 @@ async function pageFor(viewport = { width: 1320, height: 900 }, init) {
     errors.push(e.message);
   });
   await page.goto(url);
-  await page.getByRole("heading", { name: "Library", exact: true }).waitFor();
+  if (tab === "list") {
+    await page.getByRole("tab", { name: "List", exact: true }).click();
+    await page.getByRole("heading", { name: "Library", exact: true }).waitFor();
+  } else
+    await page
+      .getByRole("heading", { name: "Chat with your memories", exact: true })
+      .waitFor();
   return { page, context, requests };
 }
 async function save(
@@ -102,7 +113,9 @@ async function editRecord(page, title) {
     await page
       .getByRole("button", { name: "Close record", exact: true })
       .click();
-  await page.locator("dialog").waitFor({ state: "hidden" });
+  await page
+    .locator('dialog[x-ref="editorDialog"]')
+    .waitFor({ state: "hidden" });
   await page
     .getByRole("button", { name: "Edit " + title, exact: true })
     .click();
@@ -1554,5 +1567,287 @@ test("story relation controls persist reading order while preserving prose", asy
   assert.deepEqual(ordered, ["target: " + second.id, "target: " + first.id]);
   assert.equal(doc.draft.body, "Introduction");
   await context.close();
+  assert.deepEqual(errors, []);
+});
+
+async function chatProvider(t, completion) {
+  let calls = 0;
+  const server = createServer(async (req, res) => {
+    if (req.url === "/v1/models") {
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify({
+          object: "list",
+          data: [
+            {
+              id: "browser-model",
+              object: "model",
+              owned_by: "test",
+              created: 1,
+            },
+          ],
+        }),
+      );
+      return;
+    }
+    try {
+      assert.equal(req.url, "/v1/chat/completions");
+      let text = "";
+      for await (const chunk of req) text += chunk;
+      const body = JSON.parse(text);
+      assert.equal(body.stream, true);
+      assert.equal(body.model, "browser-model");
+      assert.equal(body.tools.length, 14);
+      await completion(res, body, ++calls);
+    } catch (e) {
+      errors.push(e.message);
+      res.destroy();
+    }
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => {
+    server.closeAllConnections();
+    server.close();
+  });
+  return {
+    base: `http://127.0.0.1:${server.address().port}/v1`,
+    calls: () => calls,
+  };
+}
+function streamChunk(res, delta, reason = null) {
+  if (!res.headersSent) res.setHeader("Content-Type", "text/event-stream");
+  res.write(
+    `data: ${JSON.stringify({ id: "browser-completion", object: "chat.completion.chunk", created: 1, model: "browser-model", choices: [{ index: 0, delta, finish_reason: reason }] })}\n\n`,
+  );
+}
+function streamFinish(res, reason = "stop") {
+  streamChunk(res, {}, reason);
+  res.end("data: [DONE]\n\n");
+}
+function streamTool(res, name, args) {
+  const text = JSON.stringify(args),
+    mid = Math.floor(text.length / 2);
+  streamChunk(res, {
+    role: "assistant",
+    tool_calls: [
+      {
+        index: 0,
+        id: "browser_" + name,
+        type: "function",
+        function: { name, arguments: text.slice(0, mid) },
+      },
+    ],
+  });
+  streamChunk(res, {
+    tool_calls: [{ index: 0, function: { arguments: text.slice(mid) } }],
+  });
+  streamFinish(res, "tool_calls");
+}
+async function setupBrowserChat(page, base, user) {
+  await page.getByRole("button", { name: "Add user", exact: true }).click();
+  await page.getByLabel("New chat user", { exact: true }).fill(user);
+  await page
+    .getByRole("button", { name: "Use this user", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Chat settings", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("API base URL", { exact: true }).fill(base);
+  await dialog.getByLabel("API key", { exact: true }).fill("browser-test-key");
+  await dialog.getByLabel("Model", { exact: true }).fill("browser-model");
+  await dialog
+    .getByRole("button", {
+      name: "Test connection and load models",
+      exact: true,
+    })
+    .click();
+  await dialog
+    .getByText("Connected. 1 models available.", { exact: true })
+    .waitFor();
+  assert.equal(
+    await dialog.getByLabel("API key", { exact: true }).inputValue(),
+    "",
+  );
+  await dialog
+    .getByRole("button", { name: "Save connection", exact: true })
+    .click();
+  await dialog.waitFor({ state: "hidden" });
+}
+
+test("chat defaults on, streams real MCP writes, follows replies and restores user history", async (t) => {
+  let release, next;
+  const finish = new Promise((resolve) => {
+    release = resolve;
+  });
+  const more = new Promise((resolve) => {
+    next = resolve;
+  });
+  t.after(() => {
+    release();
+    next();
+  });
+  const provider = await chatProvider(t, async (res, body, n) => {
+    if (n === 1)
+      return streamTool(res, "prepare_memory", {
+        text: "I moved to the island on 12 June 2001.",
+      });
+    if (n === 2)
+      return streamTool(res, "save_memory", {
+        text: "I moved to the island on 12 June 2001.",
+        time: { date: "2001-06-12" },
+      });
+    assert.match(body.messages.at(-1).content, /"outcome":"created"/);
+    streamChunk(res, {
+      role: "assistant",
+      content:
+        "**Saved your move.**\n\n" +
+        Array.from(
+          { length: 40 },
+          (_, i) => `Paragraph ${i}: A remembered moment.\n\n`,
+        ).join(""),
+    });
+    await more;
+    streamChunk(res, { content: "More details arrived.\n\n" });
+    await finish;
+    streamChunk(res, {
+      content:
+        'Reply completed. <img src=x onerror="window.chatInjected=true">',
+    });
+    streamFinish(res);
+  });
+  const { page, context } = await pageFor(undefined, undefined, "chat");
+  t.after(() => context.close());
+  assert.equal(
+    await page
+      .getByRole("tab", { name: "Chat", exact: true })
+      .getAttribute("aria-selected"),
+    "true",
+  );
+  assert.equal(await page.locator("#list-panel").isVisible(), false);
+  await setupBrowserChat(page, provider.base, "browser-chat-person");
+  await page
+    .getByLabel("Message Songya", { exact: true })
+    .fill("Remember that I moved to the island on 12 June 2001.");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  const log = page.getByRole("log", { name: "Chat messages", exact: true });
+  await log.getByText("Saved your move.", { exact: true }).waitFor();
+  await page.waitForFunction(() => {
+    const el = document.querySelector(".chat-log");
+    return el.scrollHeight - el.clientHeight - el.scrollTop < 10;
+  });
+  await log.evaluate((el) => {
+    el.scrollTop = 0;
+  });
+  await page
+    .getByRole("button", { name: "Jump to latest", exact: true })
+    .waitFor();
+  next();
+  await log.getByText("More details arrived.", { exact: true }).waitFor();
+  assert.equal(await log.evaluate((el) => el.scrollTop), 0);
+  await page
+    .getByRole("button", { name: "Jump to latest", exact: true })
+    .click();
+  release();
+  await page.getByText("Reply complete.", { exact: true }).waitFor();
+  assert.equal(await log.locator("img").count(), 0);
+  assert.equal(await page.evaluate(() => window.chatInjected), undefined);
+  const state = await page.evaluate(
+    () => window.Alpine.$data(document.body).chatState,
+  );
+  assert.equal(state.messages.filter((m) => m.role === "user").length, 1);
+  assert.equal(state.messages.filter((m) => m.role === "tool").length, 2);
+  const catalog = await (
+    await fetch(url + "/api/records?user=browser-chat-person")
+  ).json();
+  // The saved record is inspected through the same public library API.
+  const graph = await (await fetch(url + "/api/graph")).json();
+  const node = graph.nodes.find(
+    (n) => n.user === "browser-chat-person" && n.kind === "memories",
+  );
+  assert.ok(node, JSON.stringify(catalog));
+  const record = await (await fetch(url + "/api/records/" + node.id)).json();
+  assert.match(record.source, /2001-06-12/);
+  await page.reload();
+  await page.getByText("Reply complete.", { exact: true }).waitFor();
+  assert.equal(
+    await page.getByLabel("Talking as", { exact: true }).inputValue(),
+    "browser-chat-person",
+  );
+  assert.equal(
+    await page.getByLabel("Conversation", { exact: true }).inputValue(),
+    state.id,
+  );
+  assert.equal(provider.calls(), 3);
+  await page
+    .locator("#chat-panel")
+    .screenshot({ path: "/tmp/songya-ui-review/chat-desktop.png" });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page
+    .locator("#chat-panel")
+    .screenshot({ path: "/tmp/songya-ui-review/chat-phone.png" });
+  assert.equal(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+    true,
+  );
+  await page
+    .getByRole("button", { name: "Chat settings", exact: true })
+    .click();
+  await page
+    .getByRole("dialog")
+    .screenshot({ path: "/tmp/songya-ui-review/chat-settings-phone.png" });
+  await page.keyboard.press("Escape");
+  await page.getByRole("tab", { name: "List", exact: true }).click();
+  await page.getByRole("heading", { name: "Library", exact: true }).waitFor();
+  assert.deepEqual(errors, []);
+});
+
+test("chat lost acknowledgements replay one accepted message and truncated streams retain a retry", async (t) => {
+  const provider = await chatProvider(t, async (res, body, n) => {
+    streamChunk(res, { role: "assistant", content: "Partial response" });
+    if (n === 1) res.end();
+    else {
+      streamChunk(res, { content: " recovered." });
+      streamFinish(res);
+    }
+  });
+  const { page, context } = await pageFor(undefined, undefined, "chat");
+  t.after(() => context.close());
+  await setupBrowserChat(page, provider.base, "browser-retry-person");
+  let intercepted = false;
+  await page.route("**/api/chat", async (route) => {
+    if (intercepted) return route.continue();
+    intercepted = true;
+    const response = await route.fetch();
+    assert.equal(response.status(), 202);
+    await route.abort("failed");
+  });
+  const input = page.getByLabel("Message Songya", { exact: true });
+  await input.fill("Keep my accepted message.");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await page.getByRole("button", { name: "Retry send", exact: true }).waitFor();
+  assert.equal(await input.inputValue(), "Keep my accepted message.");
+  await page.getByRole("button", { name: "Retry send", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Continue saved turn", exact: true })
+    .waitFor();
+  await page
+    .getByRole("log")
+    .getByText("Partial response", { exact: true })
+    .waitFor();
+  assert.equal(provider.calls(), 1);
+  await page
+    .getByRole("button", { name: "Continue saved turn", exact: true })
+    .click();
+  await page.getByText("Reply complete.", { exact: true }).waitFor();
+  const state = await page.evaluate(
+    () => window.Alpine.$data(document.body).chatState,
+  );
+  assert.equal(state.messages.filter((m) => m.role === "user").length, 1);
+  assert.equal(state.messages.at(-1).content, "Partial response recovered.");
+  assert.equal(provider.calls(), 2);
   assert.deepEqual(errors, []);
 });

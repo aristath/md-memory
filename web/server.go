@@ -20,8 +20,19 @@ import (
 //go:embed assets/*
 var assets embed.FS
 
-func Handler(store *songya.Store) http.Handler {
+type Application struct {
+	http.Handler
+	chat *chatApp
+}
+
+// Close stops chat workers, retaining accepted unfinished turns for recovery.
+func (a *Application) Close() error { return a.chat.Close() }
+
+// Handler serves the library and chat. Call Close when the application shuts down.
+func Handler(store *songya.Store) *Application {
 	mux := http.NewServeMux()
+	chat := newChatApp(store)
+	chat.register(mux)
 	files, _ := fs.Sub(assets, "assets")
 	page := template.Must(template.ParseFS(assets, "assets/index.html"))
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
@@ -254,7 +265,7 @@ func Handler(store *songya.Store) http.Handler {
 		write(w, map[string]any{"deleted": true})
 	})
 	// Requests from other sites must not mutate a locally running store.
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return &Application{chat: chat, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "same-origin")
 		if r.Method != "GET" && r.Method != "HEAD" && r.Header.Get("Origin") != "" && r.Header.Get("Origin") != "http://"+r.Host && r.Header.Get("Origin") != "https://"+r.Host {
@@ -262,7 +273,7 @@ func Handler(store *songya.Store) http.Handler {
 			return
 		}
 		mux.ServeHTTP(w, r)
-	})
+	})}
 }
 
 type Field struct {

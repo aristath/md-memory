@@ -131,6 +131,37 @@
         </div>
       </section>
     </div>
+    <nav
+      class="workspace-tabs"
+      role="tablist"
+      aria-label="Memory workspace"
+      :inert="graphExpanded"
+    >
+      <button
+        id="chat-tab"
+        x-ref="chatTab"
+        role="tab"
+        aria-controls="chat-panel"
+        :aria-selected="tab==='chat'"
+        :tabindex="tab==='chat'?0:-1"
+        @click="tab='chat';$nextTick(()=>{if(chatFollow)scrollChat()})"
+        @keydown.arrow-right.prevent="tab='list';$refs.listTab.focus()"
+      >
+        Chat
+      </button>
+      <button
+        id="list-tab"
+        x-ref="listTab"
+        role="tab"
+        aria-controls="list-panel"
+        :aria-selected="tab==='list'"
+        :tabindex="tab==='list'?0:-1"
+        @click="tab='list'"
+        @keydown.arrow-left.prevent="tab='chat';$refs.chatTab.focus()"
+      >
+        List
+      </button>
+    </nav>
     <div x-show="!dialogOpen" :inert="graphExpanded">
       <div class="messages" aria-live="polite">
         <p class="success" x-show="notice" x-text="notice" x-cloak></p>
@@ -144,7 +175,177 @@
       </div>
     </div>
     <main :inert="graphExpanded">
-      <section class="library" aria-label="Record library">
+      <section
+        id="chat-panel"
+        class="chat-view"
+        role="tabpanel"
+        aria-labelledby="chat-tab"
+        x-show="tab==='chat'"
+      >
+        <div class="chat-heading">
+          <h1>Chat with your memories</h1>
+          <button @click="openChatSettings()">Chat settings</button>
+        </div>
+        <div class="chat-controls">
+          <label
+            >Talking as<select
+              aria-label="Talking as"
+              x-model="chatUser"
+              @change="changeChatUser()"
+              :disabled="chatSending||!!chatPending"
+            >
+              <option value="">Choose a user</option>
+              <template x-for="user in chatUsers()" :key="user"
+                ><option
+                  :value="user"
+                  :selected="user===chatUser"
+                  x-text="user"
+                ></option
+              ></template></select
+          ></label>
+          <button
+            class="text-button"
+            @click="chatAddingUser=!chatAddingUser"
+            :disabled="chatSending||!!chatPending"
+          >
+            Add user
+          </button>
+          <label class="chat-history"
+            >Conversation<select
+              aria-label="Conversation"
+              x-model="chatSessionID"
+              @change="selectChat()"
+              :disabled="chatSending||!!chatPending"
+            >
+              <option value="">New chat</option>
+              <template
+                x-for="conversation in chatHistory()"
+                :key="conversation.id"
+                ><option
+                  :value="conversation.id"
+                  :selected="conversation.id===chatSessionID"
+                  x-text="conversation.title"
+                ></option
+              ></template></select
+          ></label>
+        </div>
+        <form
+          class="chat-add-user"
+          x-show="chatAddingUser"
+          x-cloak
+          @submit.prevent="addChatUser()"
+        >
+          <label
+            >User name<input
+              aria-label="New chat user"
+              x-model="chatNewUser"
+              autocomplete="off"
+          /></label>
+          <button type="submit">Use this user</button>
+        </form>
+        <div class="chat-setup" x-show="!chatSettings.configured">
+          <p>Connect a model to start chatting.</p>
+          <button @click="openChatSettings()">Configure connection</button>
+        </div>
+        <div class="chat-conversation">
+          <div
+            class="chat-log"
+            x-ref="chatLog"
+            role="log"
+            aria-label="Chat messages"
+            aria-live="off"
+            @scroll="chatFollow=$el.scrollHeight-$el.scrollTop-$el.clientHeight<64"
+          >
+            <p class="chat-empty" x-show="!chatMessages().length">
+              Ask about an experience, add a memory, or correct an account.
+            </p>
+            <template x-for="(message,index) in chatMessages()" :key="index">
+              <article class="chat-message" :class="message.role">
+                <p
+                  class="chat-speaker"
+                  x-text="message.role==='user' ? chatState.user : 'Songya'"
+                ></p>
+                <div
+                  class="chat-prose"
+                  x-show="message.content"
+                  x-html="chatMarkdown(message.content)"
+                ></div>
+                <template
+                  x-for="call in message.tool_calls||[]"
+                  :key="call.id||call.function.name"
+                >
+                  <details class="chat-tool">
+                    <summary
+                      x-text="call.function.name||'Preparing a memory operation…'"
+                    ></summary>
+                    <pre x-text="chatToolResult(call.id)"></pre>
+                  </details>
+                </template>
+              </article>
+            </template>
+          </div>
+          <div class="chat-progress" aria-live="polite">
+            <span
+              x-show="chatBusy()"
+              x-text="chatConnection||'Working…'"
+            ></span>
+            <span x-show="chatState?.status==='paused'"
+              >Paused. Your conversation and completed work are saved.</span
+            >
+            <span x-show="chatState?.status==='done'">Reply complete.</span>
+            <button x-show="!chatFollow" @click="followChat()">
+              Jump to latest
+            </button>
+            <button x-show="chatBusy()" @click="pauseChat()">Pause</button>
+          </div>
+          <div
+            class="chat-error"
+            role="alert"
+            x-show="chatError||chatState?.error"
+            x-cloak
+          >
+            <p x-text="chatError||chatState?.error"></p>
+          </div>
+          <button
+            class="chat-continue"
+            x-show="['error','paused'].includes(chatState?.status)"
+            @click="retryChat()"
+          >
+            Continue saved turn
+          </button>
+          <form class="chat-composer" @submit.prevent="sendChat()">
+            <label class="sr-only" for="chat-message-input"
+              >Message Songya</label
+            >
+            <textarea
+              id="chat-message-input"
+              aria-label="Message Songya"
+              rows="3"
+              placeholder="Tell me what you remember…"
+              x-model="chatInput"
+              @input="keepChatDraft()"
+              @keydown.enter="if(!$event.shiftKey&&!$event.isComposing){$event.preventDefault();sendChat()}"
+              :disabled="chatSending||!!chatPending||chatBusy()||!chatSettings.configured||['error','paused'].includes(chatState?.status)"
+            ></textarea>
+            <button
+              class="primary"
+              type="submit"
+              :disabled="chatSending||chatBusy()||!chatUser||!chatInput.trim()||!chatSettings.configured||['error','paused'].includes(chatState?.status)"
+              x-text="chatSending ? 'Sending…' : chatPending ? 'Retry send' : 'Send'"
+            ></button>
+          </form>
+        </div>
+      </section>
+
+      <section
+        id="list-panel"
+        class="library"
+        aria-label="Record library"
+        role="tabpanel"
+        aria-labelledby="list-tab"
+        x-show="tab==='list'"
+        x-cloak
+      >
         <div class="library-heading">
           <h1>Library</h1>
           <span x-text="rows().length+' records'"></span>
@@ -653,6 +854,87 @@
           ></template>
         </details>
       </div>
+    </dialog>
+    <dialog
+      class="chat-settings-dialog"
+      x-ref="chatSettingsDialog"
+      aria-labelledby="chat-settings-heading"
+      @cancel.prevent="closeChatSettings()"
+      @click.self="closeChatSettings()"
+    >
+      <form @submit.prevent="saveChatSettings()">
+        <div class="chat-heading">
+          <h2 id="chat-settings-heading">Chat settings</h2>
+          <button
+            type="button"
+            @click="closeChatSettings()"
+            aria-label="Close chat settings"
+          >
+            Close
+          </button>
+        </div>
+        <fieldset :disabled="chatSettingsBusy">
+          <label
+            >API base URL<input
+              type="url"
+              required
+              x-model="chatSettingsDraft.base_url"
+              placeholder="http://localhost:8080/v1"
+              autocomplete="off"
+          /></label>
+          <label
+            >API key<input
+              type="password"
+              x-model="chatSettingsDraft.api_key"
+              :placeholder="chatSettings.has_api_key ? 'Saved · leave blank to keep' : 'Optional for local servers'"
+              autocomplete="new-password"
+          /></label>
+          <label class="chat-key-clear"
+            ><input type="checkbox" x-model="chatSettingsDraft.clear_key" />
+            Clear the saved API key</label
+          >
+          <label
+            >Model<input
+              required
+              x-model="chatSettingsDraft.model"
+              list="chat-models"
+              placeholder="Model name or alias"
+              autocomplete="off"
+          /></label>
+          <datalist id="chat-models">
+            <template x-for="model in chatModels" :key="model"
+              ><option :value="model"></option
+            ></template>
+          </datalist>
+          <button type="button" @click="loadChatModels()">
+            Test connection and load models
+          </button>
+          <p class="muted">
+            The system prompt is stored in <code>chat-system.md</code> in your
+            memory store. Edit that Markdown file to change Songya's
+            instructions for new turns.
+          </p>
+          <p
+            class="error"
+            role="alert"
+            x-show="chatSettingsError"
+            x-text="chatSettingsError"
+          ></p>
+          <p
+            class="success"
+            role="status"
+            x-show="chatSettingsNotice"
+            x-text="chatSettingsNotice"
+          ></p>
+          <div class="chat-settings-actions">
+            <button type="button" @click="closeChatSettings()">Cancel</button
+            ><button class="primary" type="submit">Save connection</button>
+          </div>
+        </fieldset>
+        <p x-show="chatSettingsBusy" role="status">
+          Saving and checking the connection…
+        </p>
+      </form>
     </dialog>
   </body>
 </html>

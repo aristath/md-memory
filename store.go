@@ -61,6 +61,9 @@ type Store struct {
 	needsInit  bool
 }
 
+// Directory is the canonical root used by applications storing companion state.
+func (s *Store) Directory() string { return s.path }
+
 func (s *Store) note(path string, err error) {
 	if err == nil {
 		s.issues.Delete(path)

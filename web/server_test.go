@@ -29,6 +29,7 @@ func call(t *testing.T, h http.Handler, method, path string, input any) (int, ma
 func TestHTTPDocumentEditingAndDeletion(t *testing.T) {
 	store, _ := songya.Open(t.TempDir())
 	h := Handler(store)
+	t.Cleanup(func() { _ = h.Close() })
 	for _, kind := range []string{"memories", "entities", "topics", "stories"} {
 		input := map[string]any{"key": kind, "kind": kind, "source": "---\nuser: ari\ntitle: Original\ncustom: {nested: [3, false, yes]}\n---\n# Body\n"}
 		code, saved := call(t, h, "POST", "/api/records", input)
@@ -88,7 +89,7 @@ func TestTableProjectsMetadataAndRevisionFromTheCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 	for pass := 0; pass < 2; pass++ { // Fresh scan and cached projection.
-		code, result := call(t, Handler(store), "GET", "/api/records", nil)
+		code, result := call(t, testApplication(t, store), "GET", "/api/records", nil)
 		if code != 200 {
 			t.Fatal(code, result)
 		}
@@ -105,7 +106,7 @@ func TestTableProjectsMetadataAndRevisionFromTheCatalog(t *testing.T) {
 	if receipt, err := store.SaveNamed(context.Background(), songya.Entities, songya.NamedInput{ID: record.ID, Description: &description}); err != nil || receipt.Status != "committed" {
 		t.Fatal(receipt, err)
 	}
-	code, result := call(t, Handler(store), "GET", "/api/records?q=conifer", nil)
+	code, result := call(t, testApplication(t, store), "GET", "/api/records?q=conifer", nil)
 	rows := result["records"].([]any)
 	if code != 200 || len(rows) != 1 || rows[0].(map[string]any)["description"] != description {
 		t.Fatal("MCP-style description edit did not reach the table/search", result)
@@ -130,7 +131,7 @@ func TestGraphIncludesAllRecordKindsAndStoredConnections(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "entities", "e_123456789abc.md"), []byte("---\nname: Lonely\nrelations:\n  - type: related_to\n    target: m_missing\n---\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	code, result := call(t, Handler(store), "GET", "/api/graph", nil)
+	code, result := call(t, testApplication(t, store), "GET", "/api/graph", nil)
 	if code != 200 {
 		t.Fatal(code, result)
 	}
@@ -176,6 +177,7 @@ func TestGraphIncludesAllRecordKindsAndStoredConnections(t *testing.T) {
 func TestBundledAssetsAndCrossSiteWrites(t *testing.T) {
 	store, _ := songya.Open(t.TempDir())
 	h := Handler(store)
+	t.Cleanup(func() { _ = h.Close() })
 	for _, path := range []string{"/", "/assets/app.js", "/assets/app.css", "/assets/editors.css"} {
 		response := httptest.NewRecorder()
 		h.ServeHTTP(response, httptest.NewRequest("GET", path, nil))
@@ -195,6 +197,7 @@ func TestBundledAssetsAndCrossSiteWrites(t *testing.T) {
 func TestVisualMetadataEditsPreserveAnchorsAndCustomValues(t *testing.T) {
 	store, _ := songya.Open(t.TempDir())
 	h := Handler(store)
+	t.Cleanup(func() { _ = h.Close() })
 	original := "---\nuser: ari\ntitle: Original\ndefaults: &defaults\n  nested: [3, false, yes]\nlinked: *defaults\n---\nBody"
 	fields := describe(original).Fields
 	for i := range fields {
@@ -223,6 +226,7 @@ func TestDraftConnectionsUseCurrentSourceIncludingRedirects(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := Handler(store)
+	t.Cleanup(func() { _ = h.Close() })
 	input := map[string]any{"kind": "entities", "source": "---\nname: Draft\nredirects: [" + target.ID + "]\n---\n"}
 	code, draft := call(t, h, "POST", "/api/draft", input)
 	if code != 200 {
@@ -249,6 +253,7 @@ func TestInvalidUTF8CannotBeSilentlyRewrittenThroughTheEditor(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := Handler(store)
+	t.Cleanup(func() { _ = h.Close() })
 	code, _ := call(t, h, "GET", "/api/records/"+id, nil)
 	if code != 422 {
 		t.Fatal("lossy editor opened damaged encoding")
@@ -264,4 +269,11 @@ func TestInvalidUTF8CannotBeSilentlyRewrittenThroughTheEditor(t *testing.T) {
 	if code, _ := call(t, h, "GET", "/api/records/"+healthy.ID, nil); code != 200 {
 		t.Fatal("one corrupt record disabled healthy reads")
 	}
+}
+
+func testApplication(t *testing.T, store *songya.Store) *Application {
+	t.Helper()
+	app := Handler(store)
+	t.Cleanup(func() { _ = app.Close() })
+	return app
 }

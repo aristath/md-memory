@@ -31,7 +31,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	server := &http.Server{Handler: web.Handler(store), ReadHeaderTimeout: 10 * time.Second}
+	application := web.Handler(store)
+	defer application.Close()
+	server := &http.Server{Handler: application, ReadHeaderTimeout: 10 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	done := make(chan struct{})

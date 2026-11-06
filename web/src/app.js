@@ -1,6 +1,7 @@
 import Alpine from "alpinejs";
 import { codeEditor, richEditor } from "./editors.js";
 import { memoryGraph } from "./graph.js";
+import { chatUI } from "./chat.js";
 
 async function request(path, options = {}) {
   const response = await fetch(path, {
@@ -29,6 +30,7 @@ Alpine.data("songya", () => {
     metadataStamp = "";
   const drafts = new Map();
   return {
+    ...chatUI(request),
     records: [],
     owners: {},
     types: {},
@@ -72,6 +74,7 @@ Alpine.data("songya", () => {
     async init() {
       this.refreshGraph();
       await this.refresh();
+      this.initChat();
       window.addEventListener("beforeunload", (e) => {
         if (
           this.dirty ||
