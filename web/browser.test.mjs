@@ -1133,7 +1133,10 @@ test("graph views render, preserve search when switching, and open safe hover la
       );
       const input = await search.boundingBox();
       const toggle = await views.boundingBox();
-      assert.ok(input.x + input.width <= toggle.x);
+      assert.ok(
+        input.y >= toggle.y + toggle.height ||
+          input.x + input.width <= toggle.x,
+      );
       await expand.click();
       await page.waitForFunction(
         () =>
@@ -1184,6 +1187,154 @@ test("graph views render, preserve search when switching, and open safe hover la
     path: "/tmp/songya-ui-review/graph.png",
     fullPage: true,
   });
+  await context.close();
+  assert.deepEqual(errors, []);
+});
+
+test("graph owner selection keeps only that owner's accounts and connected shared identities", async () => {
+  const shared = await save(source("Owner graph shared"), "entities");
+  const topic = await save(source("Owner graph topic"), "topics");
+  const unrelated = await save(source("Owner graph unrelated"), "entities");
+  const ari = await save(
+    source(
+      "Owner graph Ari",
+      "Ari's account.",
+      `relations: [{type: related_to, target: ${shared.id}}, {type: related_to, target: ${topic.id}}]\n`,
+    ),
+  );
+  const clara = await save(
+    source(
+      "Owner graph Clara",
+      "Clara's account.",
+      `relations: [{type: related_to, target: ${shared.id}}]\n`,
+    ).replace("user: ari", "user: clara"),
+  );
+  const ariStory = await save(
+    source(
+      "Owner graph Ari story",
+      "",
+      `relations: [{type: related_to, target: ${ari.id}}]\n`,
+    ),
+    "stories",
+  );
+  const claraStory = await save(
+    source(
+      "Owner graph Clara story",
+      "",
+      `relations: [{type: related_to, target: ${clara.id}}]\n`,
+    ).replace("user: ari", "user: clara"),
+    "stories",
+  );
+  const incoming = await save(
+    source(
+      "Owner graph incoming",
+      "",
+      `relations: [{type: related_to, target: ${ari.id}}]\n`,
+    ),
+    "entities",
+  );
+  const ids = new Set([
+    shared.id,
+    topic.id,
+    unrelated.id,
+    ari.id,
+    clara.id,
+    ariStory.id,
+    claraStory.id,
+    incoming.id,
+  ]);
+  const data = await (await fetch(url + "/api/graph")).json();
+  data.nodes = data.nodes.filter((node) => ids.has(node.id));
+  data.links = data.links.filter(
+    (link) => ids.has(link.source) && ids.has(link.target),
+  );
+  const { page, context } = await pageFor();
+  await page.route("**/api/graph", (route) => route.fulfill({ json: data }));
+  await page.reload();
+  await page.locator(".graph-canvas canvas").waitFor();
+  const owner = page.getByRole("combobox", {
+    name: "Graph memory owner",
+    exact: true,
+  });
+  assert.equal(await owner.inputValue(), "");
+  assert.deepEqual(await owner.locator("option").allTextContents(), [
+    "Any",
+    "ari",
+    "clara",
+  ]);
+  const search = page.getByRole("searchbox", {
+    name: "Search graph",
+    exact: true,
+  });
+  await search.fill("Owner graph");
+  const matches = () =>
+    page.locator("#graph-matches button span").allTextContents();
+  assert.equal((await matches()).length, 8);
+  const rows = await page.locator("tbody tr.record").count();
+  await owner.selectOption("ari");
+  await search.focus();
+  assert.deepEqual(await matches(), [
+    "Owner graph Ari",
+    "Owner graph Ari story",
+    "Owner graph incoming",
+    "Owner graph shared",
+    "Owner graph topic",
+  ]);
+  assert.equal(
+    await page.getByLabel("Owner", { exact: true }).inputValue(),
+    "",
+  );
+  assert.equal(await page.locator("tbody tr.record").count(), rows);
+  await owner.selectOption("clara");
+  await search.focus();
+  assert.deepEqual(await matches(), [
+    "Owner graph Clara",
+    "Owner graph Clara story",
+    "Owner graph shared",
+  ]);
+  await page
+    .getByRole("group", { name: "Graph view", exact: true })
+    .getByRole("button", { name: "3D", exact: true })
+    .click();
+  assert.equal(await owner.inputValue(), "clara");
+  await search.focus();
+  assert.equal((await matches()).length, 3);
+  await page
+    .getByRole("group", { name: "Graph view", exact: true })
+    .getByRole("button", { name: "2D", exact: true })
+    .click();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page
+    .getByRole("button", { name: "Expand graph to full screen", exact: true })
+    .click();
+  await owner.selectOption("ari");
+  await search.focus();
+  assert.equal((await matches()).length, 5);
+  const controlBounds = await page.locator(".graph-tools").boundingBox();
+  const searchBounds = await search.boundingBox();
+  assert.ok(
+    controlBounds.x >= 0 && controlBounds.x + controlBounds.width <= 390,
+  );
+  assert.ok(
+    searchBounds.y >= controlBounds.y + controlBounds.height ||
+      searchBounds.x + searchBounds.width <= controlBounds.x,
+  );
+  await page.waitForTimeout(3000); // Settle the selected owner's layout before checking rendered nodes.
+  await page.mouse.click(386, 422); // Dismiss the results overlay without clearing the query.
+  assert.ok(
+    await graphPoint(page, "amber"),
+    "Selected owner's memory did not render",
+  );
+  assert.ok(
+    await graphPoint(page, "red"),
+    "Selected owner's story did not render",
+  );
+  await page.screenshot({
+    path: "/tmp/songya-ui-review/graph-owner-phone.png",
+  });
+  await owner.selectOption("");
+  await search.focus();
+  assert.equal((await matches()).length, 8);
   await context.close();
   assert.deepEqual(errors, []);
 });

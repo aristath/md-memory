@@ -42,7 +42,7 @@ func Handler(store *songya.Store) http.Handler {
 			if record.ID == "" {
 				continue
 			}
-			nodes = append(nodes, map[string]any{"id": record.ID, "title": record.Title, "aliases": record.Aliases, "kind": record.Kind})
+			nodes = append(nodes, map[string]any{"id": record.ID, "title": record.Title, "aliases": record.Aliases, "kind": record.Kind, "user": record.User})
 			relations := append([]songya.Relation{}, record.Relations...)
 			for _, target := range record.Redirects {
 				relations = append(relations, songya.Relation{Type: "redirects", Target: target})

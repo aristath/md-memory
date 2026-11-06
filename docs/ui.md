@@ -9,8 +9,13 @@ switches between locally bundled [3d-force-graph](https://github.com/vasturiano/
 and [force-graph](https://github.com/vasturiano/force-graph). Entities are
 green, memories amber, topics white and stories red; nodes grow with their incoming
 and outgoing connection counts. Hover shows the name/title, and clicking opens
-read-only inspection. The graph shows the whole store independently of table
-filters and refreshes after saves and deletions. No CDN is required.
+read-only inspection. The top-right owner dropdown defaults to **Any**, showing
+the whole store. Selecting an owner shows their memories and stories plus directly
+connected shared entities/topics, including connections in either direction.
+Unrelated shared records and other owners' accounts are omitted. Graph search
+uses that same selection, which survives view switching and expansion. The graph
+filter is independent of the library filters and refreshes after saves and
+deletions. No CDN is required.
 Its search matches names/titles, aliases and IDs, highlighting matches while
 dimming other points. Select a result or press Enter to move the camera to it;
 click the point to inspect. Clear the search or press Escape to restore the overview.

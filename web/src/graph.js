@@ -20,6 +20,12 @@ const nodeRadius = (node) => 4 * Math.sqrt(1 + node.connections);
 
 export function memoryGraph(container, inspect, mode = "2d") {
   const flat = mode === "2d";
+  const fitPadding = () =>
+    Math.max(
+      36,
+      (container.parentElement.querySelector(".graph-toolbar")?.offsetHeight ||
+        0) + 24,
+    );
   let fit = true,
     matches = null;
   const graph = new (flat ? ForceGraph : ForceGraph3D)(container)
@@ -46,7 +52,7 @@ export function memoryGraph(container, inspect, mode = "2d") {
     .cooldownTicks(120)
     .onEngineStop(() => {
       if (fit && graph.graphData().nodes.length) {
-        graph.zoomToFit(400, 36);
+        graph.zoomToFit(400, fitPadding());
         fit = false;
       }
     });
@@ -65,7 +71,7 @@ export function memoryGraph(container, inspect, mode = "2d") {
   } else graph.showNavInfo(false).nodeOpacity(1).linkOpacity(0.35);
   const resize = new ResizeObserver(() => {
     graph.width(container.clientWidth).height(container.clientHeight);
-    if (!fit) graph.zoomToFit(0, 36);
+    if (!fit) graph.zoomToFit(0, fitPadding());
   });
   resize.observe(container);
   const visibility = new IntersectionObserver(([entry]) => {
@@ -80,7 +86,7 @@ export function memoryGraph(container, inspect, mode = "2d") {
     },
     focus(id) {
       if (!id) {
-        graph.zoomToFit(500, 36);
+        graph.zoomToFit(500, fitPadding());
         return;
       }
       const node = graph.graphData().nodes.find((node) => node.id === id);
@@ -108,6 +114,7 @@ export function memoryGraph(container, inspect, mode = "2d") {
       renderer?.forceContextLoss();
     },
     update(data) {
+      fit = true;
       // Both renderers mutate data. Give each its own nodes and links.
       const nodes = data.nodes.map((node) => ({ ...node, connections: 0 }));
       const byID = new Map(nodes.map((node) => [node.id, node]));

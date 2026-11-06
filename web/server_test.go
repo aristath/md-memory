@@ -150,6 +150,9 @@ func TestGraphIncludesAllRecordKindsAndStoredConnections(t *testing.T) {
 	if aliases := nodes[entity.ID]["aliases"].([]any); len(aliases) != 1 || aliases[0] != "Alexander" {
 		t.Fatal("Graph lost searchable aliases", nodes[entity.ID])
 	}
+	if nodes[memory.ID]["user"] != "ari" || nodes[story.ID]["user"] != "clara" || nodes[entity.ID]["user"] != "" || nodes[topic.ID]["user"] != "" {
+		t.Fatal("Graph lost record ownership or assigned an owner to shared identities", nodes)
+	}
 	want := map[[3]string]bool{
 		{memory.ID, "related_to", entity.ID}:          true,
 		{memory.ID, "related_to", topic.ID}:           true,

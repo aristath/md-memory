@@ -129,10 +129,11 @@ body.graph-expanded {
   height: 100%;
 }
 .graph-search {
-  position: absolute;
-  top: 1rem;
-  left: 1rem;
-  width: min(320px, calc(100% - 12rem));
+  position: relative;
+  flex: 1 1 180px;
+  max-width: 320px;
+  min-width: 0;
+  margin-right: auto;
   color: #e5eaf0;
 }
 .graph-search input {
@@ -143,12 +144,29 @@ body.graph-expanded {
 .graph-search input::placeholder {
   color: #a1aab5;
 }
-.graph-tools {
+.graph-toolbar {
   position: absolute;
   top: 1rem;
+  left: 1rem;
   right: 1rem;
   display: flex;
+  flex-direction: row-reverse;
+  flex-wrap: wrap;
+  align-items: start;
+  gap: 0.6rem;
+}
+.graph-tools {
+  display: flex;
+  max-width: 100%;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 0.4rem;
+}
+.graph-tools select {
+  width: 7rem;
+  background: #111820;
+  border-color: #39424b;
+  color: #fff;
 }
 .graph-view {
   display: flex;
@@ -175,6 +193,11 @@ body.graph-expanded {
   height: 20px;
 }
 #graph-matches {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 1;
   margin-top: 0.35rem;
   background: #111820f5;
   border: 1px solid #39424b;

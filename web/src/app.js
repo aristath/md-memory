@@ -67,6 +67,8 @@ Alpine.data("songya", () => {
     graphSearchOpen: false,
     graphMode: "2d",
     graphExpanded: false,
+    graphOwner: "",
+    graphOwners: [],
     async init() {
       this.refreshGraph();
       await this.refresh();
@@ -87,7 +89,12 @@ Alpine.data("songya", () => {
         const data = await request("/api/graph");
         if (ticket !== graphListing) return;
         graphData = data;
-        graphRecords = data.nodes;
+        this.graphOwners = [
+          ...new Set([
+            ...data.nodes.map((node) => node.user).filter(Boolean),
+            ...(this.graphOwner ? [this.graphOwner] : []),
+          ]),
+        ].sort();
         this.renderGraph();
       } catch {
         if (ticket === graphListing)
@@ -97,15 +104,49 @@ Alpine.data("songya", () => {
     },
     renderGraph() {
       if (!graphData) return;
+      let nodes = graphData.nodes;
+      if (this.graphOwner) {
+        const owned = new Set(
+          nodes
+            .filter(
+              (node) =>
+                node.user === this.graphOwner &&
+                ["memories", "stories"].includes(node.kind),
+            )
+            .map((node) => node.id),
+        );
+        const shared = new Set(
+          nodes
+            .filter((node) => ["entities", "topics"].includes(node.kind))
+            .map((node) => node.id),
+        );
+        const visible = new Set(owned);
+        for (const link of graphData.links) {
+          if (owned.has(link.source) && shared.has(link.target))
+            visible.add(link.target);
+          if (owned.has(link.target) && shared.has(link.source))
+            visible.add(link.source);
+        }
+        nodes = nodes.filter((node) => visible.has(node.id));
+      }
+      const ids = new Set(nodes.map((node) => node.id));
+      const links = graphData.links.filter(
+        (link) => ids.has(link.source) && ids.has(link.target),
+      );
+      graphRecords = nodes;
       try {
         graph ||= memoryGraph(
           this.$refs.graph,
           (id) => this.open(id, false, true),
           this.graphMode,
         );
-        graph.update(graphData);
+        graph.update({ nodes, links });
         if (this.graphQuery) this.searchGraph();
-        this.graphStatus = graphData.nodes.length ? "" : "No records yet.";
+        this.graphStatus = nodes.length
+          ? ""
+          : this.graphOwner
+            ? "No records for this owner."
+            : "No records yet.";
       } catch {
         this.graphStatus =
           "Graph unavailable. You can still browse the library.";
