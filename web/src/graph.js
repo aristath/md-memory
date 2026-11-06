@@ -1,5 +1,6 @@
 import ForceGraph3D from "3d-force-graph";
 import ForceGraph from "force-graph";
+import { forceCollide } from "d3-force-3d";
 
 const colors = {
   entities: "#62c983",
@@ -15,7 +16,9 @@ function label(text) {
   return element;
 }
 
-export function memoryGraph(container, inspect, mode = "3d") {
+const nodeRadius = (node) => 4 * Math.sqrt(1 + node.connections);
+
+export function memoryGraph(container, inspect, mode = "2d") {
   const flat = mode === "2d";
   let fit = true,
     matches = null;
@@ -47,7 +50,19 @@ export function memoryGraph(container, inspect, mode = "3d") {
         fit = false;
       }
     });
-  if (!flat) graph.showNavInfo(false).nodeOpacity(1).linkOpacity(0.35);
+  if (flat) {
+    graph
+      .warmupTicks(80)
+      .d3Force(
+        "collide",
+        forceCollide((node) => nodeRadius(node) + 4).iterations(3),
+      );
+    graph
+      .d3Force("link")
+      .distance(
+        (link) => nodeRadius(link.source) + nodeRadius(link.target) + 28,
+      );
+  } else graph.showNavInfo(false).nodeOpacity(1).linkOpacity(0.35);
   const resize = new ResizeObserver(() => {
     graph.width(container.clientWidth).height(container.clientHeight);
     if (!fit) graph.zoomToFit(0, 36);
@@ -73,7 +88,7 @@ export function memoryGraph(container, inspect, mode = "3d") {
       fit = false;
       const { x = 0, y = 0, z = 0 } = node;
       if (flat) {
-        const radius = 4 * Math.sqrt(1 + node.connections);
+        const radius = nodeRadius(node);
         const zoom = Math.min(
           3,
           Math.min(container.clientWidth, container.clientHeight) /

@@ -8,69 +8,111 @@
     <link rel="stylesheet" href="/assets/app.css" />
     <script defer src="/assets/app.js"></script>
   </head>
-  <body x-data="songya">
-    <header class="masthead">
+  <body
+    x-data="songya"
+    :class="{'graph-expanded':graphExpanded}"
+    @keydown.escape.window="if(graphExpanded && !$refs.editorDialog.open && !$event.defaultPrevented) toggleGraphExpanded()"
+  >
+    <header class="masthead" :inert="graphExpanded">
       <a class="brand" href="/" @click.prevent="back()">Sōngyā</a
       ><button class="primary" @click="create()" :disabled="busy||loading">
         New record
       </button>
     </header>
-    <section class="memory-graph" aria-label="Memory graph">
-      <div class="graph-canvas" x-ref="graph"></div>
-      <div class="graph-view" role="group" aria-label="Graph view">
-        <button :aria-pressed="graphMode==='3d'" @click="switchGraph('3d')">
-          3D
-        </button>
-        <button :aria-pressed="graphMode==='2d'" @click="switchGraph('2d')">
-          2D
-        </button>
-      </div>
-      <div
-        class="graph-search"
-        role="search"
-        aria-label="Search graph"
-        @click.outside="graphSearchOpen=false"
+    <div class="graph-slot">
+      <section
+        class="memory-graph"
+        :class="{expanded:graphExpanded}"
+        aria-label="Memory graph"
       >
-        <input
-          type="search"
-          aria-label="Search graph"
-          aria-controls="graph-matches"
-          placeholder="Find a name, title or alias…"
-          x-model="graphQuery"
-          @input="searchGraph()"
-          @focus="graphSearchOpen=true"
-          @keydown.enter.prevent="focusGraph(graphMatches[0]?.id)"
-          @keydown.escape.prevent.stop="graphQuery=''; searchGraph()"
-          :disabled="!!graphStatus"
-        />
+        <div class="graph-canvas" x-ref="graph"></div>
+        <div class="graph-tools">
+          <div class="graph-view" role="group" aria-label="Graph view">
+            <button :aria-pressed="graphMode==='2d'" @click="switchGraph('2d')">
+              2D
+            </button>
+            <button :aria-pressed="graphMode==='3d'" @click="switchGraph('3d')">
+              3D
+            </button>
+          </div>
+          <button
+            class="graph-expand"
+            x-ref="graphExpand"
+            @click="toggleGraphExpanded()"
+            :aria-pressed="graphExpanded"
+            :aria-label="graphExpanded ? 'Exit full-screen graph' : 'Expand graph to full screen'"
+            :title="graphExpanded ? 'Exit full-screen graph (Escape)' : 'Expand graph to full screen'"
+          >
+            <svg
+              x-show="!graphExpanded"
+              aria-hidden="true"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.7"
+            >
+              <path d="M9 3H3v6m12-6h6v6M3 15v6h6m12-6v6h-6" />
+            </svg>
+            <svg
+              x-show="graphExpanded"
+              x-cloak
+              aria-hidden="true"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.7"
+            >
+              <path d="M3 9h6V3m6 0v6h6M9 21v-6H3m18 0h-6v6" />
+            </svg>
+          </button>
+        </div>
         <div
-          id="graph-matches"
-          x-show="graphQuery.trim()&&graphSearchOpen"
-          x-cloak
+          class="graph-search"
+          role="search"
+          aria-label="Search graph"
+          @click.outside="graphSearchOpen=false"
         >
-          <p
-            aria-live="polite"
-            x-text="graphMatches.length ? graphMatches.length+' matches · select to locate' : 'No matches'"
-          ></p>
-          <div class="graph-results">
-            <template x-for="record in graphMatches" :key="record.id">
-              <button @click="focusGraph(record.id)">
-                <span x-text="record.title||record.id"></span>
-                <small x-text="record.kind"></small>
-              </button>
-            </template>
+          <input
+            type="search"
+            aria-label="Search graph"
+            aria-controls="graph-matches"
+            placeholder="Find a name, title or alias…"
+            x-model="graphQuery"
+            @input="searchGraph()"
+            @focus="graphSearchOpen=true"
+            @keydown.enter.prevent="focusGraph(graphMatches[0]?.id)"
+            @keydown.escape.prevent.stop="graphQuery=''; searchGraph()"
+            :disabled="!!graphStatus"
+          />
+          <div
+            id="graph-matches"
+            x-show="graphQuery.trim()&&graphSearchOpen"
+            x-cloak
+          >
+            <p
+              aria-live="polite"
+              x-text="graphMatches.length ? graphMatches.length+' matches · select to locate' : 'No matches'"
+            ></p>
+            <div class="graph-results">
+              <template x-for="record in graphMatches" :key="record.id">
+                <button @click="focusGraph(record.id)">
+                  <span x-text="record.title||record.id"></span>
+                  <small x-text="record.kind"></small>
+                </button>
+              </template>
+            </div>
           </div>
         </div>
-      </div>
-      <p class="graph-status" x-show="graphStatus" x-text="graphStatus"></p>
-      <div class="graph-legend" aria-label="Graph colors">
-        <span><i class="entity-dot"></i>Entities</span>
-        <span><i class="memory-dot"></i>Memories</span>
-        <span><i class="topic-dot"></i>Topics</span>
-        <span><i class="story-dot"></i>Stories</span>
-      </div>
-    </section>
-    <div x-show="!dialogOpen">
+        <p class="graph-status" x-show="graphStatus" x-text="graphStatus"></p>
+        <div class="graph-legend" aria-label="Graph colors">
+          <span><i class="entity-dot"></i>Entities</span>
+          <span><i class="memory-dot"></i>Memories</span>
+          <span><i class="topic-dot"></i>Topics</span>
+          <span><i class="story-dot"></i>Stories</span>
+        </div>
+      </section>
+    </div>
+    <div x-show="!dialogOpen" :inert="graphExpanded">
       <div class="messages" aria-live="polite">
         <p class="success" x-show="notice" x-text="notice" x-cloak></p>
         <p
@@ -82,7 +124,7 @@
         ></p>
       </div>
     </div>
-    <main>
+    <main :inert="graphExpanded">
       <section class="library" aria-label="Record library">
         <div class="library-heading">
           <h1>Library</h1>

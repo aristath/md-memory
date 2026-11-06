@@ -65,7 +65,8 @@ Alpine.data("songya", () => {
     graphQuery: "",
     graphMatches: [],
     graphSearchOpen: false,
-    graphMode: "3d",
+    graphMode: "2d",
+    graphExpanded: false,
     async init() {
       this.refreshGraph();
       await this.refresh();
@@ -117,6 +118,10 @@ Alpine.data("songya", () => {
       this.$refs.graph.replaceChildren();
       this.graphMode = mode;
       this.renderGraph();
+    },
+    toggleGraphExpanded() {
+      this.graphExpanded = !this.graphExpanded;
+      this.$nextTick(() => this.$refs.graphExpand.focus());
     },
     searchGraph() {
       const query = this.graphQuery.trim().toLocaleLowerCase();

@@ -4,7 +4,7 @@ The `songya-web` command serves Go templates, CSS and an Alpine.js component ove
 Go's standard HTTP server. `web.Handler` is also available to Go applications.
 Its HTTP handlers call the Songya engine directly. The MCP is independent.
 
-The front page starts with a 50vh graph on a black background. Its 3D / 2D toggle
+The front page starts with a 50vh 2D graph on a black background. Its 2D / 3D toggle
 switches between locally bundled [3d-force-graph](https://github.com/vasturiano/3d-force-graph)
 and [force-graph](https://github.com/vasturiano/force-graph). Entities are
 green, memories amber, topics white and stories red; nodes grow with their incoming
@@ -16,6 +16,12 @@ dimming other points. Select a result or press Enter to move the camera to it;
 click the point to inspect. Clear the search or press Escape to restore the overview.
 Search is retained when switching views. The 2D view works without WebGL;
 the table and editors also remain usable if graph rendering is unavailable.
+The 2D layout uses collision boundaries matched to each node's drawn radius and
+spaces links according to their endpoints, keeping large hubs and smaller nodes
+apart. The top-right expand button fills the browser viewport while keeping the
+browser's own controls visible. Search and view switching remain available. Use
+the same button or Escape to restore the normal graph; Escape closes an open
+record first. Background controls are inert while the graph is expanded.
 
 Below it is a sortable, filterable table with title, description, record
 kind, metadata type, aliases, owner and row actions. The Go catalogue supplies

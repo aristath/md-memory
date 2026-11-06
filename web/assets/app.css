@@ -105,12 +105,24 @@ small,
   font-weight: 650;
   text-decoration: none;
 }
+.graph-slot {
+  height: 50vh;
+}
 .memory-graph {
   position: relative;
-  height: 50vh;
+  height: 100%;
   background: #000;
   color: #fff;
   overflow: hidden;
+}
+body.graph-expanded {
+  overflow: hidden;
+}
+.memory-graph.expanded {
+  position: fixed;
+  inset: 0;
+  height: auto;
+  z-index: 10;
 }
 .graph-canvas {
   width: 100%;
@@ -120,7 +132,7 @@ small,
   position: absolute;
   top: 1rem;
   left: 1rem;
-  width: min(320px, calc(100% - 8.5rem));
+  width: min(320px, calc(100% - 12rem));
   color: #e5eaf0;
 }
 .graph-search input {
@@ -131,22 +143,36 @@ small,
 .graph-search input::placeholder {
   color: #a1aab5;
 }
-.graph-view {
+.graph-tools {
   position: absolute;
   top: 1rem;
   right: 1rem;
   display: flex;
+  gap: 0.4rem;
+}
+.graph-view {
+  display: flex;
   gap: 0.2rem;
 }
-.graph-view button {
+.graph-tools button {
   background: #111820;
   border-color: #39424b;
   color: #a1aab5;
 }
-.graph-view button:hover,
-.graph-view button[aria-pressed="true"] {
+.graph-tools button:hover,
+.graph-tools button[aria-pressed="true"] {
   background: #293440;
   color: #fff;
+}
+.graph-expand {
+  display: grid;
+  place-items: center;
+  min-width: 36px;
+  padding: 0.35rem;
+}
+.graph-expand svg {
+  width: 20px;
+  height: 20px;
 }
 #graph-matches {
   margin-top: 0.35rem;

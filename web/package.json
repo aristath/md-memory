@@ -15,6 +15,7 @@
     "3d-force-graph": "1.80.1",
     "alpinejs": "3.15.12",
     "codemirror": "6.0.2",
+    "d3-force-3d": "3.0.6",
     "force-graph": "1.52.0",
     "markdown-it": "14.3.3",
     "prosemirror-example-setup": "1.2.3",

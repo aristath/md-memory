@@ -956,6 +956,68 @@ test("graph views render, preserve search when switching, and open safe hover la
   const graph = page.getByRole("region", { name: "Memory graph", exact: true });
   const bounds = await graph.boundingBox();
   assert.equal(bounds.height, 450);
+  const views = page.getByRole("group", { name: "Graph view", exact: true });
+  assert.equal(
+    await views
+      .getByRole("button", { name: "2D", exact: true })
+      .getAttribute("aria-pressed"),
+    "true",
+  );
+  const expand = page.getByRole("button", {
+    name: "Expand graph to full screen",
+    exact: true,
+  });
+  await expand.click();
+  await page.waitForFunction(
+    () =>
+      document.querySelector(".graph-canvas canvas").getBoundingClientRect()
+        .height === innerHeight,
+  );
+  assert.deepEqual(await graph.boundingBox(), {
+    x: 0,
+    y: 0,
+    width: 1320,
+    height: 900,
+  });
+  assert.equal(await page.evaluate(() => document.fullscreenElement), null);
+  assert.equal(await page.locator("main").evaluate((el) => el.inert), true);
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(
+    () =>
+      document.querySelector(".graph-canvas canvas").getBoundingClientRect()
+        .height === 450,
+  );
+  assert.equal(await page.locator("main").evaluate((el) => el.inert), false);
+  await expand.click();
+  await page.waitForFunction(
+    () =>
+      document.querySelector(".graph-canvas canvas").getBoundingClientRect()
+        .height === innerHeight,
+  );
+  await page.waitForTimeout(500); // Let resizing update both drawing and hit testing.
+  const expandedPoint = await graphPoint(page, "green");
+  await page.mouse.move(expandedPoint.x, expandedPoint.y);
+  await page
+    .locator(".float-tooltip-kap")
+    .getByText(title, { exact: true })
+    .waitFor();
+  await page.mouse.click(expandedPoint.x, expandedPoint.y);
+  await page
+    .getByRole("dialog")
+    .getByRole("heading", { name: title, exact: true })
+    .waitFor();
+  await page.keyboard.press("Escape");
+  await page.getByRole("dialog").waitFor({ state: "hidden" });
+  assert.equal(
+    await page
+      .getByRole("button", { name: "Exit full-screen graph", exact: true })
+      .isVisible(),
+    true,
+  );
+  await page
+    .getByRole("button", { name: "Exit full-screen graph", exact: true })
+    .click();
+  await page.waitForTimeout(500);
   assert.equal(
     await graph.evaluate((el) => getComputedStyle(el).backgroundColor),
     "rgb(0, 0, 0)",
@@ -1021,7 +1083,6 @@ test("graph views render, preserve search when switching, and open safe hover la
     assert.ok(await graphPoint(page, color), "Clear did not restore " + color);
   }
   await search.fill("GraphAlias");
-  const views = page.getByRole("group", { name: "Graph view", exact: true });
   for (const mode of ["2D", "3D"]) {
     await views.getByRole("button", { name: mode, exact: true }).click();
     assert.equal(
@@ -1073,6 +1134,31 @@ test("graph views render, preserve search when switching, and open safe hover la
       const input = await search.boundingBox();
       const toggle = await views.boundingBox();
       assert.ok(input.x + input.width <= toggle.x);
+      await expand.click();
+      await page.waitForFunction(
+        () =>
+          document.querySelector(".graph-canvas canvas").getBoundingClientRect()
+            .height === innerHeight,
+      );
+      assert.deepEqual(await graph.boundingBox(), {
+        x: 0,
+        y: 0,
+        width: 390,
+        height: 844,
+      });
+      assert.equal(await search.inputValue(), "GraphAlias");
+      const controls = await page.locator(".graph-tools").boundingBox();
+      assert.ok(controls.x >= 0 && controls.x + controls.width <= 390);
+      await page.screenshot({
+        path: "/tmp/songya-ui-review/graph-expanded-phone.png",
+        fullPage: true,
+      });
+      await page.keyboard.press("Escape");
+      await page.waitForFunction(
+        () =>
+          document.querySelector(".graph-canvas canvas").getBoundingClientRect()
+            .height === 422,
+      );
       await page.screenshot({
         path: "/tmp/songya-ui-review/graph-2d-phone.png",
         fullPage: true,
@@ -1102,6 +1188,89 @@ test("graph views render, preserve search when switching, and open safe hover la
   assert.deepEqual(errors, []);
 });
 
+test("dense 2D graphs render separate disks for every node", async () => {
+  const nodes = Array.from({ length: 90 }, (_, i) => ({
+    id: "e_dense_" + i,
+    title: "Dense node " + i,
+    kind: "entities",
+  }));
+  const links = [];
+  for (let i = 5; i < nodes.length; i++) {
+    for (let hub = 0; hub < 5; hub++)
+      links.push({
+        source: nodes[i].id,
+        target: nodes[hub].id,
+        type: "related_to",
+      });
+  }
+  const { page, context } = await pageFor();
+  await page.route("**/api/graph", (route) =>
+    route.fulfill({ json: { nodes, links } }),
+  );
+  await page.reload();
+  await page.locator(".graph-canvas canvas").waitFor();
+  await page.waitForTimeout(3500);
+  const png = (
+    await page.locator(".graph-canvas canvas").screenshot()
+  ).toString("base64");
+  const disks = await page.evaluate(async (png) => {
+    const image = new Image();
+    image.src = "data:image/png;base64," + png;
+    await image.decode();
+    const canvas = document.createElement("canvas");
+    canvas.width = image.width;
+    canvas.height = image.height;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(image, 0, 0);
+    const { data } = ctx.getImageData(0, 0, image.width, image.height);
+    const green = new Uint8Array(image.width * image.height);
+    // The DOM legend overlays the canvas; exclude its bottom strip.
+    for (let i = 0; i < image.width * (image.height - 32); i++)
+      green[i] = data[i * 4 + 1] - Math.max(data[i * 4], data[i * 4 + 2]) > 50;
+    let disks = 0;
+    for (let start = 0; start < green.length; start++) {
+      if (!green[start]) continue;
+      let pixels = 0;
+      const pending = [start];
+      green[start] = 0;
+      while (pending.length) {
+        const index = pending.pop();
+        pixels++;
+        const x = index % image.width,
+          y = Math.floor(index / image.width);
+        for (let dy = -1; dy <= 1; dy++)
+          for (let dx = -1; dx <= 1; dx++) {
+            if (
+              x + dx < 0 ||
+              x + dx >= image.width ||
+              y + dy < 0 ||
+              y + dy >= image.height
+            )
+              continue;
+            const next = index + dy * image.width + dx;
+            if (green[next]) {
+              green[next] = 0;
+              pending.push(next);
+            }
+          }
+      }
+      if (pixels > 3) disks++;
+    }
+    return disks;
+  }, png);
+  await page.screenshot({
+    path: "/tmp/songya-ui-review/graph-dense-2d.png",
+    fullPage: true,
+  });
+  assert.equal(
+    disks,
+    nodes.length,
+    "Some rendered nodes overlap or are clipped",
+  );
+  await context.close();
+  assert.deepEqual(errors, []);
+});
+
 test("WebGL failure leaves the library and inspector working", async () => {
   await save(source("No WebGL", "The library remains usable."));
   const { page, context } = await pageFor(undefined, () => {
@@ -1111,6 +1280,18 @@ test("WebGL failure leaves the library and inspector working", async () => {
       return original.call(this, type, ...args);
     };
   });
+  // The default view works without WebGL; only an explicit 3D choice needs it.
+  await page.locator(".graph-canvas canvas").waitFor();
+  assert.equal(
+    await page
+      .locator(".graph-canvas canvas")
+      .evaluate((canvas) => !!canvas.getContext("2d")),
+    true,
+  );
+  await page
+    .getByRole("group", { name: "Graph view", exact: true })
+    .getByRole("button", { name: "3D", exact: true })
+    .click();
   await page
     .getByText("Graph unavailable. You can still browse the library.", {
       exact: true,
