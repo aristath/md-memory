@@ -13,7 +13,7 @@ import { spawn, execFileSync } from "node:child_process";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import { chromium } from "playwright";
-let root, processHandle, url, browser;
+let root, processHandle, url, browser, embeddingMock;
 const errors = [];
 before(
   async () => {
@@ -40,6 +40,34 @@ before(
         reject(Error("Server exited " + code)),
       );
     });
+    embeddingMock = createServer(async (req, res) => {
+      let raw = "";
+      for await (const chunk of req) raw += chunk;
+      const body = JSON.parse(raw);
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify({
+          data: [
+            {
+              embedding: String(body.input).includes("needle-semantic")
+                ? [1, 0]
+                : [0, 1],
+            },
+          ],
+        }),
+      );
+    });
+    embeddingMock.listen(0, "127.0.0.1");
+    await once(embeddingMock, "listening");
+    writeFileSync(
+      join(root, "store", "config.json"),
+      JSON.stringify({
+        embeddings: {
+          base_url: `http://127.0.0.1:${embeddingMock.address().port}`,
+          model: "fixture",
+        },
+      }),
+    );
     browser = await chromium.launch({ headless: true });
   },
   { timeout: 120000 },
@@ -50,6 +78,8 @@ after(async () => {
     processHandle.kill("SIGTERM");
     await once(processHandle, "exit");
   }
+  embeddingMock?.closeAllConnections();
+  embeddingMock?.close();
   if (root) rmSync(root, { recursive: true, force: true });
 });
 async function pageFor(
@@ -1849,5 +1879,188 @@ test("chat lost acknowledgements replay one accepted message and truncated strea
   assert.equal(state.messages.filter((m) => m.role === "user").length, 1);
   assert.equal(state.messages.at(-1).content, "Partial response recovered.");
   assert.equal(provider.calls(), 2);
+  assert.deepEqual(errors, []);
+});
+
+test("retrieval settings persist on desktop and phone and test the actual saved graph policy", async (t) => {
+  const entity = await save(
+    source("needle-semantic musician", "needle-semantic biography"),
+    "entities",
+  );
+  const memory = await save(
+    source(
+      "Connected rehearsal",
+      "A quiet afternoon.",
+      `relations: [{type: related_to, target: ${entity.id}}]\n`,
+    ),
+  );
+  const { page, context } = await pageFor(undefined, undefined, "chat");
+  t.after(() => context.close());
+  await page
+    .getByRole("button", { name: "Retrieval settings", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", {
+    name: "Memory retrieval",
+    exact: true,
+  });
+  await dialog.getByLabel("Maximum direct matches", { exact: true }).fill("1");
+  await dialog.getByLabel("Minimum similarity", { exact: true }).fill("0.9");
+  for (const kind of ["memories", "stories", "topics"])
+    await dialog
+      .getByRole("group", { name: "Search record types", exact: true })
+      .getByLabel(kind, { exact: true })
+      .uncheck();
+  for (const kind of ["entities", "stories", "topics"])
+    await dialog
+      .getByRole("group", { name: "Return record types", exact: true })
+      .getByLabel(kind, { exact: true })
+      .uncheck();
+  await dialog
+    .getByLabel("Maximum connection depth", { exact: true })
+    .fill("2");
+  await dialog
+    .getByLabel("Maximum connected records", { exact: true })
+    .fill("3");
+  await dialog
+    .getByRole("button", { name: "Save retrieval settings", exact: true })
+    .click();
+  await dialog
+    .getByText("Retrieval settings saved. New requests use this policy.", {
+      exact: true,
+    })
+    .waitFor();
+  await dialog
+    .getByLabel("Retrieval message", { exact: true })
+    .fill("needle-semantic");
+  await dialog
+    .getByLabel("Retrieval owner", { exact: true })
+    .selectOption("ari");
+  await dialog
+    .getByRole("button", { name: "Find related memories", exact: true })
+    .click();
+  await dialog
+    .locator(".recall-results")
+    .getByText("Connected rehearsal", { exact: true })
+    .waitFor();
+  const result = await page.evaluate(
+    () => window.Alpine.$data(document.body).recallResult,
+  );
+  assert.equal(result.items.length, 1);
+  assert.equal(result.items[0].id, memory.id);
+  assert.equal(result.items[0].reason, "connection");
+  assert.equal(result.items[0].score, undefined);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await dialog.screenshot({
+    path: "/tmp/songya-ui-review/recall-settings-phone.png",
+  });
+  assert.equal(
+    await dialog.evaluate((el) => el.scrollWidth <= el.clientWidth),
+    true,
+  );
+  await page.keyboard.press("Escape");
+  await page.reload();
+  await page
+    .getByRole("button", { name: "Retrieval settings", exact: true })
+    .click();
+  assert.equal(
+    await dialog
+      .getByLabel("Maximum direct matches", { exact: true })
+      .inputValue(),
+    "1",
+  );
+  assert.equal(
+    await dialog
+      .getByLabel("Maximum connection depth", { exact: true })
+      .inputValue(),
+    "2",
+  );
+  assert.deepEqual(errors, []);
+});
+
+test("retrieval settings recover lost acknowledgements and retain conflicting drafts across reloads", async (t) => {
+  const { page, context } = await pageFor(undefined, undefined, "chat");
+  t.after(() => context.close());
+  const open = () =>
+    page
+      .getByRole("button", { name: "Retrieval settings", exact: true })
+      .click();
+  const dialog = page.getByRole("dialog", {
+    name: "Memory retrieval",
+    exact: true,
+  });
+  await open();
+  await dialog
+    .getByLabel("Maximum connection depth", { exact: true })
+    .fill("3");
+  let writes = 0;
+  await page.route("**/api/recall/settings", async (route) => {
+    if (route.request().method() !== "PUT") return route.continue();
+    writes++;
+    if (writes !== 1) return route.continue();
+    const response = await route.fetch();
+    assert.equal(response.status(), 200);
+    await route.abort("failed");
+  });
+  await dialog
+    .getByRole("button", { name: "Save retrieval settings", exact: true })
+    .click();
+  await dialog
+    .getByRole("alert")
+    .filter({ hasText: "Failed to fetch" })
+    .waitFor();
+  assert.equal(
+    await dialog
+      .getByLabel("Maximum connection depth", { exact: true })
+      .inputValue(),
+    "3",
+  );
+  await page.reload();
+  await open();
+  assert.equal(
+    await dialog
+      .getByLabel("Maximum connection depth", { exact: true })
+      .inputValue(),
+    "3",
+  );
+  assert.equal(writes, 1);
+  await dialog.getByLabel("Maximum direct matches", { exact: true }).fill("7");
+  const saved = await (await fetch(url + "/api/recall/settings")).json();
+  saved.recall.connected_limit = 2;
+  assert.equal(
+    (
+      await fetch(url + "/api/recall/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ version: saved.version, recall: saved.recall }),
+      })
+    ).status,
+    200,
+  );
+  await dialog
+    .getByRole("button", { name: "Save retrieval settings", exact: true })
+    .click();
+  await dialog.getByRole("alert").filter({ hasText: "changed" }).waitFor();
+  await page.reload();
+  await open();
+  assert.equal(
+    await dialog
+      .getByLabel("Maximum direct matches", { exact: true })
+      .inputValue(),
+    "7",
+  );
+  await dialog
+    .getByRole("button", { name: "Reload saved policy", exact: true })
+    .click();
+  await page.waitForFunction(
+    (expected) =>
+      window.Alpine.$data(document.body).recallDraft.direct_limit === expected,
+    saved.recall.direct_limit,
+  );
+  assert.equal(
+    await dialog
+      .getByLabel("Maximum connected records", { exact: true })
+      .inputValue(),
+    "2",
+  );
   assert.deepEqual(errors, []);
 });

@@ -35,18 +35,21 @@ type chatMessage struct {
 	TurnID     string         `json:"turn_id,omitempty"`
 }
 type chatConversation struct {
-	ID        string            `json:"id"`
-	User      string            `json:"user"`
-	Title     string            `json:"title"`
-	Status    string            `json:"status"`
-	Error     string            `json:"error,omitempty"`
-	UpdatedAt int64             `json:"updated_at"`
-	Revision  int64             `json:"revision"`
-	TurnID    string            `json:"turn_id"`
-	Requests  map[string]string `json:"requests,omitempty"`
-	Prompt    string            `json:"prompt,omitempty"`
-	Messages  []chatMessage     `json:"messages"`
-	Draft     *chatMessage      `json:"draft,omitempty"`
+	Recall              *songya.RecallResponse `json:"recall,omitempty"`
+	RecallConfiguration *songya.Configuration  `json:"recall_configuration,omitempty"`
+	RecallConfigIssue   string                 `json:"recall_config_issue,omitempty"`
+	ID                  string                 `json:"id"`
+	User                string                 `json:"user"`
+	Title               string                 `json:"title"`
+	Status              string                 `json:"status"`
+	Error               string                 `json:"error,omitempty"`
+	UpdatedAt           int64                  `json:"updated_at"`
+	Revision            int64                  `json:"revision"`
+	TurnID              string                 `json:"turn_id"`
+	Requests            map[string]string      `json:"requests,omitempty"`
+	Prompt              string                 `json:"prompt,omitempty"`
+	Messages            []chatMessage          `json:"messages"`
+	Draft               *chatMessage           `json:"draft,omitempty"`
 }
 type chatApp struct {
 	store  *songya.Store
@@ -265,7 +268,13 @@ func (a *chatApp) start(id string) {
 	}()
 }
 
-func publicChat(c chatConversation) chatConversation { c.Prompt = ""; c.Requests = nil; return c }
+func publicChat(c chatConversation) chatConversation {
+	c.Prompt = ""
+	c.Requests = nil
+	c.RecallConfiguration = nil
+	c.RecallConfigIssue = ""
+	return c
+}
 
 func (a *chatApp) register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/chat/settings", a.settingsHTTP)
@@ -356,6 +365,7 @@ func (a *chatApp) sendHTTP(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
+	configuration, configurationIssue := a.store.Configuration()
 	hash := sha256.Sum256([]byte(input.User + "\x00" + input.Text))
 	fingerprint := hex.EncodeToString(hash[:])
 	c, err := a.edit(r.Context(), input.ID, func(c *chatConversation) error {
@@ -380,6 +390,12 @@ func (a *chatApp) sendHTTP(w http.ResponseWriter, r *http.Request) {
 		c.Status = "pending"
 		c.Error = ""
 		c.Draft = nil
+		c.Recall = nil
+		c.RecallConfiguration = &configuration
+		c.RecallConfigIssue = ""
+		if configurationIssue != nil {
+			c.RecallConfigIssue = configurationIssue.Error()
+		}
 		if c.Title == "" {
 			c.Title = input.Text
 			if len([]rune(c.Title)) > 60 {

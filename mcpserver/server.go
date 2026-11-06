@@ -522,7 +522,7 @@ func New(lifetime context.Context, store *songya.Store, roots map[string]string)
 	})
 	querySchema := schema(map[string]any{"user": str("User filter; all or omitted selects everyone. Entities and topics are shared."), "text": str("Search text; omit to list"), "kind": str("Record directory: memories, entities, topics or stories. Use entities for entity lookup."), "related_to": str("Optional outgoing target ID"), "relation_type": str("Optional relationship type"), "include_retired": map[string]any{"type": "boolean"}, "offset": count(), "limit": count()})
 	searchProperties := maps.Clone(querySchema["properties"].(map[string]any))
-	searchProperties["mode"] = str("lexical (default) or semantic embeddings for memories and entities")
+	searchProperties["mode"] = str("lexical (default) or semantic embeddings for all record types")
 	searchSchema := schema(searchProperties)
 
 	tool(server, "recall_memory", "Recall a person, place or subject by name or record ID. Returns connected prose with record IDs, event times and story context. Follow next as offset with the same text and user when truncated.", schema(map[string]any{"text": str("Name, subject or record ID to recall"), "user": str("User filter; all or omitted selects everyone"), "offset": count(), "limit": count()}, "text"), true, func(ctx context.Context, input songya.RecallQuery) (any, error) {
@@ -530,7 +530,7 @@ func New(lifetime context.Context, store *songya.Store, roots map[string]string)
 
 		return page, err
 	})
-	tool(server, "search_memory", "Search names, aliases, descriptions and prose. Use mode=semantic to retrieve memories and entities by meaning. Find entities with kind=entities and a name or alias in text; omit text to list them. Direct file edits are refreshed automatically.", searchSchema, true, func(ctx context.Context, input songya.Query) (any, error) {
+	tool(server, "search_memory", "Search names, aliases, descriptions and prose. Use mode=semantic to retrieve records by meaning. Find entities with kind=entities and a name or alias in text; omit text to list them. Direct file edits are refreshed automatically.", searchSchema, true, func(ctx context.Context, input songya.Query) (any, error) {
 		input.Limit = limit(input.Limit, 8, 8)
 		return store.Search(ctx, input)
 	})

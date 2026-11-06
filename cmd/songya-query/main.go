@@ -21,17 +21,17 @@ func main() {
 }
 func run() error {
 	var input struct {
-		Store   string                       `json:"store"`
-		Config  string                       `json:"config"`
-		Command string                       `json:"command"`
-		Owners  []string                     `json:"owners"`
-		Queries []songya.SemanticRecallQuery `json:"queries"`
-		Source  string                       `json:"source"`
-		ID      string                       `json:"id"`
-		Text    string                       `json:"text"`
-		Kind    songya.Destination           `json:"kind"`
-		Offset  int                          `json:"offset"`
-		Limit   int                          `json:"limit"`
+		Store    string             `json:"store"`
+		Config   string             `json:"config"`
+		Command  string             `json:"command"`
+		Owners   []string           `json:"owners"`
+		Messages []string           `json:"messages"`
+		Source   string             `json:"source"`
+		ID       string             `json:"id"`
+		Text     string             `json:"text"`
+		Kind     songya.Destination `json:"kind"`
+		Offset   int                `json:"offset"`
+		Limit    int                `json:"limit"`
 	}
 	if err := json.NewDecoder(os.Stdin).Decode(&input); err != nil {
 		return err
@@ -44,30 +44,23 @@ func run() error {
 	}
 	config, issue := songya.LoadEmbeddingConfig(input.Config)
 	if issue != nil {
-		fmt.Fprintln(os.Stderr, "Embedding configuration needs repair; readable values and defaults remain usable")
+		fmt.Fprintln(os.Stderr, "Songya configuration needs repair; readable values and defaults remain usable")
 	}
 	// Configuration inspection never opens the store and never returns credentials.
 	if input.Command == "configuration" {
 		return json.NewEncoder(os.Stdout).Encode(map[string]any{"model": config.Model, "base_url": config.BaseURL, "chunk_size": config.ChunkSize, "incomplete": issue != nil})
 	}
-	store, err := songya.OpenExisting(input.Store, config)
+	store, err := songya.OpenExisting(input.Store)
 	if err != nil {
 		return err
 	}
+	store.UseConfiguration(input.Config)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	var result any
 	switch input.Command {
 	case "recall":
-		var recalled []songya.SemanticRecallResult
-		recalled, err = store.RecallSemantic(ctx, input.Queries, input.Owners)
-		if issue != nil {
-			for i := range recalled {
-				recalled[i].Incomplete = true
-				recalled[i].Diagnostics = append(recalled[i].Diagnostics, songya.Diagnostic{Path: input.Config, Message: "embedding configuration needs repair; readable values and defaults used"})
-			}
-		}
-		result = recalled
+		result, err = store.Retrieve(ctx, songya.RecallRequest{Messages: input.Messages, Owners: input.Owners})
 	case "list", "read", "stats":
 		var catalog songya.Catalog
 		catalog, err = store.Scan(ctx)

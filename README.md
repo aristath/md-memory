@@ -251,3 +251,5 @@ This application boundary exposes no write commands.
 `OpenExisting` lets query clients inspect an existing store without creating
 record directories or publishing pending work. Missing sources remain explicit
 diagnostics. Normal `Open` retains automatic recovery for writers and the MCP.
+
+Message retrieval is centralized in Songya: [HTTP recall API, settings and client integration](docs/recall.md).

@@ -33,6 +33,7 @@ func Handler(store *songya.Store) *Application {
 	mux := http.NewServeMux()
 	chat := newChatApp(store)
 	chat.register(mux)
+	chat.registerRecall(mux)
 	files, _ := fs.Sub(assets, "assets")
 	page := template.Must(template.ParseFS(assets, "assets/index.html"))
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {

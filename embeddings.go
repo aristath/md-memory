@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"math"
 	"net/http"
 	"os"
@@ -90,17 +89,19 @@ type embeddingSession struct {
 }
 
 func (s *Store) embeddingSession() (*embeddingSession, error) {
+	config, issue := s.Configuration()
+	s.note("configuration", issue)
+	return s.embeddingSessionWithConfiguration(config.Embeddings)
+}
+func (s *Store) embeddingSessionWithConfiguration(config EmbeddingConfig) (*embeddingSession, error) {
 	root, err := os.OpenRoot(s.path)
 	if err != nil {
 		return nil, err
 	}
-	e := &embeddingSession{store: s, root: root, config: s.embeddings, online: true}
+	e := &embeddingSession{store: s, root: root, config: config, online: true}
 	err = ensureDirectory(root, ".index")
 	if err == nil {
 		err = ensureDirectory(root, ".index/embeddings")
-		if errors.Is(err, fs.ErrExist) {
-			err = ensureDirectory(root, ".index/embeddings")
-		}
 	}
 	s.note("embedding cache", err)
 	e.cacheIssue = err
@@ -109,11 +110,11 @@ func (s *Store) embeddingSession() (*embeddingSession, error) {
 
 func embeddingText(r Record) string {
 	switch r.Kind {
-	case Entities:
+	case Entities, Topics:
 		parts := append([]string{r.Name, r.Title}, r.Aliases...)
 		parts = append(parts, r.Body)
 		return strings.Join(parts, "\n")
-	case Memories:
+	case Memories, Stories:
 		return strings.Join([]string{r.Title, r.Body, dateValue(r.Time.Date), dateValue(r.Time.Earliest), dateValue(r.Time.Latest), r.Context}, "\n")
 	}
 	return ""
@@ -300,7 +301,7 @@ func (s *Store) IndexEmbeddings(ctx context.Context) (EmbeddingStatus, error) {
 	defer e.root.Close()
 	status := EmbeddingStatus{Model: e.config.Model, Diagnostics: c.Diagnostics}
 	for _, r := range c.Records {
-		if (r.Kind == Entities || r.Kind == Memories) && (len(r.Redirects) == 0 || r.Unconfirmed) {
+		if embeddingText(r) != "" && (len(r.Redirects) == 0 || r.Unconfirmed) {
 			status.Records++
 		}
 	}
@@ -335,14 +336,10 @@ func (s *Store) semanticSearch(ctx context.Context, c Catalog, q Query) (SearchR
 		result.Diagnostics = boundedDiagnostics(append(result.Diagnostics, Diagnostic{"embeddings", message + "; lexical results returned"}))
 		return result, ctx.Err()
 	}
-	if q.Kind != "" && q.Kind != Memories && q.Kind != Entities {
-		return fallback("semantic retrieval covers memories and entities")
-	}
+
 	candidates := []Match{}
 	for _, match := range rankMatches(c, Query{User: q.User, Kind: q.Kind, RelatedTo: q.RelatedTo, RelationType: q.RelationType, IncludeRetired: q.IncludeRetired}) {
-		if match.Kind == Memories || match.Kind == Entities {
-			candidates = append(candidates, match)
-		}
+		candidates = append(candidates, match)
 	}
 	if len(candidates) == 0 {
 		return SearchResult{Mode: "semantic", Matches: []Match{}, Incomplete: len(c.Diagnostics) > 0, Diagnostics: boundedDiagnostics(c.Diagnostics)}, ctx.Err()
@@ -352,7 +349,7 @@ func (s *Store) semanticSearch(ctx context.Context, c Catalog, q Query) (SearchR
 		return fallback("embedding cache root unavailable")
 	}
 	defer e.root.Close()
-	query, queryErr := e.vectors(ctx, q.Text, false)
+	query, queryErr := e.vectors(ctx, q.Text, true)
 	if len(query) == 0 {
 		return fallback("query embedding unavailable")
 	}
@@ -403,7 +400,7 @@ func (s *Store) semanticSearch(ctx context.Context, c Catalog, q Query) (SearchR
 		matches = append(matches, match)
 	}
 	if len(matches) == 0 {
-		return fallback("no usable memory or entity embeddings")
+		return fallback("no usable record embeddings")
 	}
 	sort.Slice(matches, func(i, j int) bool {
 		if matches[i].Score != matches[j].Score {
@@ -425,16 +422,6 @@ func (s *Store) semanticSearch(ctx context.Context, c Catalog, q Query) (SearchR
 // LoadEmbeddingConfig reads the same store configuration used by the MCP server.
 // Readable fields are retained when a damaged field needs repair.
 func LoadEmbeddingConfig(path string) (EmbeddingConfig, error) {
-	var config struct {
-		Embeddings EmbeddingConfig `yaml:"embeddings"`
-	}
-	data, err := os.ReadFile(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return config.Embeddings.defaults(), nil
-	}
-	if err != nil {
-		return config.Embeddings.defaults(), err
-	}
-	err = yaml.Unmarshal(data, &config)
-	return config.Embeddings.defaults(), err
+	config, err := LoadConfiguration(path)
+	return config.Embeddings, err
 }

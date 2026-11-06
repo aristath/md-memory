@@ -55,6 +55,7 @@ func recordName(id string) (string, error) {
 // Store holds no open files between calls. Diagnostics is safe across goroutines.
 type Store struct {
 	path       string
+	configPath string
 	embeddings EmbeddingConfig
 	issues     sync.Map
 	initMu     sync.Mutex

@@ -2,7 +2,7 @@
 
 The `songya-web` command serves Go templates, CSS and an Alpine.js component over
 Go's standard HTTP server. `web.Handler` is also available to Go applications.
-The library calls the Songya engine directly. Chat connects to the same Songya MCP
+The library and centralized recall endpoint call the Songya engine directly. Chat connects to the same Songya MCP
 server through an in-process MCP client session.
 
 The front page starts with a 50vh 2D graph on a black background. Its 2D / 3D toggle
@@ -54,6 +54,8 @@ without model listing can still use a manually entered model. A blank key keeps
 the saved key; the checkbox explicitly clears it. Credentials are kept on the
 server in a file with mode `0600`; browser responses report only whether a key is
 set. No process-environment configuration is used.
+
+**Retrieval settings** beside Chat/List controls the shared recall service and provides a saved-policy tester. See [the recall API and policy contract](recall.md). Songya Chat automatically retrieves evidence through this engine before calling the model; deliberate MCP tools remain available.
 
 The client is the official `openai-go/v3` SDK, using streamed Chat Completions and
 function calling. The provider/model must support both. Songya supplies the actual

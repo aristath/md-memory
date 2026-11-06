@@ -161,6 +161,9 @@
       >
         List
       </button>
+      <button class="recall-settings-button" @click="openRecallSettings()">
+        Retrieval settings
+      </button>
     </nav>
     <div x-show="!dialogOpen" :inert="graphExpanded">
       <div class="messages" aria-live="polite">
@@ -247,6 +250,20 @@
           <p>Connect a model to start chatting.</p>
           <button @click="openChatSettings()">Configure connection</button>
         </div>
+        <details class="chat-recall" x-show="chatState?.recall" x-cloak>
+          <summary>
+            Memory context ·
+            <span
+              x-text="chatState?.recall?.results?.[0]?.status||'pending'"
+            ></span>
+            ·
+            <span
+              x-text="chatState?.recall?.results?.[0]?.items?.length||0"
+            ></span>
+            records
+          </summary>
+          <pre x-text="JSON.stringify(chatState?.recall,null,2)"></pre>
+        </details>
         <div class="chat-conversation">
           <div
             class="chat-log"
@@ -935,6 +952,206 @@
           Saving and checking the connection…
         </p>
       </form>
+    </dialog>
+    <dialog
+      class="recall-settings-dialog"
+      x-ref="recallSettingsDialog"
+      @click="if($event.target===$el)$el.close()"
+      aria-labelledby="recall-settings-heading"
+    >
+      <div class="recall-settings-content">
+        <div class="chat-heading">
+          <h2 id="recall-settings-heading">Memory retrieval</h2>
+          <button
+            @click="$refs.recallSettingsDialog.close()"
+            aria-label="Close retrieval settings"
+          >
+            Close
+          </button>
+        </div>
+        <p class="muted">
+          One retrieval policy for Clara, Songya Chat, and other connected
+          applications.
+        </p>
+        <p x-show="recallBusy" role="status">Working…</p>
+        <p
+          class="error"
+          role="alert"
+          x-show="recallError"
+          x-text="recallError"
+        ></p>
+        <p
+          class="success"
+          role="status"
+          x-show="recallNotice"
+          x-text="recallNotice"
+        ></p>
+        <template x-if="recallDraft"
+          ><div>
+            <form @submit.prevent="saveRecallSettings()">
+              <fieldset :disabled="recallBusy">
+                <legend>Direct semantic matches</legend>
+                <div class="recall-numbers">
+                  <label
+                    >Maximum direct matches<input
+                      type="number"
+                      min="0"
+                      max="1000"
+                      step="1"
+                      required
+                      x-model.number="recallDraft.direct_limit"
+                  /></label>
+                  <label
+                    >Minimum similarity<input
+                      type="number"
+                      min="-1"
+                      max="1"
+                      step="0.01"
+                      required
+                      x-model.number="recallDraft.min_score"
+                  /></label>
+                </div>
+                <fieldset class="recall-choices">
+                  <legend>Search record types</legend>
+                  <template x-for="kind in recallKinds" :key="kind"
+                    ><label
+                      ><input
+                        type="checkbox"
+                        :value="kind"
+                        x-model="recallDraft.search_kinds" /><span
+                        x-text="kind"
+                      ></span></label
+                  ></template>
+                </fieldset>
+                <fieldset class="recall-choices">
+                  <legend>Return record types</legend>
+                  <template x-for="kind in recallKinds" :key="kind"
+                    ><label
+                      ><input
+                        type="checkbox"
+                        :value="kind"
+                        x-model="recallDraft.return_kinds" /><span
+                        x-text="kind"
+                      ></span></label
+                  ></template>
+                </fieldset>
+                <fieldset>
+                  <legend>Connected context</legend>
+                  <p class="muted">
+                    Connected records can be below the similarity threshold.
+                    Depth 0 disables expansion. Relationships are followed in
+                    both directions, within the requested owners.
+                  </p>
+                  <div class="recall-numbers">
+                    <label
+                      >Maximum connection depth<input
+                        type="number"
+                        min="0"
+                        max="50"
+                        step="1"
+                        required
+                        x-model.number="recallDraft.connection_depth"
+                    /></label>
+                    <label
+                      >Maximum connected records<input
+                        type="number"
+                        min="0"
+                        max="1000"
+                        step="1"
+                        required
+                        x-model.number="recallDraft.connected_limit"
+                    /></label>
+                  </div>
+                  <fieldset class="recall-choices">
+                    <legend>Relationships to follow</legend>
+                    <template
+                      x-for="relation in recallRelations"
+                      :key="relation"
+                      ><label
+                        ><input
+                          type="checkbox"
+                          :value="relation"
+                          x-model="recallDraft.relation_types" /><span
+                          x-text="relation"
+                        ></span></label
+                    ></template>
+                  </fieldset>
+                </fieldset>
+                <div class="chat-settings-actions">
+                  <button type="button" @click="openRecallSettings(true)">
+                    Reload saved policy
+                  </button>
+                  <button class="primary" type="submit">
+                    Save retrieval settings
+                  </button>
+                </div>
+              </fieldset>
+            </form>
+            <p class="muted">
+              Embeddings:
+              <span x-text="recallSettings.embeddings.model"></span> ·
+              <span x-text="recallSettings.embeddings.base_url"></span>. Stored
+              in <code>config.json</code>.
+            </p>
+            <form class="recall-test" @submit.prevent="testRecall()">
+              <h3>Try the saved policy</h3>
+              <label
+                >Retrieval message<textarea
+                  x-model="recallMessage"
+                  required
+                  rows="2"
+                ></textarea>
+              </label>
+              <label
+                >Retrieval owner<select
+                  x-model="recallOwner"
+                  aria-label="Retrieval owner"
+                >
+                  <option value="all">Any</option>
+                  <template
+                    x-for="user in Object.keys(owners).sort()"
+                    :key="user"
+                    ><option :value="user" x-text="user"></option
+                  ></template></select
+              ></label>
+              <button
+                type="submit"
+                :disabled="recallBusy||!recallMessage.trim()"
+              >
+                Find related memories
+              </button>
+            </form>
+            <template x-if="recallResult"
+              ><div class="recall-results" aria-live="polite">
+                <p>
+                  <span x-text="recallResult.status"></span> ·
+                  <span x-text="recallResult.items.length"></span> results<span
+                    x-show="recallResult.truncated"
+                  >
+                    · result limit reached</span
+                  >
+                </p>
+                <p
+                  x-show="recallResult.status==='ready'&&!recallResult.items.length"
+                >
+                  No matching records under the saved policy.
+                </p>
+                <template x-for="issue in recallResult.diagnostics||[]"
+                  ><p class="error" x-text="issue.path+': '+issue.message"></p
+                ></template>
+                <template x-for="item in recallResult.items" :key="item.id"
+                  ><details>
+                    <summary>
+                      <span x-text="item.title||item.id"></span> ·
+                      <span
+                        x-text="item.reason==='semantic'?'similarity '+item.score.toFixed(3):'connected · depth '+item.depth"
+                      ></span>
+                    </summary>
+                    <pre x-text="JSON.stringify(item,null,2)"></pre></details
+                ></template></div
+            ></template></div
+        ></template>
+      </div>
     </dialog>
   </body>
 </html>

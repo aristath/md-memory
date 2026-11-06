@@ -44,14 +44,15 @@ func main() {
 	if path == "" {
 		path = filepath.Join(*storePath, "config.json")
 	}
-	config, issue := songya.LoadEmbeddingConfig(path)
+	_, issue := songya.LoadEmbeddingConfig(path)
 	if issue != nil {
-		log.Print("Embedding configuration needs repair; readable values and defaults remain usable")
+		log.Print("Songya configuration needs repair; readable values and defaults remain usable")
 	}
-	store, err := songya.Open(*storePath, config)
+	store, err := songya.Open(*storePath)
 	if err != nil {
 		log.Fatal(err)
 	}
+	store.UseConfiguration(path)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	server := mcpserver.New(ctx, store, roots)

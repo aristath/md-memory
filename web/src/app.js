@@ -2,6 +2,7 @@ import Alpine from "alpinejs";
 import { codeEditor, richEditor } from "./editors.js";
 import { memoryGraph } from "./graph.js";
 import { chatUI } from "./chat.js";
+import { recallUI } from "./recall.js";
 
 async function request(path, options = {}) {
   const response = await fetch(path, {
@@ -31,6 +32,7 @@ Alpine.data("songya", () => {
   const drafts = new Map();
   return {
     ...chatUI(request),
+    ...recallUI(request),
     records: [],
     owners: {},
     types: {},
@@ -72,6 +74,7 @@ Alpine.data("songya", () => {
     graphOwner: "",
     graphOwners: [],
     async init() {
+      this.$watch("recallDraft", () => this.keepRecallDraft());
       this.refreshGraph();
       await this.refresh();
       this.initChat();

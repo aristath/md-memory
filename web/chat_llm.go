@@ -97,6 +97,10 @@ func (a *chatApp) run(ctx context.Context, id string) error {
 		if c.Status != "running" {
 			return nil
 		}
+		c, err = a.prepareRecall(ctx, id, c)
+		if err != nil {
+			return err
+		}
 		if index, call := pendingChatTool(c); call != nil {
 			var result any
 			args := map[string]any{}
@@ -144,6 +148,9 @@ func (a *chatApp) run(ctx context.Context, id string) error {
 		}
 		system := c.Prompt + "\n\n# Connected Songya MCP guide\n" + session.InitializeResult().Instructions + fmt.Sprintf("\n\nThe person currently talking is user %q. This identifies ownership, not an entity.\n", c.User)
 		messages := []openai.ChatCompletionMessageParamUnion{openai.SystemMessage(system)}
+		if evidence := recallContext(c); evidence != "" {
+			messages = append(messages, openai.UserMessage(evidence))
+		}
 		for _, m := range c.Messages {
 			messages = append(messages, messageParam(m))
 		}
