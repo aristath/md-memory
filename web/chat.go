@@ -48,6 +48,7 @@ type chatConversation struct {
 	TurnID              string                 `json:"turn_id"`
 	Requests            map[string]string      `json:"requests,omitempty"`
 	Prompt              string                 `json:"prompt,omitempty"`
+	Temperature         *float64               `json:"temperature,omitempty"`
 	Messages            []chatMessage          `json:"messages"`
 	Draft               *chatMessage           `json:"draft,omitempty"`
 }
@@ -366,6 +367,11 @@ func (a *chatApp) sendHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	configuration, configurationIssue := a.store.Configuration()
+	settings, err := a.settings()
+	if err != nil {
+		fail(w, err)
+		return
+	}
 	hash := sha256.Sum256([]byte(input.User + "\x00" + input.Text))
 	fingerprint := hex.EncodeToString(hash[:])
 	c, err := a.edit(r.Context(), input.ID, func(c *chatConversation) error {
@@ -387,6 +393,7 @@ func (a *chatApp) sendHTTP(w http.ResponseWriter, r *http.Request) {
 		c.User = input.User
 		c.TurnID = input.RequestID
 		c.Prompt = string(prompt) + "\n\nCurrent turn received at " + time.Now().Format(time.RFC3339) + "."
+		c.Temperature = &settings.Temperature
 		c.Status = "pending"
 		c.Error = ""
 		c.Draft = nil

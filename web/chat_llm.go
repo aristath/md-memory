@@ -103,18 +103,24 @@ func (a *chatApp) run(ctx context.Context, id string) error {
 		}
 		if index, call := pendingChatTool(c); call != nil {
 			var result any
+			halt := false
 			args := map[string]any{}
 			decoder := json.NewDecoder(strings.NewReader(call.Function.Arguments))
 			decoder.UseNumber()
 			tool := tools[call.Function.Name]
-			if err := decoder.Decode(&args); err != nil || args == nil {
-				result = map[string]any{"error": "Arguments must be a JSON object; include the information to read or save."}
+			if malformedToolReply(c.Messages[index]) {
+				result = map[string]any{"error": toolRepair}
+			} else if repeats := unproductiveRepeats(c, index, call); repeats > 0 {
+				result = map[string]any{"outcome": "unchanged", "changed_fields": []string{}, "error": "This same call already failed or changed nothing. It was not run again. Fix the missing or wrong arguments. To create an entity/topic, send create:true and name; to update one, send id. Use description for entity/topic words and text for memory/story words. Do not say the change was saved."}
+				halt = repeats >= 2
+			} else if err := decoder.Decode(&args); err != nil || args == nil || !json.Valid([]byte(call.Function.Arguments)) {
+				result = map[string]any{"error": "The tool needs one JSON object. Put the field names and values inside that object. Nothing was run. Fix the arguments and try again."}
 			} else if tool == nil {
 				result = map[string]any{"error": "Unknown Songya tool; use the supplied definitions."}
 			} else {
 				defaultChatOwner(tool, args, c.User)
 				key := fmt.Sprintf("chat:%s:%d:%s", id, index, call.ID)
-				result, err = session.CallTool(ctx, &mcp.CallToolParams{Name: call.Function.Name, Arguments: args, Meta: mcp.Meta{"songya/request-key": key}})
+				result, err = session.CallTool(ctx, &mcp.CallToolParams{Name: call.Function.Name, Arguments: args, Meta: mcp.Meta{"songya/request-key": key, "songya/original-text": originalTurnText(c)}})
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
@@ -132,10 +138,23 @@ func (a *chatApp) run(ctx context.Context, id string) error {
 					return nil
 				}
 				current.Messages = append(current.Messages, chatMessage{Role: "tool", Content: string(data), ToolCallID: call.ID, Name: call.Function.Name, TurnID: c.TurnID})
+				// Put app-authored failure guidance after all results in this batch,
+				// never between an assistant's calls and their required tool replies.
+				if _, pending := pendingChatTool(*current); pending == nil {
+					for _, reply := range current.Messages[index+1:] {
+						if reply.Role == "tool" && strings.HasPrefix(reply.Name, "save_") && failedToolResult(reply.Content) {
+							current.Messages = append(current.Messages, chatMessage{Role: "system", Content: failedWriteReminder, TurnID: c.TurnID})
+							break
+						}
+					}
+				}
 				return nil
 			})
 			if err != nil {
 				return err
+			}
+			if halt {
+				return fmt.Errorf("The model repeated a call that failed or changed nothing. Your message and tool results are saved. Retry to let the model correct its arguments.")
 			}
 			continue
 		}
@@ -157,7 +176,11 @@ func (a *chatApp) run(ctx context.Context, id string) error {
 		client := s.client()
 		requests++
 		streamCtx, cancelStream := context.WithCancel(ctx)
-		stream := client.Chat.Completions.NewStreaming(streamCtx, openai.ChatCompletionNewParams{Model: s.Model, Messages: messages, Tools: definitions})
+		temperature := s.Temperature
+		if c.Temperature != nil {
+			temperature = *c.Temperature
+		}
+		stream := client.Chat.Completions.NewStreaming(streamCtx, openai.ChatCompletionNewParams{Model: s.Model, Messages: messages, Tools: definitions, Temperature: openai.Float(temperature), ParallelToolCalls: openai.Bool(false)})
 		chunks := make(chan openai.ChatCompletionChunk, 1)
 		finished := make(chan struct{})
 		go func() {
@@ -259,7 +282,10 @@ func (a *chatApp) run(ctx context.Context, id string) error {
 			}
 			current.Messages = append(current.Messages, draft)
 			current.Draft = nil
-			if len(draft.ToolCalls) == 0 {
+			if malformedToolReply(draft) && len(draft.ToolCalls) == 0 {
+				current.Messages = append(current.Messages, chatMessage{Role: "system", Content: toolRepair, TurnID: c.TurnID})
+			}
+			if len(draft.ToolCalls) == 0 && !malformedToolReply(draft) {
 				current.Status = "done"
 			}
 			return nil
@@ -267,7 +293,18 @@ func (a *chatApp) run(ctx context.Context, id string) error {
 		if err != nil {
 			return err
 		}
-		if len(draft.ToolCalls) == 0 {
+		if malformedToolReply(draft) {
+			broken := 0
+			for _, m := range c.Messages {
+				if m.TurnID == c.TurnID && m.Role == "assistant" && malformedToolReply(m) {
+					broken++
+				}
+			}
+			if broken >= 1 {
+				return fmt.Errorf("The model sent another incomplete tool call. The incomplete replies were not run. Your message is saved; retry to continue.")
+			}
+		}
+		if len(draft.ToolCalls) == 0 && !malformedToolReply(draft) {
 			return nil
 		}
 	}

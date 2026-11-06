@@ -160,7 +160,7 @@ func TestCaptureReusesIdentityWithoutRewritingAndKeepsCanonicalName(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	john, err := store.SaveNamed(context.Background(), Entities, NamedInput{Name: "John Pavlou", Aliases: []string{"Johnny"}, Description: textValue("A friend.")})
+	john, err := store.SaveNamed(context.Background(), Entities, NamedInput{Create: true, Name: "John Pavlou", Aliases: []string{"Johnny"}, Description: textValue("A friend.")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +175,7 @@ func TestCaptureReusesIdentityWithoutRewritingAndKeepsCanonicalName(t *testing.T
 	if string(before) != string(after) {
 		t.Fatal("reusing an identity rewrote it")
 	}
-	_, err = store.SaveNamed(context.Background(), Entities, NamedInput{Name: "Johnny", Append: "A gardener."})
+	_, err = store.SaveNamed(context.Background(), Entities, NamedInput{ID: id, Append: "A gardener."})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +210,7 @@ func TestRelationsReplacePreserveClearAndResolveNames(t *testing.T) {
 				case Stories:
 					r, err = store.SaveStory(context.Background(), StoryInput{Key: key, ID: id, User: "ari", Text: textValue("A story"), Relations: relations})
 				default:
-					r, err = store.SaveNamed(context.Background(), kind, NamedInput{Key: key, ID: id, Name: "Cedar Café", Relations: relations})
+					r, err = store.SaveNamed(context.Background(), kind, NamedInput{Key: key, Create: id == "", ID: id, Name: "Cedar Café", Relations: relations})
 				}
 				if err != nil {
 					t.Fatal(r, err)

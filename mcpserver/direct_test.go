@@ -54,8 +54,8 @@ func TestDirectGuideCapture(t *testing.T) {
 			}
 		}
 	}
-	_, example, _ := strings.Cut(mcpserver.Guide, "save_memory(")
-	example, _, _ = strings.Cut(example, ")\n")
+	_, example, _ := strings.Cut(mcpserver.Guide, "Example: call save_memory with this JSON:\n")
+	example, _, _ = strings.Cut(example, "\n")
 	args := map[string]any{}
 	if err := json.Unmarshal([]byte(example), &args); err != nil {
 		t.Fatal(err)
@@ -99,9 +99,9 @@ func TestDedicatedWritesOwnershipAndOrganization(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	session := connect(t, ctx, binary(t), t.TempDir(), "")
-	john := keyed(t, ctx, session, "save_entity", "john", map[string]any{"name": "John", "type": "person", "aliases": []string{"Johnny"}, "description": "An old friend."})
-	topic := keyed(t, ctx, session, "save_topic", "topic", map[string]any{"name": "Gardening", "description": "Plants and gardens."})
-	a := keyed(t, ctx, session, "save_memory", "ari", map[string]any{"text": "Coffee with John.", "user": "ari", "relations": []any{map[string]any{"type": "related_to", "target": map[string]any{"kind": "entities", "name": "Johnny", "type": "person", "description": "John grows roses."}}, map[string]any{"type": "related_to", "target": map[string]any{"kind": "topics", "name": "Gardening"}}}})
+	john := keyed(t, ctx, session, "save_entity", "john", map[string]any{"create": true, "name": "John", "type": "person", "aliases": []string{"Johnny"}, "description": "An old friend."})
+	topic := keyed(t, ctx, session, "save_topic", "topic", map[string]any{"create": true, "name": "Gardening", "description": "Plants and gardens."})
+	a := keyed(t, ctx, session, "save_memory", "ari", map[string]any{"text": "Coffee with John.", "user": "ari", "relations": []any{map[string]any{"type": "related_to", "target": map[string]any{"kind": "entities", "id": john["id"], "name": "Johnny", "type": "person", "description": "John grows roses."}}, map[string]any{"type": "related_to", "target": map[string]any{"kind": "topics", "name": "Gardening"}}}})
 	b := keyed(t, ctx, session, "save_memory", "bob", map[string]any{"text": "Bob met John.", "user": "bob", "relations": []any{map[string]any{"type": "related_to", "target": "John"}}})
 	if a["relations"].([]any)[0].(map[string]any)["target"] != john["id"] || a["relations"].([]any)[1].(map[string]any)["target"] != topic["id"] {
 		t.Fatal("exact names/aliases not reused", a)
@@ -164,7 +164,7 @@ func TestDirectArgumentsStayFlexible(t *testing.T) {
 	defer cancel()
 	path := t.TempDir()
 	session := connect(t, ctx, binary(t), path, "")
-	saved := keyed(t, ctx, session, "save_memory", "numbers", map[string]any{"text": 3, "user": 3, "time": "last summer", "metadata": map[string]any{"number": json.Number("9007199254740993")}, "relations": []any{map[string]any{"type": "related_to", "target": map[string]any{"kind": "entities", "name": 3, "description": 3}}}})
+	saved := keyed(t, ctx, session, "save_memory", "numbers", map[string]any{"text": 3, "user": 3, "metadata": map[string]any{"timing_note": "last summer", "number": json.Number("9007199254740993")}, "relations": []any{map[string]any{"type": "related_to", "target": map[string]any{"kind": "entities", "name": 3, "description": 3}}}})
 	data, err := os.ReadFile(filepath.Join(path, "memories", saved["id"].(string)+".md"))
 	if err != nil {
 		t.Fatal(err)
@@ -201,7 +201,7 @@ func TestMCPRelationsCanBeCorrectedByName(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	session := connect(t, ctx, binary(t), t.TempDir(), "")
-	first := keyed(t, ctx, session, "save_entity", "venue", map[string]any{"name": "Cedar Café", "relations": []any{map[string]any{"type": "related_to", "target": "e_sam"}}})
+	first := keyed(t, ctx, session, "save_entity", "venue", map[string]any{"create": true, "name": "Cedar Café", "relations": []any{map[string]any{"type": "related_to", "target": "e_sam"}}})
 	corrected := keyed(t, ctx, session, "save_entity", "repair", map[string]any{"id": first["id"], "relations": []any{map[string]any{"type": "related_to", "target": "Sam Lee"}}})
 	relations := corrected["relations"].([]any)
 	if len(relations) != 1 || !songya.ValidID(relations[0].(map[string]any)["target"].(string)) || len(corrected["diagnostics"].([]any)) != 0 {

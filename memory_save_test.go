@@ -14,11 +14,8 @@ func TestMemoryDatePatchRetainsDamagedInformationAndHealthyWork(t *testing.T) {
 	ctx := context.Background()
 	for i, previous := range []any{"summer of an unknown year", map[string]any{"date": []any{"1981-03-06"}}} {
 		text := "The original account remains intact."
-		created, err := store.SaveMemory(ctx, MemoryInput{User: "ari", Text: &text, Time: previous})
-		if err != nil {
-			t.Fatal(err)
-		}
-		id := created.Refs["memory"]
+		created := createDamagedTimeRecord(t, store, previous, text)
+		id := created.ID
 		patched, err := store.SaveMemory(ctx, MemoryInput{ID: id, Append: "The year was later confirmed as 1981.", Time: map[string]any{"earliest": "1981-01-01", "latest": "1981-12-31"}})
 		if err != nil || patched.Status != "committed" {
 			t.Fatal(patched, err)

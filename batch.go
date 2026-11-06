@@ -38,6 +38,15 @@ type BatchRequest struct {
 	Account string   `json:"original_text,omitempty"`
 	Changes []Change `json:"changes"`
 }
+
+type originalTextKey struct{}
+
+// WithOriginalText attaches the person's exact words, supplied by the client,
+// not by the model. Generated record text remains in the before/after journal.
+func WithOriginalText(ctx context.Context, text string) context.Context {
+	return context.WithValue(ctx, originalTextKey{}, text)
+}
+
 type SavedRecord struct {
 	ID            string   `json:"id"`
 	Revision      string   `json:"-"`
@@ -420,6 +429,9 @@ func prepareBatch(ctx context.Context, root *os.Root, request BatchRequest, revi
 		if err := requireUser(doc, kindOf(change.ID)); err != nil {
 			return journal, fmt.Errorf("%s: %w", change.ID, err)
 		}
+		if err := validateTimeChange(metadataField(&Parse(before).Frontmatter, "time"), metadataField(&doc.Frontmatter, "time")); err != nil {
+			return journal, fmt.Errorf("%s: %w", change.ID, err)
+		}
 		data, err := doc.Marshal()
 		if err != nil {
 			return journal, err
@@ -462,6 +474,9 @@ func receiptFor(journal batchJournal, status string, err error) Receipt {
 }
 
 func (s *Store) ApplyBatch(ctx context.Context, request BatchRequest) (Receipt, error) {
+	if text, ok := ctx.Value(originalTextKey{}).(string); ok {
+		request.Account = text
+	}
 	if request.Key == "" {
 		return Receipt{}, errors.New("a stable request key is required for retry safety")
 	}
@@ -481,6 +496,15 @@ func (s *Store) ApplyBatch(ctx context.Context, request BatchRequest) (Receipt, 
 		journal, err := loadJournal(root, directory)
 		if err == nil {
 			receipt = receiptFor(journal, "blocked", nil)
+			// An accepted write keeps its captured source on recovery. The exact
+			// same record changes must still match the original request digest.
+			if _, supplied := ctx.Value(originalTextKey{}).(string); supplied {
+				request.Account = string(journal.Account)
+				digest, err = requestRevision(ctx, request)
+				if err != nil {
+					return err
+				}
+			}
 			if journal.Request != digest {
 				return fmt.Errorf("request key %q already belongs to different changes", request.Key)
 			}

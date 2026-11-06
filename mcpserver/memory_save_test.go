@@ -34,7 +34,7 @@ func TestMemorySaveChangesDatesAndRetryOutcomes(t *testing.T) {
 	}
 	for i, args := range []map[string]any{{"id": id}, {"id": id, "user": "ari"}, {"id": id, "text": birth["text"]}} {
 		saved := keyed(t, ctx, session, "save_memory", fmt.Sprintf("unchanged-%d", i), args)
-		if saved["outcome"] != "unchanged" || len(saved["changed_fields"].([]any)) != 0 || !strings.Contains(fmt.Sprint(saved["diagnostics"]), "No memory fields changed") {
+		if saved["outcome"] != "unchanged" || len(saved["changed_fields"].([]any)) != 0 || !strings.Contains(fmt.Sprint(saved["diagnostics"]), "Nothing changed") {
 			t.Fatal(saved)
 		}
 		after, err := os.ReadFile(filename)

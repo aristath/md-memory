@@ -1687,6 +1687,11 @@ async function setupBrowserChat(page, base, user) {
   await dialog.getByLabel("API base URL", { exact: true }).fill(base);
   await dialog.getByLabel("API key", { exact: true }).fill("browser-test-key");
   await dialog.getByLabel("Model", { exact: true }).fill("browser-model");
+  await dialog.getByLabel("Temperature", { exact: true }).fill("0.15");
+  assert.equal(
+    await dialog.getByLabel("Temperature", { exact: true }).inputValue(),
+    "0.15",
+  );
   await dialog
     .getByRole("button", {
       name: "Test connection and load models",
@@ -1719,6 +1724,8 @@ test("chat defaults on, streams real MCP writes, follows replies and restores us
     next();
   });
   const provider = await chatProvider(t, async (res, body, n) => {
+    assert.equal(body.temperature, 0.15);
+    assert.equal(body.parallel_tool_calls, false);
     if (n === 1)
       return streamTool(res, "prepare_memory", {
         text: "I moved to the island on 12 June 2001.",
@@ -1829,6 +1836,25 @@ test("chat defaults on, streams real MCP writes, follows replies and restores us
   await page
     .getByRole("dialog")
     .screenshot({ path: "/tmp/songya-ui-review/chat-settings-phone.png" });
+  await page
+    .getByRole("dialog")
+    .getByLabel("Temperature", { exact: true })
+    .fill("0");
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Save connection", exact: true })
+    .click();
+  await page.reload();
+  await page
+    .getByRole("button", { name: "Chat settings", exact: true })
+    .click();
+  assert.equal(
+    await page
+      .getByRole("dialog")
+      .getByLabel("Temperature", { exact: true })
+      .inputValue(),
+    "0",
+  );
   await page.keyboard.press("Escape");
   await page.getByRole("tab", { name: "List", exact: true }).click();
   await page.getByRole("heading", { name: "Library", exact: true }).waitFor();

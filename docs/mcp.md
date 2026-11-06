@@ -27,8 +27,8 @@ Memories and stories require an owning `user`; Clara supplies the current user a
 | Tool | Main arguments |
 | --- | --- |
 | `save_memory` | `text`, optional `title`, `time`, `user`, `metadata`, `relations` |
-| `save_entity` | `name`, optional `type`, `aliases`, `description`, `metadata`, `relations` |
-| `save_topic` | `name`, optional `aliases`, `description`, `metadata`, `relations` |
+| `save_entity` | `create:true` and `name` for creation; `id` for updates; optional `type`, `aliases`, `description`, `metadata`, `relations` |
+| `save_topic` | `create:true` and `name` for creation; `id` for updates; optional `aliases`, `description`, `metadata`, `relations` |
 | `save_story` | `title`, optional `text`, `user`, `metadata`, ordered `relations` |
 
 All four accept an existing `id` to update, and `append` to enrich prose. For `save_memory`:
@@ -40,6 +40,23 @@ All four accept an existing `id` to update, and `append` to enrich prose. For `s
 Preserve the account's meaning, attribution and meaningful quotations; prose must stand on its own without inventing facts. Omitted fields preserve existing information. `title:""` clears the memory title. Custom metadata patches supplied top-level keys, including explicit null values; omitted keys and `metadata:{}` preserve existing values. Supplied relations replace the list; with nonempty `append`, they add connections. `[]` always clears the list. For a connection-only addition, read the old connections and supply every connection to keep plus the new one. Inline identity enrichment preserves existing connections.
 
 Entity/topic `description` is their Markdown body, also used by search and the library table. Do not duplicate it in metadata.
+
+Named-record creation is explicit: send `create:true` and `name`, without `id`.
+This always creates a separate record, even if its name matches an existing one.
+To update, send the existing record's `id`; a name alone never updates it.
+Supplying both `create:true` and `id` is rejected. Search first and choose the
+identity from the returned descriptions/IDs. For example, when the two people
+are confirmed distinct:
+
+```json
+{"name":"save_entity","arguments":{"create":true,"name":"Alex","description":"Sam's coworker, a different person from Sam's cousin Alex."}}
+{"name":"save_entity","arguments":{"id":"COWORKER_ENTITY_ID","description":"Sam's coworker, who repairs bicycles."}}
+```
+
+Inline named targets also accept `create:true` for a separate new identity.
+Name-only links can locate existing identities, but enriching an existing inline
+identity requires its ID. Unsafe or ambiguous enrichment remains unresolved with
+diagnostics while the memory's prose and healthy connections still save.
 
 All authoritative connections use `relations: [{type, target}]`. Store one connection and let Songya derive its reverse:
 
@@ -59,6 +76,17 @@ A story's `related_to` links to memories/stories define reading order. Other lin
 ```
 
 ## Event time
+
+New date values must be real calendar dates in `YYYY-MM-DD` format or `null`.
+Freeform timing words, bare months/years, timestamps, empty strings, impossible
+days, and non-string values are not accepted as new date-field values. Put timing
+explanations in the body instead. Existing damaged source remains readable with
+diagnostics and may receive unrelated edits without losing its original data.
+
+For an ongoing state "since July 2025", use
+`{"date":null,"earliest":"2025-07-01","latest":null}`. The start is a bound,
+not an assertion that it began on July 1; the end is unknown/open. For a one-time
+event *in* July, use July 1–31 as its possible date bounds instead.
 
 `time` describes when the event happened, separately from automatic creation/update timestamps. Record supported dates in these structured fields as well as prose. Use an exact `date` or inclusive range bounds. Combine all known timing, including related events and relative expressions, rather than defaulting to the beginning of a known year. Preserve the original temporal wording and explain the basis of inferred bounds in prose; never invent an exact date.
 
@@ -116,3 +144,12 @@ Configure import roots with `--import-root notes=/absolute/path`. `import_memori
 Clients can attach a stable `songya/request-key` in MCP `_meta` to writes. Retry identical arguments with that key. Clara supplies its durable invocation ID. Without client metadata, Songya assigns an independent operation ID. Identical prose in separate operations can describe separate memories.
 
 `memory_maintenance(action="receipt", key=...)` inspects an outcome; `recover` resumes pending work; `status` reports diagnostics; `rebuild` refreshes the disposable index. `abandon` withdraws uncommitted work while retaining proposed data. `read_memory` with `key`, `id`, and `view:"proposed"`, `"before"` or `"original_text"` reads retained work. Ordinary saves handle this bookkeeping automatically.
+
+Clients can attach the person's exact message in MCP request metadata
+`songya/original-text`. This is client data, not a tool argument for the model.
+Songya retains it as the write's original account. Model-written `text` and
+`description` are stored as proposed/committed record bytes, not original words.
+Without original-text metadata, an ordinary model save does not invent an original
+account. Model tools cannot replace `original_accounts` through metadata.
+Retries keep the source captured by the accepted write and still reject different
+record changes under the same request key.

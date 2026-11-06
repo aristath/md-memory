@@ -37,8 +37,15 @@ func (s *Store) Update(id, revision string, fields map[string]any, body string) 
 	if doc.Pending || doc.Unconfirmed || doc.Revision != revision {
 		return doc, fmt.Errorf("update %s: %w", id, ErrConflict)
 	}
+	if err := validateTimeInput(fields); err != nil {
+		return doc, err
+	}
+	previousTime := metadataField(&Parse(doc.OriginalSource()).Frontmatter, "time")
 	applyFields(doc, fields, body)
 	if err := requireUser(doc, kindOf(id)); err != nil {
+		return doc, err
+	}
+	if err := validateTimeChange(previousTime, metadataField(&doc.Frontmatter, "time")); err != nil {
 		return doc, err
 	}
 	data, err := doc.Marshal()

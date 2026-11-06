@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,9 +28,10 @@ import (
 var defaultChatPrompt string
 
 type chatSettings struct {
-	BaseURL string `json:"base_url"`
-	APIKey  string `json:"api_key,omitempty"`
-	Model   string `json:"model"`
+	BaseURL     string  `json:"base_url"`
+	APIKey      string  `json:"api_key,omitempty"`
+	Model       string  `json:"model"`
+	Temperature float64 `json:"temperature"`
 }
 
 func chatID() string             { return hex.EncodeToString(randBytes()) }
@@ -138,7 +140,7 @@ func (a *chatApp) fileLock(ctx context.Context, name string, wait bool) (*flock.
 }
 
 func (a *chatApp) settings() (chatSettings, error) {
-	var settings chatSettings
+	settings := chatSettings{Temperature: 0.15}
 	data, err := a.readFile("chat-settings.json")
 	if errors.Is(err, fs.ErrNotExist) {
 		return settings, nil
@@ -160,9 +162,10 @@ func (a *chatApp) settingsHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodPut {
 		var input struct {
-			BaseURL string  `json:"base_url"`
-			Model   string  `json:"model"`
-			APIKey  *string `json:"api_key"`
+			BaseURL     string          `json:"base_url"`
+			Model       string          `json:"model"`
+			APIKey      *string         `json:"api_key"`
+			Temperature json.RawMessage `json:"temperature"`
 		}
 		if !decode(w, r, &input) {
 			return
@@ -186,6 +189,21 @@ func (a *chatApp) settingsHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.BaseURL, s.Model = base+"/", strings.TrimSpace(input.Model)
+		if input.Temperature != nil {
+			text := strings.TrimSpace(string(input.Temperature))
+			if strings.HasPrefix(text, "\"") {
+				if err := json.Unmarshal(input.Temperature, &text); err != nil {
+					writeStatus(w, 400, map[string]any{"error": "Temperature must be a number from 0 to 2. Use 0.15 for memory work."})
+					return
+				}
+			}
+			value, err := strconv.ParseFloat(strings.TrimSpace(text), 64)
+			if err != nil || !(value >= 0 && value <= 2) {
+				writeStatus(w, 400, map[string]any{"error": "Temperature must be a number from 0 to 2. Use 0.15 for memory work."})
+				return
+			}
+			s.Temperature = value
+		}
 		if input.APIKey != nil {
 			s.APIKey = strings.TrimSpace(*input.APIKey)
 		}
@@ -203,7 +221,7 @@ func (a *chatApp) settingsHTTP(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	write(w, map[string]any{"base_url": s.BaseURL, "model": s.Model, "has_api_key": s.APIKey != "", "configured": s.BaseURL != "" && s.Model != "", "prompt_file": "chat-system.md"})
+	write(w, map[string]any{"base_url": s.BaseURL, "model": s.Model, "temperature": s.Temperature, "has_api_key": s.APIKey != "", "configured": s.BaseURL != "" && s.Model != "", "prompt_file": "chat-system.md"})
 }
 
 func (a *chatApp) modelsHTTP(w http.ResponseWriter, r *http.Request) {

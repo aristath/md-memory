@@ -65,6 +65,32 @@ prompt is `chat-system.md` at the store root, seeded from `web/chat-system.md` w
 missing. Changes apply to newly accepted turns; recovery uses the prompt captured
 with the accepted turn.
 
+Chat settings include **Temperature**, from 0 to 2, default **0.15**. Zero is
+allowed and remains zero after saving/restarting. Each accepted turn keeps its
+temperature across retries; a settings change applies to the next turn. Lower
+temperature reduces variation, not factual or tool errors. Requests ask the
+provider to send one tool call at a time.
+
+The app attaches the person's exact accepted message as `songya/original-text`
+MCP request metadata. This is separate from model-written `text` or `description`.
+Those generated words remain in the write journal's before/after snapshots; they
+are not labeled as original testimony. The model cannot edit `original_accounts`
+through MCP metadata. Existing stored accounts are not rewritten by this change.
+
+Malformed tool tags remain in the saved chat for inspection. The app does not
+execute any calls from that malformed reply or guess its missing fields. It asks
+the model to resend valid JSON. A second malformed reply pauses work with a
+recoverable error. Identical consecutive no-op saves are not executed again;
+repeated failures stop the turn with its accepted message and results intact.
+Identical failed saves, including empty argument objects, are bounded by that
+same retry guard rather than being repeated until the general tool limit.
+Retry continues from that saved state. Tool feedback uses `description` for
+entity/topic words and `text` for memory/story words.
+
+When releasing updated prompts, update the store's effective `chat-system.md`
+alongside the code after reviewing any local customizations. Updating the embedded
+file alone does not replace an existing store prompt.
+
 Messages and partial replies are saved in `.chats/<conversation-id>.json` with
 mode `0600`. A turn is accepted only after its message and request identity are
 synced. Browser disconnects do not cancel accepted work. Reopening the page loads

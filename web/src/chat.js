@@ -44,12 +44,14 @@ export function chatUI(request) {
     chatSettings: {
       base_url: "",
       model: "",
+      temperature: 0.15,
       configured: false,
       has_api_key: false,
     },
     chatSettingsDraft: {
       base_url: "",
       model: "",
+      temperature: 0.15,
       api_key: "",
       clear_key: false,
     },
@@ -145,7 +147,9 @@ export function chatUI(request) {
     },
     chatMessages() {
       const messages = this.chatState?.messages || [];
-      const visible = messages.filter((m) => m.role !== "tool");
+      const visible = messages.filter(
+        (m) => m.role === "user" || m.role === "assistant",
+      );
       return this.chatState?.draft
         ? [...visible, this.chatState.draft]
         : visible;
@@ -286,6 +290,7 @@ export function chatUI(request) {
       this.chatSettingsDraft = {
         base_url: this.chatSettings.base_url,
         model: this.chatSettings.model,
+        temperature: this.chatSettings.temperature ?? 0.15,
         api_key: "",
         clear_key: false,
       };
@@ -303,7 +308,11 @@ export function chatUI(request) {
       this.chatSettingsNotice = "";
       try {
         const draft = this.chatSettingsDraft;
-        const payload = { base_url: draft.base_url, model: draft.model };
+        const payload = {
+          base_url: draft.base_url,
+          model: draft.model,
+          temperature: draft.temperature,
+        };
         if (draft.api_key || draft.clear_key)
           payload.api_key = draft.clear_key ? "" : draft.api_key;
         this.chatSettings = await request("/api/chat/settings", {

@@ -249,6 +249,9 @@ func (s *Store) Create(destination Destination, fields map[string]any, body stri
 	if err := requireUser(d, destination); err != nil {
 		return d, err
 	}
+	if err := validateTimeChange(nil, metadataField(&d.Frontmatter, "time")); err != nil {
+		return d, err
+	}
 	data, err := d.Marshal()
 	if err != nil {
 		return d, err

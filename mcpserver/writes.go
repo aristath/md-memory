@@ -2,12 +2,42 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"unicode/utf8"
 
 	"github.com/aristath/songya"
 )
 
 type operationKey struct{}
+
+func editsOriginalAccounts(raw json.RawMessage) bool {
+	var input map[string]any
+	if json.Unmarshal(raw, &input) != nil {
+		return false
+	}
+	var contains func(any) bool
+	contains = func(value any) bool {
+		switch v := value.(type) {
+		case map[string]any:
+			if _, exists := v["original_accounts"]; exists {
+				return true
+			}
+			for _, child := range v {
+				if contains(child) {
+					return true
+				}
+			}
+		case []any:
+			for _, child := range v {
+				if contains(child) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return contains(input)
+}
 
 func requestKey(ctx context.Context) string { key, _ := ctx.Value(operationKey{}).(string); return key }
 
@@ -25,9 +55,21 @@ func savedWrite(ctx context.Context, store *songya.Store, receipt songya.Receipt
 	records := map[string]songya.Record{}
 	for _, saved := range receipt.Records {
 		if saved.ID == id {
-			value["outcome"], value["changed_fields"] = saved.Outcome, saved.ChangedFields
+			fields := append([]string{}, saved.ChangedFields...)
+			if kindFor(id) == songya.Entities || kindFor(id) == songya.Topics {
+				for i, field := range fields {
+					if field == "text" {
+						fields[i] = "description"
+					}
+				}
+			}
+			value["outcome"], value["changed_fields"] = saved.Outcome, fields
 			if saved.Outcome == "unchanged" {
-				diagnostics = append(diagnostics, songya.Diagnostic{Path: id, Message: "No memory fields changed. To add information, supply append; to replace prose, supply text; or supply the time, relations, title, user or metadata to update. Do not repeat the same call expecting new facts to be saved."})
+				prose := "text"
+				if kindFor(id) == songya.Entities || kindFor(id) == songya.Topics {
+					prose = "description"
+				}
+				diagnostics = append(diagnostics, songya.Diagnostic{Path: id, Message: "Nothing changed. To change the words, send " + prose + " with the new words. To add words, send append. To change another field, send that field with its new value. Do not send the same call again. This is not a rejected save."})
 			}
 		}
 		data, err := store.BatchData(ctx, receipt.Key, saved.ID, "proposed")
@@ -85,68 +127,74 @@ func clipText(text string, n int) string {
 
 func memorySchema() map[string]any {
 	timing := schema(map[string]any{
-		"date":     nullableDate("Exact event date; use null when only bounds are known"),
-		"earliest": nullableDate("Earliest supported date, using relative timing and related events too"),
-		"latest":   nullableDate("Latest supported date"),
+		"date":     nullableDate("Exact known day. Use null if the day is not known"),
+		"earliest": nullableDate("First possible day or start bound for a lasting state. For since July 2025 use 2025-07-01, with latest:null"),
+		"latest":   nullableDate("End bound; null for an ongoing state or unknown end"),
 	})
 	timing["type"] = []string{"object", "null"}
-	timing["description"] = "When the event happened, not when saved. Omission preserves time. Supplied components update only those components; null clears a component. time:null clears all three. To switch from an exact date to a range, include date:null. Keep temporal wording and the basis of inferred bounds in prose."
+	timing["description"] = "When the event happened. Omit to keep old dates. Send only the parts to change. null clears a part; time:null clears all dates. Send date:null when replacing an exact day with bounds. For ongoing states, earliest is the start bound and latest is null until an end is known. Use real YYYY-MM-DD dates or null only. Explain uncertainty in text."
 	value := schema(map[string]any{
-		"id":     str("Existing memory ID for append or update; omit to create a new memory"),
-		"user":   str("Owner: required for creation unless supplied by the integration. Omit on update to preserve ownership; supply only to change it"),
-		"title":  str("Memory title; omission preserves it"),
-		"text":   str("Complete standalone memory prose. Preserve meaning, attribution and meaningful quotations without inventing facts. Creates a memory without id; replaces the entire prose with id. Omit to preserve prose; an empty string explicitly clears it on update"),
-		"append": str("Additional prose to append literally, separated by a blank line. Supply id to enrich an existing memory. Existing prose stays intact unless text is also supplied: text replaces first, then append is added"),
+		"id":     str("ID of the memory to change. Omit id for a new memory"),
+		"user":   str("Owner of a new memory, unless the app supplies it. Omit when changing an existing memory to keep its owner"),
+		"title":  str("Short name for the event or fact. Always send for a NEW memory. Omit on UPDATE to keep the old title"),
+		"text":   str("All words for the memory. With id, this replaces ALL old words. Change only the wrong claims. Do not change other wording, details, or quotes. Omit to keep old words. An empty string clears them. Do not put original_accounts here or in metadata"),
+		"append": str("Words to add after the old words. Send id too. Do not send text unless you also want to replace the old words"),
 		"time":   timing, "metadata": object(), "relations": relationsSchema(),
 	})
-	updates := []any{}
-	for _, name := range []string{"text", "append", "time", "relations", "title", "metadata", "user"} {
-		updates = append(updates, map[string]any{"required": []string{name}})
-	}
-	value["anyOf"] = []any{
-		map[string]any{"required": []string{"text"}, "not": map[string]any{"required": []string{"id"}}},
-		map[string]any{"required": []string{"id"}, "anyOf": updates},
-	}
+	// Creation, append and field-only updates share these fields. Describe the
+	// modes plainly and enforce them in the handler instead of conditional schemas.
 	value["examples"] = []any{
-		map[string]any{"text": "Ari was born in Thessaloniki on 6 March 1981.", "user": "ari", "time": map[string]any{"date": "1981-03-06"}},
-		map[string]any{"id": "EXISTING_MEMORY_ID", "append": "His family moved a few months after his birth."},
-		map[string]any{"id": "EXISTING_MEMORY_ID", "text": "The complete corrected account, including the details to keep."},
+		map[string]any{"title": "Ari's birth", "text": "Ari was born in Thessaloniki on 6 March 1981.", "user": "ari", "time": map[string]any{"date": "1981-03-06"}},
+		map[string]any{"title": "Ari's family moved to Mytilene", "text": "Ari's family moved to Mytilene a few months after his birth, still in 1981. May is the earliest possible month in this account; the exact move day is unknown.", "user": "ari", "time": map[string]any{"date": nil, "earliest": "1981-05-01", "latest": "1981-12-31"}, "relations": []any{map[string]any{"type": "after", "target": "BIRTH_MEMORY_ID"}}},
+		map[string]any{"id": "EXISTING_DINNER_ID", "append": "At that same dinner, Jamie also gave Sam a book about trains."},
+		map[string]any{"id": "EXISTING_DINNER_ID", "text": "On April 2, 2025, Sam had dinner with Jamie in Lyon. Jamie gave Sam a book about trains."},
 		map[string]any{"id": "EXISTING_MEMORY_ID", "time": map[string]any{"date": nil, "earliest": "1981-05-01", "latest": "1981-12-31"}},
 		map[string]any{"id": "EXISTING_MEMORY_ID", "relations": []any{map[string]any{"type": "related_to", "target": "EXISTING_ENTITY_ID"}, map[string]any{"type": "related_to", "target": "NEW_ENTITY_ID"}}},
 	}
 	return value
 }
 
-const memoryDescription = `Create, append to, or update a lasting memory. Before saving, prepare_memory finds relevant existing records; read enough of a record before changing it.
-CREATE: omit id; supply standalone prose in text and a user unless the integration supplies it. Include known event dates in time and connections in relations.
-APPEND: supply id and append with the new information. This literally adds a blank line and the additional prose. Supplied relations are added, preserving existing connections.
-UPDATE: supply id and the fields to change. text replaces all prose; include everything to keep. If text and append are both supplied, replace first, then append. Date-only, connection-only, title-only and metadata-only updates are allowed. Supplied relations replace the list without nonempty append; relations:[] always clears it. To add only a connection, read and include the existing connections to keep along with the new one.
-Omitted fields are preserved. Metadata patches supplied keys, including explicit null values; metadata:{} preserves it. time patches supplied components; component null clears it; time:null clears all event dates. title:"" clears the title. IDs and save timestamps are automatic.
-Use separate connected memories for separately dated events. Derive supported date bounds from the whole account, including relative timing; preserve original temporal wording and explain inferred bounds in prose. Never invent an exact date.
-Check outcome and changed_fields against the facts you meant to save. created/updated mean changed data was durably committed; unchanged means no fields changed. Do not claim new facts were saved or repeat an unchanged call.`
+const memoryDescription = `Save a new memory or change an existing memory. First use prepare_memory and read the record you will change.
+NEW: omit id; always send a short title and text. Send the selected user unless the app supplies user.
+CHANGE: send id and the fields to change. Omitted fields stay the same.
+text replaces ALL body words, not the source header. For a correction, change only the wrong claims. Copy all other wording, details, and quotes exactly. append adds details of the SAME event after the old words; a different dated event needs a new memory.
+DATE ONLY: send id and time. Omit text to keep the words. Null clears a date part.
+LINKS: supplied relations replace old links; with append they add links. [] clears all links.
+Keep original quotes exact. Do not edit original_accounts. Check dates, ages, and event order after corrections.
+Read outcome and changed_fields. unchanged means nothing changed. Fix missing or wrong arguments; do not repeat the same call. Say done only after checking the saved values.`
 
 func namedSchema(entity bool) map[string]any {
-	fields := map[string]any{"id": str("Existing ID; omit to reuse a unique matching name or create a record"), "name": str("Name, e.g. Alex Morgan or Cedar Café"), "aliases": array(str("Other known name")), "description": str("Brief identifying description; experiences, preferences and history belong in linked memories"), "append": str("Add a brief identifying detail"), "metadata": object(), "relations": relationsSchema()}
+	fields := map[string]any{"create": map[string]any{"type": "boolean", "description": "Set true to create a separate new record, even if its name already exists. Do not supply id with create:true"}, "id": str("Existing record ID required for an update. A name is not an update selector"), "name": str("Name, e.g. Alex Morgan or Cedar Café"), "aliases": array(str("Other known name")), "description": str("Short text saying who or what this is. This replaces ALL old description words. Put events and experiences in linked memories"), "append": str("Words to add after the old description"), "metadata": object(), "relations": relationsSchema()}
 	if entity {
-		fields["type"] = str("Free-form type, e.g. person, place or organization")
+		fields["type"] = str("Type, such as person, place, or organization")
 	}
-	return schema(fields)
+	value := schema(fields)
+	// Keep the model-facing field list simple; the engine enforces the
+	// create-vs-update rules before accepting any write.
+	value["examples"] = []any{
+		map[string]any{"create": true, "name": "Alex", "description": "Sam's coworker, a different person from Sam's cousin Alex."},
+		map[string]any{"id": "EXISTING_RECORD_ID", "description": "The corrected short description."},
+	}
+	return value
 }
 
 func nullableDate(description string) map[string]any {
-	return map[string]any{"type": []string{"string", "null"}, "description": description + "; YYYY-MM-DD or null"}
+	// Calendar validation belongs to the engine; keep provider-facing fields
+	// simple while stating the exact accepted representation.
+	return map[string]any{"type": []string{"string", "null"}, "description": description + "; real YYYY-MM-DD date or null only. No words, months alone, timestamps, or empty strings"}
 }
 
 func relationsSchema() map[string]any {
 	named := schema(map[string]any{
-		"kind": map[string]any{"type": "string", "enum": []string{"entities", "topics"}},
-		"name": str("Name to create or reuse"), "type": str("Optional entity type"),
+		"kind":   map[string]any{"type": "string", "enum": []string{"entities", "topics"}},
+		"create": map[string]any{"type": "boolean", "description": "true creates a separate new identity and never modifies a same-name record; otherwise use id to update an identity"},
+		"name":   str("Name to create or reuse"), "type": str("Optional entity type"),
 		"description": str("Brief identity or subject description"), "aliases": array(str("Equivalent name")),
 	}, "name")
 	value := array(schema(map[string]any{
 		"type":   map[string]any{"type": "string", "enum": songya.RelationTypes[:]},
 		"target": map[string]any{"anyOf": []any{str("Existing record ID or entity name"), named}},
 	}, "type", "target"))
-	value["description"] = "Every connection uses this list. Omit to preserve; append adds connections, other saves replace supplied relations; [] clears. Story memory links are in reading order."
+	value["description"] = "List of links. Omit to keep links. With append, links are added. Otherwise this list replaces ALL links. [] clears links. Put story links in reading order."
 	return value
 }

@@ -923,6 +923,20 @@
               ><option :value="model"></option
             ></template>
           </datalist>
+          <label
+            >Temperature<input
+              type="number"
+              min="0"
+              max="2"
+              step="0.01"
+              required
+              x-model.number="chatSettingsDraft.temperature"
+              aria-describedby="chat-temperature-help"
+          /></label>
+          <p class="muted" id="chat-temperature-help">
+            Use 0.15 for memory work. Lower values make replies less varied.
+            They do not guarantee correct facts or tool calls.
+          </p>
           <button type="button" @click="loadChatModels()">
             Test connection and load models
           </button>

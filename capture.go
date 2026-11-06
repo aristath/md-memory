@@ -25,6 +25,7 @@ type MemoryInput struct {
 }
 type NamedInput struct {
 	Key         string          `json:"-"`
+	Create      bool            `json:"create,omitempty"`
 	ID          string          `json:"id,omitempty"`
 	Name        string          `json:"name,omitempty"`
 	Type        string          `json:"type,omitempty"`
@@ -71,10 +72,10 @@ func (s *Store) SaveMemory(ctx context.Context, input MemoryInput) (Receipt, err
 	}
 	intent := map[string]any{"metadata": fields, "relations": relationData(input.Relations)}
 	request := BatchRequest{Key: input.Key, User: input.User, Changes: []Change{{ID: input.ID, Fields: intent, Body: input.Text, Append: input.Append}}}
-	if input.Text != nil {
-		request.Account = *input.Text
-	}
 	request.prepare = func(root *os.Root) ([]Change, error) {
+		if err := validateTimeInput(fields); err != nil {
+			return nil, err
+		}
 		if input.ID != "" && input.Time != nil {
 			name, err := recordName(input.ID)
 			if err != nil {
@@ -99,6 +100,9 @@ func (s *Store) SaveMemory(ctx context.Context, input MemoryInput) (Receipt, err
 
 func namedData(input NamedInput) map[string]any {
 	data := map[string]any{"id": input.ID, "name": input.Name, "type": input.Type, "aliases": input.Aliases, "metadata": input.Metadata, "append": input.Append, "relations": relationData(input.Relations)}
+	if input.Create {
+		data["create"] = true
+	}
 	if input.Description != nil {
 		data["description"] = *input.Description
 	}
@@ -185,6 +189,15 @@ func namedChange(kind Destination, input NamedInput) Change {
 	return Change{ID: input.ID, Kind: kind, Fields: fields, Body: input.Description, Append: input.Append}
 }
 func relatedRecord(ctx context.Context, root *os.Root, kind Destination, input NamedInput, changes *[]Change) (string, error) {
+	if input.Create {
+		if input.ID != "" || strings.TrimSpace(input.Name) == "" {
+			return "", fmt.Errorf("a new named target needs create:true and name, without id")
+		}
+		change := namedChange(kind, input)
+		change.Ref = fmt.Sprintf("related_%d", len(*changes))
+		*changes = append(*changes, change)
+		return "$" + change.Ref, nil
+	}
 	// Repeated participants in one capture share one record.
 	for i := range *changes {
 		change := &(*changes)[i]
@@ -198,6 +211,9 @@ func relatedRecord(ctx context.Context, root *os.Root, kind Destination, input N
 			matches = matches && (input.Type == "" || storedType == "" || sameName(storedType, input.Type))
 		}
 		if change.Kind == kind && matches {
+			if change.ID != "" && input.ID == "" {
+				continue // A name-only link must not modify an existing identity.
+			}
 			mergeParticipant(root, change, input)
 			if change.ID != "" {
 				return change.ID, nil
@@ -214,6 +230,9 @@ func relatedRecord(ctx context.Context, root *os.Root, kind Destination, input N
 	if doc != nil {
 		if !needsEnrichment(doc, input) {
 			return doc.ID, nil
+		}
+		if input.ID == "" {
+			return "", fmt.Errorf("name %q matches existing %s; use that record's id to change it, or create:true for a separate new identity", input.Name, doc.ID)
 		}
 		change.ID = doc.ID
 		change.enrich = true
@@ -249,20 +268,27 @@ func (s *Store) SaveNamed(ctx context.Context, kind Destination, input NamedInpu
 	input.Key = writeKey(input.Key)
 	request := BatchRequest{Key: input.Key, Changes: []Change{{Kind: kind, Fields: map[string]any{"input": namedData(input)}}}}
 	request.prepare = func(root *os.Root) ([]Change, error) {
-		doc, err := findNamed(ctx, root, kind, input)
-		if err != nil {
+		if err := validateTimeInput(input.Metadata); err != nil {
 			return nil, err
+		}
+		if input.Create && input.ID != "" {
+			return nil, fmt.Errorf("choose one: create:true and name for a new record, or id to update an existing record")
+		}
+		if input.Create && strings.TrimSpace(input.Name) == "" {
+			return nil, fmt.Errorf("a new entity or topic needs a name")
+		}
+		if !input.Create && input.ID == "" {
+			return nil, fmt.Errorf("to update an entity or topic, supply its id; to create a separate new one, supply create:true and name")
 		}
 		change := namedChange(kind, input)
 		change.Ref = "record"
-		if doc != nil {
-			change.ID = doc.ID
-			if input.ID == "" {
-				change.Fields["name"] = doc.Record(kind).Title
+		if input.ID != "" {
+			if _, err := findNamed(ctx, root, kind, input); err != nil {
+				return nil, err
 			}
 		}
 		changes := []Change{change}
-		err = resolveConnections(ctx, root, &changes)
+		err := resolveConnections(ctx, root, &changes)
 		return changes, err
 	}
 	return s.ApplyBatch(ctx, request)
@@ -281,6 +307,9 @@ func (s *Store) SaveStory(ctx context.Context, input StoryInput) (Receipt, error
 	intent := map[string]any{"metadata": fields, "relations": relationData(input.Relations)}
 	request := BatchRequest{Key: writeKey(input.Key), User: input.User, Changes: []Change{{ID: input.ID, Kind: Stories, Fields: intent, Body: input.Text, Append: input.Append}}}
 	request.prepare = func(root *os.Root) ([]Change, error) {
+		if err := validateTimeInput(fields); err != nil {
+			return nil, err
+		}
 		change := Change{Ref: "story", ID: input.ID, Kind: Stories, Fields: fields, Body: input.Text, Append: input.Append}
 		if input.Relations != nil {
 			change.Fields["relations"] = input.Relations

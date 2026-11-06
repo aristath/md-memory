@@ -3,6 +3,8 @@ package songya
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -70,7 +72,7 @@ func TestDamagedTimesRetainDataAndIndependentChronology(t *testing.T) {
 		map[string]any{"unexpected": "Keep this original detail"},
 		"summer with no known year",
 	} {
-		damaged := createRecord(t, store, Memories, map[string]any{"time": fields}, "Intact narrative")
+		damaged := createDamagedTimeRecord(t, store, fields, "Intact narrative")
 		later := createRecord(t, store, Memories, map[string]any{"relations": []Relation{{"after", damaged.ID}}}, "Later")
 		doc, _ := store.Read(damaged.ID)
 		if len(doc.Diagnostics()) == 0 || doc.Body != "Intact narrative" {
@@ -116,4 +118,25 @@ func TestEventTimeNormalizationKeepsAnnotationsAndDuplicateData(t *testing.T) {
 	if compound.Record(Memories).Time.Date != nil {
 		t.Fatal("compound time became a calendar claim")
 	}
+}
+
+// Simulate pre-existing damage or an external file edit, not a new API write.
+func createDamagedTimeRecord(t *testing.T, store *Store, value any, body string) *Document {
+	t.Helper()
+	doc := createRecord(t, store, Memories, map[string]any{"user": "ari"}, body)
+	if err := doc.Set("time", value); err != nil {
+		t.Fatal(err)
+	}
+	data, err := doc.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(store.path, "memories", doc.ID+".md"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.Read(doc.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result
 }

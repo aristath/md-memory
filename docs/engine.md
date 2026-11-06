@@ -414,7 +414,11 @@ identities are created under the same lock and durable write. Ambiguous or unusa
 connections remain in unresolved_connections with diagnostics; prose still saves.
 
 `SaveNamed(ctx, Entities|Topics, NamedInput)` creates/updates brief identities or
-subjects. Experiences and histories belong in linked memories. `SaveStory(ctx,
+subjects. `Create:true` with a name always creates a separate ID, even if another
+record has that name. An update requires an existing `ID`; name-only calls never
+update a record. Supplying both Create and ID is an error. Search/prepare first,
+then choose the identity explicitly. Accepted retries keep their original receipt.
+Experiences and histories belong in linked memories. `SaveStory(ctx,
 StoryInput)` uses the same relations field, ordered for narrative members.
 
 An existing ID updates; Text/Description replaces prose, Append enriches it.
@@ -422,6 +426,18 @@ Omitted fields remain intact. Supplied relations replace the list, except Append
 adds to existing connections; an empty slice clears it. Inline identity enrichment
 preserves connections. Metadata remains open. A supplied internal Key binds retry
 intent; omission starts an independent operation. All writes use batch recovery.
+
+Inline named targets can use `create:true` to create a separate identity without
+looking up its name. Modifying an existing inline identity requires its ID;
+name-only links may resolve an existing identity but cannot enrich it. A failed
+identity update leaves an unresolved connection rather than changing the wrong
+record; the memory and other healthy links still save.
+
+New values for time.date, time.earliest, and time.latest must be real `YYYY-MM-DD`
+calendar dates or null. Validation runs on create, update, and batch/source writes.
+Existing damaged values are retained for repair and do not block unrelated edits;
+they are not returned as valid typed dates. An ongoing state since July 2025 uses
+earliest `2025-07-01`, latest null, and prose preserving the uncertain starting day.
 
 ## Related changes and retry safety
 
@@ -442,6 +458,14 @@ changes under that key are blocked. Keys bind the accepted intent; they do not
 expire or become reusable after organization. Accounts remain in the journal and
 in affected memories' `original_accounts`; they are never silently discarded if
 capture creates only other record types.
+
+`WithOriginalText(ctx, text)` lets a trusted client attach the person's exact words
+to a high-level save. `SaveMemory` never infers those original words from its
+generated `text` argument. With no source attached, its journal still retains
+before/after bytes but has no invented original account. A direct `BatchRequest`
+may supply `Account` explicitly. On retry, client-attached source stays as first
+accepted; different record changes still conflict. This does not rewrite older
+journals or stored `original_accounts`.
 
 The batch boundary is:
 

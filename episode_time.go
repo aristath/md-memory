@@ -1,8 +1,10 @@
 package songya
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
+	"time"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -12,6 +14,61 @@ type EpisodeTime struct {
 	Date     *string `json:"date" yaml:"date"`
 	Earliest *string `json:"earliest" yaml:"earliest"`
 	Latest   *string `json:"latest" yaml:"latest"`
+}
+
+func calendarDate(node *yaml.Node) bool {
+	node = dereference(node)
+	if node == nil || node.Kind != yaml.ScalarNode || (node.ShortTag() != "!!str" && node.ShortTag() != "!!timestamp") {
+		return false
+	}
+	_, err := time.Parse(time.DateOnly, strings.TrimSpace(node.Value))
+	return err == nil
+}
+
+func validateTimeInput(fields map[string]any) error {
+	if value, supplied := fields["time"]; supplied {
+		node, _ := encodeValue(value)
+		return validateTimeChange(nil, node)
+	}
+	return nil
+}
+
+// Validate newly supplied values without making existing damaged metadata block
+// an unrelated edit. Raw damaged values remain in source/journals for repair.
+func validateTimeChange(previous, next *yaml.Node) error {
+	before, beforeErr := yaml.Marshal(previous)
+	after, afterErr := yaml.Marshal(next)
+	if beforeErr == nil && afterErr == nil && bytes.Equal(before, after) {
+		return nil
+	}
+	next = dereference(next)
+	if next == nil || next.ShortTag() == "!!null" {
+		return nil
+	}
+	if next.Kind == yaml.ScalarNode && calendarDate(next) {
+		return nil // An unambiguous date normalizes to the canonical object.
+	}
+	if next.Kind != yaml.MappingNode {
+		return fmt.Errorf("time needs date, earliest and latest fields containing YYYY-MM-DD dates or null; put words such as 'since July' in the memory text")
+	}
+	for i := 0; i+1 < len(next.Content); i += 2 {
+		key, _ := fieldName(next.Content[i])
+		value := dereference(next.Content[i+1])
+		if sameFieldValue(metadataField(previous, key), value) {
+			continue
+		}
+		if key != "date" && key != "earliest" && key != "latest" {
+			if key == "unparsed_previous_time" && previous != nil && sameFieldValue(previous, value) {
+				continue // Existing recovery preserves the old raw value here.
+			}
+			return fmt.Errorf("time.%s is not a date field; use date, earliest and latest", key)
+		}
+		if value != nil && (value.ShortTag() == "!!null" || calendarDate(value)) {
+			continue
+		}
+		return fmt.Errorf("time.%s must be a real YYYY-MM-DD date or null; use null for an unknown end and put date explanations in the memory text", key)
+	}
+	return nil
 }
 
 // A supplied component patches the existing event time; omission preserves it.
@@ -54,7 +111,7 @@ func episodeTime(node *yaml.Node) EpisodeTime {
 			return nil
 		}
 		value := strings.TrimSpace(entry.Value)
-		if value == "" {
+		if !calendarDate(entry) {
 			return nil
 		}
 		return &value
@@ -79,8 +136,8 @@ func eventTimeNode(node *yaml.Node) (*yaml.Node, string) {
 		return yamlValue(map[string]any{"date": nil, "earliest": nil, "latest": nil}), ""
 	}
 	if node.Kind == yaml.ScalarNode {
-		if _, ok := parseBound(node.Value, false); ok && (node.ShortTag() == "!!str" || node.ShortTag() == "!!timestamp") {
-			return yamlValue(map[string]any{"date": node.Value, "earliest": nil, "latest": nil}), ""
+		if calendarDate(node) {
+			return yamlValue(map[string]any{"date": strings.TrimSpace(node.Value), "earliest": nil, "latest": nil}), ""
 		}
 		return node, "event time needs date, earliest and latest; original value retained"
 	}
@@ -98,6 +155,9 @@ func eventTimeNode(node *yaml.Node) (*yaml.Node, string) {
 		value := dereference(node.Content[i+1])
 		if value != nil && value.Kind != yaml.ScalarNode {
 			return node, fmt.Sprintf("unreadable event time %s retained for repair", key)
+		}
+		if value != nil && value.ShortTag() != "!!null" && !calendarDate(value) {
+			return node, fmt.Sprintf("event time %s needs a real YYYY-MM-DD date or null; original value retained for repair", key)
 		}
 	}
 	t := episodeTime(node)

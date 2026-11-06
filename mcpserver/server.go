@@ -22,29 +22,74 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const Guide = `Songya stores connected Markdown records. IDs, save timestamps and retry bookkeeping are automatic.
+const Guide = `Songya stores connected Markdown records. A record is one saved entry. A field is a named part such as title. An ID is the unique label a tool returns for a record. Copy IDs exactly; never invent them. Examples are instructions, not facts to save.
 
-Before every save, use prepare_memory(text) to find existing memories, entities and topics. Reuse existing records. One save can create a memory and its new connected identities.
+WHAT TO SAVE WHERE
+- Memory: one event WITH its details, or a standalone fact or preference. All people, food, conversation, feelings, and quotes from one dinner belong together. A different dinner is a different memory. An unrelated home address or usual drink preference can be a standalone fact; do not attach it to the dinner. Include all supplied details. Say whose feelings or opinions they are. Do not invent missing details or shorten away important words. One detailed event can take several paragraphs; there is no fixed word limit.
+- Entity: a person, place, animal, organization, or named thing. name names it; aliases are other names of that SAME thing; description is a short identification, usually one or two sentences. Example arguments for save_entity:
+{"create":true,"name":"Jamie","description":"Sam's former partner. A hardware technician who rides motorcycles."}
+Put experiences and detailed history in linked memories, not in this description. The same name alone does not prove two people are the same person. To create a separate entity, send create:true and name, without id; it never modifies a matching name. To update one, send its returned id and leave create out. Use name on an update only to rename it. Two people named Alex must have separate IDs; link by the correct ID.
+- Topic: a subject such as Music or Relationships. save_topic also uses create:true and name for a new topic, or id to update one. name names it; description explains the subject, not someone's life. Playing piano supports Music; a breakup supports Relationships; being tired after work does NOT establish Burnout or Depression. Reuse an existing topic with that meaning. If no subject named by the person or activity described in the account supports a topic, leave the topic link out.
+- Story: a larger account whose related_to links put memories in reading order. text can give a short introduction; do not copy all the memories into it. Create a story if asked, or if the person names a larger experience AND at least two memories describe separate events within it. Meeting a partner and their breakup can belong to one relationship story; two unrelated dinners do not need a story just because the same friend attended. Reuse a story for the same larger experience and owner. Use requested reading order, otherwise known event order; if unknown, use telling order without claiming it is time order.
+Do not rewrite or reorganize existing records just to change their style or structure. Change an existing record's style or structure only when the person asks for that change.
 
-Memories hold events, experiences, facts and preferences. Entities briefly identify people, places and things. Topics identify subjects. Stories compose memories through related_to links in reading order.
+OWNER
+An owner is the user whose collection holds a memory/story, not everyone taking part. The selected user ID is a collection label, not automatically a person's name or entity ID. Use it for new memories/stories. Omit user on an update to keep the existing owner; change it only if asked.
+Entities/topics are shared identities. Different owners can link to the same identity; do not copy it for each owner. You can find shared identities while searching the selected user's collection.
+For owned searches, supply the selected user. Use user="all" only when the person explicitly asks to search everyone's collections. If no user is supplied by the client and the collection is unclear, ask which collection to use.
 
-Every connection uses relations: type and target. Types: after, caused_by, part_of, related_to, possibly_same_as. Use related_to for entity/topic associations. Reverse connections are automatic. possibly_same_as never merges records.
+WORK IN THIS ORDER
+1. For a question, read the evidence needed to answer; do not change records merely because someone asked about them. A missing search result does not prove an event never happened.
+2. Before a save/correction, use prepare_memory to find possible matches. Compare the owner, event, people, place, and timing. A match is a suggestion, not an instruction to reuse it.
+3. Same event plus a correction/extra detail: change that memory. Different event: create a new memory even with the same people. True then but changed later: record the new state separately without overwriting the true past. Already correct: do not save again. If you cannot tell whether accounts describe the same event, ask before changing them.
+4. Before changing a record, call read_memory with its id and view="source". Read all pages. Separate the header from the body using the rules below.
+5. Send only changed fields. Check each returned value against what you meant to save. Do not claim done while a requested change is missing.
 
-A target is an existing record ID, an entity name, or an object with kind (entities or topics), name and optional brief description/type/aliases.
+READING AND PAGES
+Use recall_memory to find a person/subject and connected accounts. Use search_memory to search/list; mode=semantic searches by meaning.
+Tool reply data may be inside structuredContent.data. A positive number in the field next is the position of another page. Call the SAME tool with that number in offset and other arguments unchanged. Example continuation arguments for read_memory after a reply with {"next":16384}:
+{"id":"RECORD_ID","view":"source","offset":16384}
+Read ALL pages before replacing words, so unseen details are not deleted. If content is incomplete but no next position is returned, read the needed record by ID or report what you could not read. Do not invent missing words or a page position.
 
-save_memory({"text":"Alex and Sam enjoy the lentil soup at Cedar Café.","relations":[{"type":"related_to","target":"Alex"},{"type":"related_to","target":"Sam"},{"type":"related_to","target":{"kind":"entities","name":"Cedar Café","type":"place"}}]})
+SOURCE VERSUS BODY
+In view="source", the normal file header lies between the first two lines containing only ---. It holds fields such as title, user, time, and relations. The body is ALL writing AFTER the second --- line.
+Only the body goes in text for memories/stories, or description for entities/topics. Never paste the header block, its field lines, or its --- divider lines into those arguments. Dates, names, and places still belong in ordinary body sentences when part of the account. Send a changed header field in its own argument too.
+If the header is damaged or its end is unclear, read view="body" separately. Do not guess a replacement or delete unreadable words; report that record's problem and continue other clear work.
 
-save_memory creates a memory with text and no id; appends new prose with id and append; or updates selected fields with id and the fields to change. text replaces the full prose; text plus append replaces first, then appends. Omitted fields stay intact. Include enough context for the memory to stand alone, preserving meaning, attribution and meaningful quotations. Use separate connected memories for distinct events, especially when they have different dates. Entity/topic saves use name and description; save_story uses title, introductory text and ordered relations.
+SAVES
+Call one tool at a time, with JSON arguments. Do not write pretend calls or XML tags in reply text.
+New memory: omit id; always send a short title and text. Send the selected user unless the client supplies user. New stories also need a title. Example: call save_memory with this JSON:
+{"title":"Alex and Sam's favorite soup","text":"Alex and Sam enjoy the soup at Cedar Café.","relations":[{"type":"related_to","target":"Alex"},{"type":"related_to","target":"Sam"},{"type":"related_to","target":{"kind":"entities","name":"Cedar Café","type":"place"}}]}
+Change a memory/story: send id and the fields to change. text replaces ALL body words. For a correction, change only wrong claims and copy all other wording, details, names, and quotes exactly. append adds words about the SAME account after the old words; it must not add a different dated event or a conflicting claim.
+Change entity/topic words: send id and description, NOT text. For dates only, send id and time; leave text out.
+Omit means leave a field out: its old value stays. An empty text or description clears the words. metadata means extra named fields; it changes only supplied keys. IDs and save times are automatic.
 
-Use structured time as well as prose whenever event dates or bounds are supported. date is exact; earliest/latest are inclusive bounds, not asserted exact dates. Combine all temporal information, including related events and relative expressions; preserve the original wording and explain inferred bounds in prose. Do not invent precision. Example: Ari was born on 6 March 1981; his family moved to Mytilene a few months later, still in 1981. With May understood as the earliest plausible month for this account, save birth with time:{"date":"1981-03-06"}, and a separate move memory with time:{"date":null,"earliest":"1981-05-01","latest":"1981-12-31"}, prose explaining the bounds, and an after relation to the birth memory. The earliest bound cannot precede the known birth. This example is not a universal definition of "a few months".
+CORRECTIONS AND QUOTES
+Search for the corrected event, its people, and the old claim. Read matching accounts and links. Edit another record only if it repeats the wrong claim or a fact in it is shown wrong by the new information. A shared person/topic/link alone is not a reason to edit it.
+A move corrected from 2020 to December 1, 2019 also changes an account saying "When Sam made that move in 2020". It does not change a later party date merely because Sam attended. If that date was worked out from the old move date, report that it needs checking; do not invent a replacement.
+Your generated words are not the person's original words. The client attaches exact words separately. Do not set or change original_accounts.
+If wrong words are a summary, correct only the wrong claim. If they are a real quote, do not change words inside it. In that SAME memory's body, label the quote as an earlier corrected account and add a separate sentence with the corrected fact. Example body: Earlier account, now corrected: Sam said, “We moved in 2020.” Correction: Sam says the move was on December 1, 2019. Put the corrected date in time too, not just in the chat reply.
 
-Omitting time preserves it; supplied components patch only those components. Component null clears it; time:null clears all three. Clear date explicitly when changing an exact date to bounds. Omitted relations stay intact; nonempty append adds supplied relations, other saves replace them; [] always clears. Metadata patches supplied keys; omission preserves other keys. IDs and save timestamps are automatic and separate from event time.
+DATES AND LINKS
+Exact day example arguments for save_memory:
+{"id":"MOVE_ID","time":{"date":"2019-12-01","earliest":null,"latest":null}}
+Month-only example arguments for save_memory:
+{"id":"EVENT_ID","time":{"date":null,"earliest":"2019-11-01","latest":"2019-11-30"}}
+For a one-time event, these bounds are first/last possible days, not known exact days. A range alone does not prove an event lasted for the whole range.
+For an ongoing state SINCE July 2025, earliest is the start bound and latest is the end bound. Use an open end, not July 31. Example creation arguments for a NEW changed preference (replace SELECTED_USER with the selected user ID):
+{"user":"SELECTED_USER","title":"Sam prefers tea since July 2025","text":"Since July 2025, Sam prefers tea to coffee.","time":{"date":null,"earliest":"2025-07-01","latest":null}}
+Do not change the earlier true preference. If correcting the start of this same already-saved state, send its returned id and these time fields instead. The body says "Since July 2025"; July 1 is a bound, not an asserted exact starting day.
+All three time fields accept ONLY real YYYY-MM-DD dates or null. Never put "ongoing", "since July", "unknown", "last summer", a bare month/year, timestamps, or empty strings there. Put these explanations in the body. For an event IN July, use July 1 through July 31 as possible bounds; for a state SINCE July, leave the end null.
+A date bound worked out from known facts is an inferred bound; explain those facts in the memory body. Check ages and event order too. Do not guess an exact day or an age.
+Omitted time parts stay the same. null clears a part; time:null clears all dates. Clear date when changing an exact day to bounds.
+Use relations to link records. related_to links relevant people/places/topics/memories. after points from the later event to the earlier one. caused_by points from an event to its stated cause; order alone does not prove a cause. part_of points from a smaller event to its larger event. possibly_same_as marks uncertain identity without merging records.
+Example link-list replacement arguments for save_memory:
+{"id":"MEMORY_ID","relations":[{"type":"related_to","target":"EXISTING_ID"}]}
+That example leaves only one link. Do not use that list if other links must remain; include those links too. A target can also be an entity name or {"kind":"entities","name":"Name","description":"Brief identification"}; use kind="topics" for a topic. Example ID labels are placeholders; substitute real tool-returned IDs.
+Omitted relations keep old links. Supplied relations replace ALL old links unless append is nonempty, in which case they add links. [] clears all links. Include old links to keep when replacing a link list. Reverse links are automatic.
 
-Check outcome and changed_fields against the requested information. created/updated confirm a durable change; unchanged means no fields changed. Inspect the returned prose/time/relations, retrieving full text when truncated. Do not claim new facts were saved or repeat the same unchanged call. A publication status of committed alone does not establish that new facts were added.
-
-Memories/stories have an owning user; integrations can supply it. Entities/topics are shared. user:"all" selects everyone. Ownership is separate from linked participants.
-
-recall_memory(text) retrieves connected accounts; search_memory(text,mode=semantic) searches by meaning. Search kind=entities or topics to find identities/subjects. read_memory(id) reads prose; view=source includes metadata. explore_memory(id) follows links. Follow next as offset with the same query/user when results are paged.`
+CHECK
+Read outcome, changed_fields, and the returned title/words/dates/links. A new memory/story must have a nonempty title; add a missing title with an id-and-title update. created/updated means saved changes; check they are the intended changes. unchanged means nothing changed, not a rejected save. Fix missing/wrong arguments; never repeat the same unchanged call. Read back a record if returned content is too short to check. Report errors and missing requested changes without inventing a cause. Do not claim relevant records agree unless you checked them.`
 
 // App keeps import access separate from record-store access. Import roots are
 // supplied by the process owner, never accepted as arbitrary client paths.
@@ -203,10 +248,10 @@ func str(description string) map[string]any {
 	return map[string]any{"type": "string", "description": description}
 }
 func count() map[string]any {
-	return map[string]any{"type": []string{"integer", "string"}, "description": "Optional page size or byte offset; numeric strings are accepted."}
+	return map[string]any{"type": []string{"integer", "string"}, "description": "Number for page size, byte offset, or link depth. A numeric string also works."}
 }
 func object() map[string]any {
-	return map[string]any{"type": "object", "additionalProperties": true, "description": "Optional custom metadata. IDs and creation/update times are automatic."}
+	return map[string]any{"type": "object", "additionalProperties": true, "description": "Extra fields to change. Omitted fields stay the same. Do not set IDs, save times, or original_accounts."}
 }
 
 func array(item any) map[string]any { return map[string]any{"type": "array", "items": item} }
@@ -214,12 +259,18 @@ func array(item any) map[string]any { return map[string]any{"type": "array", "it
 func tool[T any](server *mcp.Server, name, description string, input any, readOnly bool, handler func(context.Context, T) (any, error)) {
 	closed := false
 	server.AddTool(&mcp.Tool{Name: name, Description: description, InputSchema: input, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: readOnly, OpenWorldHint: &closed}}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if !readOnly && editsOriginalAccounts(request.Params.Arguments) {
+			return result(nil, fmt.Errorf("original_accounts holds the person's exact words. Do not change it. Put corrected memory words in text, or entity/topic words in description. The app saves the original message separately")), nil
+		}
 		var value T
 		if err := decode(request.Params.Arguments, &value); err != nil {
 			return result(nil, fmt.Errorf("cannot interpret arguments: %w", err)), nil
 		}
 		if key, ok := request.Params.Meta["songya/request-key"].(string); ok && key != "" {
 			ctx = context.WithValue(ctx, operationKey{}, key)
+		}
+		if text, ok := request.Params.Meta["songya/original-text"].(string); ok {
+			ctx = songya.WithOriginalText(ctx, text)
 		}
 		output, err := handler(ctx, value)
 		if ctx.Err() != nil {
@@ -487,7 +538,7 @@ func New(lifetime context.Context, store *songya.Store, roots map[string]string)
 			return next(ctx, method, request)
 		}
 	})
-	tool(server, "prepare_memory", "Find existing memories, entities and topics related to text.", schema(map[string]any{"text": str("The memory or subject to search"), "user": str("User filter; all selects everyone"), "limit": count()}, "text"), true, func(ctx context.Context, input struct {
+	tool(server, "prepare_memory", "Find existing memories, entities and topics related to text.", schema(map[string]any{"text": str("The memory or subject to search"), "user": str("Selected user to search. Supply that user. Use all only when the person explicitly asks to search everyone. Omitted user searches everyone; do not omit it for a selected-user search. Shared entities/topics are still included."), "limit": count()}, "text"), true, func(ctx context.Context, input struct {
 		Text  string `json:"text"`
 		User  string `json:"user"`
 		Limit int    `json:"limit"`
@@ -507,7 +558,7 @@ func New(lifetime context.Context, store *songya.Store, roots map[string]string)
 		name        string
 		kind        songya.Destination
 		description string
-	}{{"save_entity", songya.Entities, "Save a person, place or thing with a brief identifying description. Save its experiences, preferences and history as linked memories. Reuses a unique name; id selects an existing entity."}, {"save_topic", songya.Topics, "Save a subject by name and description. Reuses a unique matching name; use id to update a specific topic."}} {
+	}{{"save_entity", songya.Entities, "Save a person, place, or thing. Send id to change an existing entity. Send description to change its words; text does not work here. Put events in linked memories. For a new record, send create:true and name, without id. For an update, send its id; a name alone never updates a record."}, {"save_topic", songya.Topics, "Save a subject. Send id to change an existing topic. Send description to change its words; text does not work here. For a new record, send create:true and name, without id. For an update, send its id; a name alone never updates a record."}} {
 		inputSchema := namedSchema(item.kind == songya.Entities)
 		tool(server, item.name, item.description, inputSchema, false, func(ctx context.Context, input songya.NamedInput) (any, error) {
 			input.Key = requestKey(ctx)
@@ -515,35 +566,35 @@ func New(lifetime context.Context, store *songya.Store, roots map[string]string)
 			return savedWrite(ctx, store, receipt, "record", err)
 		})
 	}
-	tool(server, "save_story", "Save a narrative. Order its related_to links to memories/stories in reading order. Use id to update.", schema(map[string]any{"id": str("Existing story ID; omit to create"), "user": str("Story owner"), "title": str("Story title"), "text": str("Narrative text"), "append": str("Add narrative text"), "metadata": object(), "relations": relationsSchema()}), false, func(ctx context.Context, input songya.StoryInput) (any, error) {
+	tool(server, "save_story", "Save a story. Send id to change one. text replaces all story words. Put related_to links to its memories in reading order.", schema(map[string]any{"id": str("Existing story ID; omit to create"), "user": str("Story owner"), "title": str("Story title"), "text": str("Narrative text"), "append": str("Add narrative text"), "metadata": object(), "relations": relationsSchema()}), false, func(ctx context.Context, input songya.StoryInput) (any, error) {
 		input.Key = requestKey(ctx)
 		receipt, err := store.SaveStory(ctx, input)
 		return savedWrite(ctx, store, receipt, "story", err)
 	})
-	querySchema := schema(map[string]any{"user": str("User filter; all or omitted selects everyone. Entities and topics are shared."), "text": str("Search text; omit to list"), "kind": str("Record directory: memories, entities, topics or stories. Use entities for entity lookup."), "related_to": str("Optional outgoing target ID"), "relation_type": str("Optional relationship type"), "include_retired": map[string]any{"type": "boolean"}, "offset": count(), "limit": count()})
+	querySchema := schema(map[string]any{"user": str("Selected user to search. Supply that user. Use all only when the person explicitly asks to search everyone. Omitted user searches everyone; do not omit it for a selected-user search. Shared entities/topics are still included."), "text": str("Search text; omit to list"), "kind": str("Record directory: memories, entities, topics or stories. Use entities for entity lookup."), "related_to": str("Optional outgoing target ID"), "relation_type": str("Optional relationship type"), "include_retired": map[string]any{"type": "boolean"}, "offset": count(), "limit": count()})
 	searchProperties := maps.Clone(querySchema["properties"].(map[string]any))
-	searchProperties["mode"] = str("lexical (default) or semantic embeddings for all record types")
+	searchProperties["mode"] = str("lexical finds words (default). semantic finds similar meaning")
 	searchSchema := schema(searchProperties)
 
-	tool(server, "recall_memory", "Recall a person, place or subject by name or record ID. Returns connected prose with record IDs, event times and story context. Follow next as offset with the same text and user when truncated.", schema(map[string]any{"text": str("Name, subject or record ID to recall"), "user": str("User filter; all or omitted selects everyone"), "offset": count(), "limit": count()}, "text"), true, func(ctx context.Context, input songya.RecallQuery) (any, error) {
+	tool(server, "recall_memory", "Find a person, place, or subject by name or ID. Read its connected memories and stories. If next is present, send next as offset with the same text and user to read more.", schema(map[string]any{"text": str("Name, subject or record ID to recall"), "user": str("Selected user to search. Supply that user. Use all only when the person explicitly asks to search everyone. Omitted user searches everyone; do not omit it for a selected-user search. Shared entities/topics are still included."), "offset": count(), "limit": count()}, "text"), true, func(ctx context.Context, input songya.RecallQuery) (any, error) {
 		page, err := store.Recall(ctx, input)
 
 		return page, err
 	})
-	tool(server, "search_memory", "Search names, aliases, descriptions and prose. Use mode=semantic to retrieve records by meaning. Find entities with kind=entities and a name or alias in text; omit text to list them. Direct file edits are refreshed automatically.", searchSchema, true, func(ctx context.Context, input songya.Query) (any, error) {
+	tool(server, "search_memory", "Find records by words. Use mode=semantic to search by meaning. To find a person, use kind=entities and their name in text. Omit text to list records. Follow next for more results.", searchSchema, true, func(ctx context.Context, input songya.Query) (any, error) {
 		input.Limit = limit(input.Limit, 8, 8)
 		return store.Search(ctx, input)
 	})
-	tool(server, "read_memory", "Read a record’s prose by ID. Use view=source for original metadata and Markdown. Follow next when truncated.", schema(map[string]any{"id": str("Record ID"), "source": str("Relative source path"), "root": str("Configured import root name; omitted for the store"), "key": str("Saved request key for proposed, before or original_text views"), "archive": str("Preserved import archive checksum"), "view": str("body (default) or source; with key use proposed, before or original_text"), "offset": count(), "limit": count()}), true, app.read)
-	tool(server, "explore_memory", "Outgoing links, derived backlinks and bounded traversal. Split redirects remain ambiguous instead of selecting one replacement.", schema(map[string]any{"user": str("User filter; all or omitted selects everyone. Entities and topics are shared."), "id": str("Starting ID; omit for paged edges"), "direction": str("incoming, outgoing or both"), "type": str("Optional edge type"), "depth": count(), "offset": count(), "limit": count()}), true, func(ctx context.Context, input songya.GraphQuery) (any, error) {
+	tool(server, "read_memory", "Read a record by id. Use view=source to read all fields and words before editing. If next is present, send it as offset with the same id and view to read more.", schema(map[string]any{"id": str("Record ID"), "source": str("Relative source path"), "root": str("Configured import root name; omitted for the store"), "key": str("Saved request key for proposed, before or original_text views"), "archive": str("Preserved import archive checksum"), "view": str("body (default) or source; with key use proposed, before or original_text"), "offset": count(), "limit": count()}), true, app.read)
+	tool(server, "explore_memory", "Read links from or to a record. direction is outgoing, incoming, or both. depth is how many links to follow. If a record was split, check all replacements; do not guess one.", schema(map[string]any{"user": str("Selected user to search. Supply that user. Use all only when the person explicitly asks to search everyone. Omitted user searches everyone; do not omit it for a selected-user search. Shared entities/topics are still included."), "id": str("Starting ID; omit for paged edges"), "direction": str("incoming, outgoing or both"), "type": str("Optional edge type"), "depth": count(), "offset": count(), "limit": count()}), true, func(ctx context.Context, input songya.GraphQuery) (any, error) {
 		input.Limit = limit(input.Limit, 20, 10)
 		return store.Graph(ctx, input)
 	})
-	tool(server, "memory_timeline", "Partial chronology from event dates, bounds, after and caused_by; part_of groups events. Unknown order remains unknown; contradictory constraints are diagnosed.", querySchema, true, func(ctx context.Context, input songya.Query) (any, error) {
+	tool(server, "memory_timeline", "Read events in time order using dates and links. Check diagnostics for conflicts. Unknown dates do not become exact dates. The tool does not guess unknown order.", querySchema, true, func(ctx context.Context, input songya.Query) (any, error) {
 		input.Limit = limit(input.Limit, 8, 8)
 		return store.Timeline(ctx, input)
 	})
-	tool(server, "compose_story", "Compose a story’s introduction and ordered related_to memories/stories in bounded byte pages. Missing, recursive and split targets remain explicit.", schema(map[string]any{"id": str("Story ID"), "offset": count(), "limit": count()}, "id"), true, func(ctx context.Context, input pageInput) (any, error) {
+	tool(server, "compose_story", "Read a story and its linked memories in reading order. Follow next as offset to read more. Missing records and loops are reported.", schema(map[string]any{"id": str("Story ID"), "offset": count(), "limit": count()}, "id"), true, func(ctx context.Context, input pageInput) (any, error) {
 		return store.Compose(ctx, input.ID, input.Offset, limit(input.Limit, 12288, 8192))
 	})
 	type organization struct {
@@ -560,7 +611,7 @@ func New(lifetime context.Context, store *songya.Store, roots map[string]string)
 		} `json:"parts"`
 	}
 	part := schema(map[string]any{"kind": str("Record kind"), "metadata": object(), "text": str("Part narrative")}, "text")
-	tool(server, "organize_memory", "Merge source IDs or split one source ID into parts. Original narratives remain readable.", schema(map[string]any{"action": str("merge or split"), "sources": array(str("Source ID to merge")), "source": str("Source ID to split"), "kind": str("Kind of the merged record"), "metadata": object(), "text": str("Merged narrative"), "parts": array(part)}, "action"), false, func(ctx context.Context, input organization) (any, error) {
+	tool(server, "organize_memory", "Join records with action=merge and sources. Split one record with action=split, source, and parts. Read records first. Old words remain readable.", schema(map[string]any{"action": str("merge or split"), "sources": array(str("Source ID to merge")), "source": str("Source ID to split"), "kind": str("Kind of the merged record"), "metadata": object(), "text": str("Merged narrative"), "parts": array(part)}, "action"), false, func(ctx context.Context, input organization) (any, error) {
 		key := requestKey(ctx)
 		if key == "" {
 			key = "organize_" + rand.Text()
@@ -633,7 +684,7 @@ func New(lifetime context.Context, store *songya.Store, roots map[string]string)
 			return nil, fmt.Errorf("choose preview or apply")
 		}
 	})
-	tool(server, "memory_maintenance", "Inspect diagnostics or a durable request receipt, retry recovery, or rebuild the disposable index. Never retry an accepted write under a new key.", schema(map[string]any{"action": str("status, receipt, recover, abandon, rebuild or embed"), "key": str("Request key for receipt or deliberate abandonment"), "view": str("source returns a byte page of the full receipt"), "offset": count(), "limit": count()}, "action"), false, func(ctx context.Context, input struct {
+	tool(server, "memory_maintenance", "Check problems with action=status. Check a save with action=receipt and key. recover resumes saved work. rebuild refreshes the search index. embed refreshes vectors. abandon stops unfinished work. Do not repeat an accepted save with a new key.", schema(map[string]any{"action": str("status, receipt, recover, abandon, rebuild or embed"), "key": str("Request key for receipt or deliberate abandonment"), "view": str("source returns a byte page of the full receipt"), "offset": count(), "limit": count()}, "action"), false, func(ctx context.Context, input struct {
 		Action string `json:"action"`
 		View   string `json:"view"`
 		Key    string `json:"key"`
