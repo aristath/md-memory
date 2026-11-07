@@ -4,22 +4,37 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Sōngyā · Records</title>
+    <script src="/assets/theme.js"></script>
     <link rel="stylesheet" href="/assets/editors.css" />
     <link rel="stylesheet" href="/assets/app.css" />
+    <link rel="stylesheet" href="/assets/chat.css" />
     <script defer src="/assets/app.js"></script>
   </head>
   <body
     x-data="songya"
-    :class="{'graph-expanded':graphExpanded}"
-    @keydown.escape.window="if(graphExpanded && !$refs.editorDialog.open && !$event.defaultPrevented) toggleGraphExpanded()"
+    :class="{'graph-expanded':graphExpanded,'chat-expanded':chatExpanded}"
+    @keydown.escape.window="if(!$event.defaultPrevented&&!document.querySelector('dialog:modal')){if(chatExpanded)toggleChatExpanded();else if(graphExpanded)toggleGraphExpanded()}"
   >
-    <header class="masthead" :inert="graphExpanded">
-      <a class="brand" href="/" @click.prevent="back()">Sōngyā</a
-      ><button class="primary" @click="create()" :disabled="busy||loading">
-        New record
-      </button>
+    <header class="masthead" :inert="graphExpanded||chatExpanded">
+      <a class="brand" href="/" @click.prevent="back()">Sōngyā</a>
+      <div class="header-actions">
+        <button class="primary" @click="create()" :disabled="busy||loading">
+          New record</button
+        ><label class="theme-control"
+          ><span class="sr-only">Color theme</span
+          ><select
+            aria-label="Color theme"
+            x-model="theme"
+            @change="setTheme()"
+          >
+            <option value="system">Device</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select></label
+        >
+      </div>
     </header>
-    <div class="graph-slot">
+    <div class="graph-slot" :inert="chatExpanded">
       <section
         class="memory-graph"
         :class="{expanded:graphExpanded}"
@@ -135,7 +150,7 @@
       class="workspace-tabs"
       role="tablist"
       aria-label="Memory workspace"
-      :inert="graphExpanded"
+      :inert="graphExpanded||chatExpanded"
     >
       <button
         id="chat-tab"
@@ -165,7 +180,7 @@
         Retrieval settings
       </button>
     </nav>
-    <div x-show="!dialogOpen" :inert="graphExpanded">
+    <div x-show="!dialogOpen" :inert="graphExpanded||chatExpanded">
       <div class="messages" aria-live="polite">
         <p class="success" x-show="notice" x-text="notice" x-cloak></p>
         <p
@@ -181,188 +196,351 @@
       <section
         id="chat-panel"
         class="chat-view"
+        :class="{expanded:chatExpanded}"
         role="tabpanel"
         aria-labelledby="chat-tab"
         x-show="tab==='chat'"
       >
-        <div class="chat-heading">
-          <h1>Chat with your memories</h1>
-          <button @click="openChatSettings()">Chat settings</button>
-        </div>
-        <div class="chat-controls">
-          <label
-            >Talking as<select
-              aria-label="Talking as"
-              x-model="chatUser"
-              @change="changeChatUser()"
-              :disabled="chatSending||!!chatPending"
-            >
-              <option value="">Choose a user</option>
-              <template x-for="user in chatUsers()" :key="user"
-                ><option
-                  :value="user"
-                  :selected="user===chatUser"
-                  x-text="user"
-                ></option
-              ></template></select
-          ></label>
-          <button
-            class="text-button"
-            @click="chatAddingUser=!chatAddingUser"
-            :disabled="chatSending||!!chatPending"
+        <div
+          class="chat-workspace"
+          x-ref="chatWorkspace"
+          :class="{'history-drawer':chatCompact}"
+        >
+          <div class="chat-fit" x-ref="chatFit" aria-hidden="true" inert>
+            <i></i><i></i>
+          </div>
+          <dialog
+            class="chat-sidebar"
+            x-ref="chatSidebar"
+            :class="{drawer:chatCompact}"
+            :role="chatCompact?'dialog':'navigation'"
+            aria-labelledby="chat-history-heading"
+            @click.self="closeChatSidebar()"
           >
-            Add user
-          </button>
-          <label class="chat-history"
-            >Conversation<select
-              aria-label="Conversation"
-              x-model="chatSessionID"
-              @change="selectChat()"
-              :disabled="chatSending||!!chatPending"
+            <div class="chat-sidebar-heading">
+              <h2 id="chat-history-heading">Conversations</h2>
+              <button
+                x-show="chatCompact"
+                aria-label="Close conversations"
+                @click="closeChatSidebar()"
+              >
+                ✕
+              </button>
+            </div>
+            <input
+              class="chat-search"
+              x-ref="chatSearch"
+              type="search"
+              aria-label="Search conversations"
+              placeholder="Search conversations…"
+              title="Search titles and recent messages"
+              x-model="chatSearch"
+            />
+            <div
+              class="chat-history-views"
+              role="group"
+              aria-label="Conversation view"
             >
-              <option value="">New chat</option>
+              <button :aria-pressed="!chatArchived" @click="chatArchived=false">
+                Recent</button
+              ><button :aria-pressed="chatArchived" @click="chatArchived=true">
+                Archived
+              </button>
+            </div>
+            <div class="chat-session-list">
+              <p
+                class="chat-history-empty"
+                x-show="!chatHistory().length"
+                x-text="chatSearch?'No matching conversations.':chatArchived?'No archived conversations.':'Your conversations will appear here.'"
+              ></p>
               <template
                 x-for="conversation in chatHistory()"
                 :key="conversation.id"
-                ><option
-                  :value="conversation.id"
-                  :selected="conversation.id===chatSessionID"
-                  x-text="conversation.title"
-                ></option
-              ></template></select
-          ></label>
-        </div>
-        <form
-          class="chat-add-user"
-          x-show="chatAddingUser"
-          x-cloak
-          @submit.prevent="addChatUser()"
-        >
-          <label
-            >User name<input
-              aria-label="New chat user"
-              x-model="chatNewUser"
-              autocomplete="off"
-          /></label>
-          <button type="submit">Use this user</button>
-        </form>
-        <div class="chat-setup" x-show="!chatSettings.configured">
-          <p>Connect a model to start chatting.</p>
-          <button @click="openChatSettings()">Configure connection</button>
-        </div>
-        <details class="chat-recall" x-show="chatState?.recall" x-cloak>
-          <summary>
-            Memory context ·
-            <span
-              x-text="chatState?.recall?.results?.[0]?.status||'pending'"
-            ></span>
-            ·
-            <span
-              x-text="chatState?.recall?.results?.[0]?.items?.length||0"
-            ></span>
-            records
-          </summary>
-          <pre x-text="JSON.stringify(chatState?.recall,null,2)"></pre>
-        </details>
-        <div class="chat-conversation">
-          <div
-            class="chat-log"
-            x-ref="chatLog"
-            role="log"
-            aria-label="Chat messages"
-            aria-live="off"
-            @scroll="chatFollow=$el.scrollHeight-$el.scrollTop-$el.clientHeight<64"
-          >
-            <p class="chat-empty" x-show="!chatMessages().length">
-              Ask about an experience, add a memory, or correct an account.
-            </p>
-            <template x-for="(message,index) in chatMessages()" :key="index">
-              <article class="chat-message" :class="message.role">
-                <p class="chat-speaker">
-                  <span
-                    x-text="message.role==='user' ? (chatState?.user||chatUser) : 'Songya'"
-                  ></span>
-                  <span
-                    x-show="message.status"
-                    x-text="' · '+message.status"
-                  ></span>
-                </p>
-                <div
-                  class="chat-prose"
-                  x-show="message.content"
-                  x-html="chatMarkdown(message.content)"
-                ></div>
-                <template
-                  x-for="call in message.tool_calls||[]"
-                  :key="call.id||call.function.name"
+              >
+                <button
+                  class="chat-session"
+                  :aria-current="conversation.id===chatSessionID?'page':null"
+                  :aria-label="'Open conversation: '+conversation.title"
+                  :title="conversation.title"
+                  @click="openChat(conversation.id)"
+                  :disabled="chatNavigationBusy()"
                 >
-                  <details class="chat-tool">
-                    <summary
-                      x-text="call.function.name||'Preparing a memory operation…'"
-                    ></summary>
-                    <pre x-text="chatToolResult(call.id)"></pre>
-                  </details>
+                  <span
+                    class="chat-session-title"
+                    x-text="conversation.title"
+                  ></span>
+                  <span
+                    class="chat-session-preview"
+                    x-text="conversation.preview||'Conversation'"
+                  ></span>
+                  <span class="chat-session-meta"
+                    ><time
+                      :datetime="new Date(conversation.updated_at).toISOString()"
+                      x-text="chatSessionDate(conversation)"
+                    ></time
+                    ><span
+                      class="chat-session-status"
+                      x-text="chatSessionStatus(conversation)"
+                    ></span
+                  ></span>
+                </button>
+              </template>
+            </div>
+            <p class="chat-history-note">
+              Conversations belong to the person talking.
+            </p>
+          </dialog>
+          <div class="chat-pane">
+            <div class="chat-heading chat-main-heading">
+              <div class="chat-title">
+                <h1 x-text="chatState?.title||'Chat with your memories'"></h1>
+                <span class="muted" x-show="chatState?.archived"
+                  >Archived conversation</span
+                >
+              </div>
+              <div class="chat-heading-actions">
+                <button
+                  @click="openChatSidebar()"
+                  x-show="chatCompact"
+                  aria-controls="chat-history-heading"
+                  title="Find a conversation"
+                >
+                  Conversations
+                </button>
+                <button @click="newChat()" :disabled="chatNavigationBusy()">
+                  New chat
+                </button>
+                <button
+                  class="chat-icon"
+                  x-ref="chatExpand"
+                  @click="toggleChatExpanded()"
+                  :aria-label="chatExpanded?'Exit expanded chat':'Expand chat'"
+                  :aria-pressed="chatExpanded"
+                  :title="chatExpanded?'Exit expanded chat':'Focus on the conversation'"
+                >
+                  ⛶
+                </button>
+                <button
+                  class="chat-icon"
+                  @click="openChatSettings()"
+                  aria-label="Chat settings"
+                  title="Chat settings"
+                >
+                  ⚙
+                </button>
+                <details
+                  class="chat-actions"
+                  x-ref="chatActions"
+                  x-show="chatState"
+                  @click.outside="$el.removeAttribute('open')"
+                >
+                  <summary
+                    aria-label="Conversation actions"
+                    title="Conversation actions"
+                  >
+                    ⋯
+                  </summary>
+                  <div class="chat-action-menu">
+                    <button
+                      @click="openChatRename()"
+                      :disabled="chatNavigationBusy()"
+                    >
+                      Rename conversation
+                    </button>
+                    <button
+                      x-show="!chatState?.archived"
+                      @click="updateChatSession({archived:true})"
+                      :disabled="chatNavigationBusy()||chatState?.status!=='done'"
+                      title="Finish the saved turn before archiving"
+                    >
+                      Archive conversation
+                    </button>
+                    <button
+                      x-show="chatState?.archived"
+                      @click="updateChatSession({archived:false})"
+                      :disabled="chatNavigationBusy()"
+                    >
+                      Restore conversation
+                    </button>
+                  </div>
+                </details>
+              </div>
+            </div>
+            <div class="chat-person">
+              <label
+                >Talking as<select
+                  aria-label="Talking as"
+                  x-model="chatUser"
+                  @change="changeChatUser()"
+                  :disabled="chatNavigationBusy()"
+                >
+                  <option value="">Choose a user</option>
+                  <template x-for="user in chatUsers()" :key="user"
+                    ><option
+                      :value="user"
+                      :selected="user===chatUser"
+                      x-text="user"
+                    ></option
+                  ></template></select></label
+              ><button
+                class="text-button"
+                @click="chatAddingUser=!chatAddingUser"
+                :disabled="chatNavigationBusy()"
+              >
+                Add user
+              </button>
+            </div>
+            <form
+              class="chat-add-user"
+              x-show="chatAddingUser"
+              x-cloak
+              @submit.prevent="addChatUser()"
+            >
+              <label
+                >User name<input
+                  aria-label="New chat user"
+                  x-model="chatNewUser"
+                  autocomplete="off" /></label
+              ><button type="submit">Use this user</button>
+            </form>
+            <div class="chat-setup" x-show="!chatSettings.configured">
+              <p>Connect a model to start chatting.</p>
+              <button @click="openChatSettings()">Configure connection</button>
+            </div>
+            <details class="chat-recall" x-show="chatState?.recall" x-cloak>
+              <summary>
+                Memory context ·
+                <span
+                  x-text="chatState?.recall?.results?.[0]?.items?.length||0"
+                ></span>
+                records
+              </summary>
+              <template
+                x-for="item in chatState?.recall?.results?.[0]?.items||[]"
+                :key="item.id"
+                ><div class="chat-recalled-record">
+                  <strong x-text="item.title"></strong>
+                  <p x-text="item.content"></p></div
+              ></template>
+              <p x-show="chatState?.recall?.results?.[0]?.incomplete">
+                Some memory context is unavailable.
+              </p>
+              <details>
+                <summary>Retrieval details</summary>
+                <pre x-text="JSON.stringify(chatState?.recall,null,2)"></pre>
+              </details>
+            </details>
+            <div class="chat-conversation">
+              <div
+                class="chat-log"
+                x-ref="chatLog"
+                role="log"
+                aria-label="Chat messages"
+                aria-live="off"
+                @scroll="chatFollow=$el.scrollHeight-$el.scrollTop-$el.clientHeight<64"
+              >
+                <div class="chat-empty" x-show="!chatMessages().length">
+                  <h2>A place for your memories</h2>
+                  <p>
+                    Ask about an experience, add a memory, or put the details
+                    right.
+                  </p>
+                  <p class="muted">
+                    Choose who is talking, then start a conversation.
+                  </p>
+                </div>
+                <template
+                  x-for="(message,index) in chatMessages()"
+                  :key="index"
+                >
+                  <article class="chat-message" :class="message.role">
+                    <p class="chat-speaker">
+                      <span
+                        x-text="message.role==='user' ? (chatState?.user||chatUser) : 'Songya'"
+                      ></span>
+                      <span
+                        x-show="message.status"
+                        x-text="' · '+message.status"
+                      ></span>
+                    </p>
+                    <div
+                      class="chat-prose"
+                      x-show="message.content"
+                      x-html="chatMarkdown(message.content)"
+                    ></div>
+                    <template
+                      x-for="call in message.tool_calls||[]"
+                      :key="call.id||call.function.name"
+                    >
+                      <details class="chat-tool">
+                        <summary
+                          x-text="call.function.name||'Preparing a memory operation…'"
+                        ></summary>
+                        <pre x-text="chatToolResult(call.id)"></pre>
+                      </details>
+                    </template>
+                  </article>
                 </template>
-              </article>
-            </template>
+              </div>
+              <div class="chat-progress" aria-live="polite">
+                <span
+                  x-show="chatBusy()"
+                  x-text="chatConnection||'Working…'"
+                ></span>
+                <span x-show="chatState?.status==='paused'"
+                  >Paused. Your conversation and completed work are saved.</span
+                >
+                <span x-show="chatState?.status==='done'">Reply complete.</span>
+                <button x-show="!chatFollow" @click="followChat()">
+                  Jump to latest
+                </button>
+                <button x-show="chatBusy()" @click="pauseChat()">Pause</button>
+              </div>
+              <div
+                class="chat-error"
+                role="alert"
+                x-show="chatError||chatState?.error"
+                x-cloak
+              >
+                <p x-text="chatError||chatState?.error"></p>
+                <button
+                  x-show="chatPending&&!chatSending"
+                  @click="flushChatPending()"
+                >
+                  Retry pending messages
+                </button>
+              </div>
+              <button
+                class="chat-continue"
+                x-show="['error','paused'].includes(chatState?.status)"
+                @click="retryChat()"
+              >
+                Continue saved turn
+              </button>
+              <form class="chat-composer" @submit.prevent="sendChat()">
+                <label class="sr-only" for="chat-message-input"
+                  >Message Songya</label
+                >
+                <textarea
+                  id="chat-message-input"
+                  x-ref="chatInput"
+                  aria-label="Message Songya"
+                  rows="3"
+                  :placeholder="chatState?.archived ? 'Restore this conversation to continue…' : 'Tell me what you remember…'"
+                  x-model="chatInput"
+                  @input="keepChatDraft()"
+                  @keydown.enter="if(!$event.shiftKey&&!$event.isComposing){$event.preventDefault();sendChat()}"
+                  :disabled="!chatSettings.configured||!!chatState?.archived"
+                ></textarea>
+                <button
+                  class="primary"
+                  type="submit"
+                  :disabled="!chatUser||(!chatInput.trim()&&!chatPending)||!chatSettings.configured||!!chatState?.archived"
+                  x-text="chatInput.trim() ? (chatBusy()||chatPending ? 'Queue message' : 'Send') : chatPending ? (chatSending ? 'Sending…' : 'Retry send') : 'Send'"
+                ></button>
+              </form>
+            </div>
           </div>
-          <div class="chat-progress" aria-live="polite">
-            <span
-              x-show="chatBusy()"
-              x-text="chatConnection||'Working…'"
-            ></span>
-            <span x-show="chatState?.status==='paused'"
-              >Paused. Your conversation and completed work are saved.</span
-            >
-            <span x-show="chatState?.status==='done'">Reply complete.</span>
-            <button x-show="!chatFollow" @click="followChat()">
-              Jump to latest
-            </button>
-            <button x-show="chatBusy()" @click="pauseChat()">Pause</button>
-          </div>
-          <div
-            class="chat-error"
-            role="alert"
-            x-show="chatError||chatState?.error"
-            x-cloak
-          >
-            <p x-text="chatError||chatState?.error"></p>
-            <button
-              x-show="chatPending&&!chatSending"
-              @click="flushChatPending()"
-            >
-              Retry pending messages
-            </button>
-          </div>
-          <button
-            class="chat-continue"
-            x-show="['error','paused'].includes(chatState?.status)"
-            @click="retryChat()"
-          >
-            Continue saved turn
-          </button>
-          <form class="chat-composer" @submit.prevent="sendChat()">
-            <label class="sr-only" for="chat-message-input"
-              >Message Songya</label
-            >
-            <textarea
-              id="chat-message-input"
-              x-ref="chatInput"
-              aria-label="Message Songya"
-              rows="3"
-              placeholder="Tell me what you remember…"
-              x-model="chatInput"
-              @input="keepChatDraft()"
-              @keydown.enter="if(!$event.shiftKey&&!$event.isComposing){$event.preventDefault();sendChat()}"
-              :disabled="!chatSettings.configured"
-            ></textarea>
-            <button
-              class="primary"
-              type="submit"
-              :disabled="!chatUser||(!chatInput.trim()&&!chatPending)||!chatSettings.configured"
-              x-text="chatInput.trim() ? (chatBusy()||chatPending ? 'Queue message' : 'Send') : chatPending ? (chatSending ? 'Sending…' : 'Retry send') : 'Send'"
-            ></button>
-          </form>
         </div>
       </section>
 
@@ -883,6 +1061,35 @@
           ></template>
         </details>
       </div>
+    </dialog>
+    <dialog
+      class="chat-rename-dialog"
+      x-ref="chatRenameDialog"
+      aria-labelledby="chat-rename-heading"
+      @click.self="$el.close()"
+    >
+      <form @submit.prevent="updateChatSession({title:chatRename})">
+        <h2 id="chat-rename-heading">Rename conversation</h2>
+        <label
+          >Name<input
+            x-ref="chatRenameInput"
+            aria-label="Conversation name"
+            x-model="chatRename"
+            required
+        /></label>
+        <p class="error" role="alert" x-show="chatError" x-text="chatError"></p>
+        <div class="chat-settings-actions">
+          <button type="button" @click="$refs.chatRenameDialog.close()">
+            Cancel</button
+          ><button
+            type="submit"
+            class="primary"
+            :disabled="chatManaging||!chatRename.trim()"
+          >
+            Save name
+          </button>
+        </div>
+      </form>
     </dialog>
     <dialog
       class="chat-settings-dialog"

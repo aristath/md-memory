@@ -44,7 +44,33 @@ Choose **Talking as** to set the owner for a conversation. Existing owners and
 conversation users appear in the dropdown; **Add user** accepts a new owner name.
 Shared entities and topics keep their normal Songya meaning. User selection is
 an ownership label, not authentication, and is independent of graph/list filters.
-Each user can keep multiple conversations, selected from **Conversation**.
+Each user can keep multiple conversations. The history rail shows titles, recent
+message previews, dates and unfinished-work status. Search filters titles and
+previews; **New chat** starts a separate conversation. The last selection and
+separate unsent drafts for each conversation (including a new conversation) are
+remembered in the browser. A reply continues on the server when another chat is
+opened. History refreshes while conversations are working.
+
+The history rail sits beside the conversation when its intrinsic reading and
+navigation columns fit. Otherwise **Conversations** opens the same rail as a
+native modal drawer, with native keyboard focus and Escape handling. CSS flex
+wrapping determines fit; no media/container queries or viewport breakpoints are
+used. **Expand chat** fills the browser area; Escape restores the normal view
+after closing any open modal first.
+
+**Conversation actions** offers rename and archive/restore. Archiving retains
+all history and requires the saved turn and queue to finish first. Archived chats
+are under **Archived** and must be restored before accepting another message.
+`PATCH /api/chat/sessions/{id}` accepts `title` and/or `archived`, using the same
+locked, synced conversation publication path as message changes. Renaming and
+archiving do not modify memory records, messages, original request identities or
+saved tool results.
+
+The top-right header theme selector offers **Device** (default), **Light**, and
+**Dark**. Native `color-scheme` and `light-dark()` follow device changes without
+layout queries; an explicit selection is saved locally and applied before styles
+load to avoid a flash of the wrong theme. The choice covers chat, library,
+dialogs and editor surfaces. The graph keeps its dark canvas in either theme.
 
 **Chat settings** saves an OpenAI-compatible API base URL, optional API key and
 model name in `chat-settings.json` at the store root. Use the API base (for example

@@ -33,6 +33,15 @@ Alpine.data("songya", () => {
   return {
     ...chatUI(request),
     ...recallUI(request),
+    theme: document.documentElement.dataset.theme || "system",
+    setTheme() {
+      document.documentElement.dataset.theme = this.theme;
+      try {
+        localStorage.setItem("songya-theme", this.theme);
+      } catch {
+        /* Preference is optional. */
+      }
+    },
     records: [],
     owners: {},
     types: {},

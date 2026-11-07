@@ -26,7 +26,10 @@ const newID = () =>
 export function chatUI(request) {
   let events,
     watch = 0,
-    settingsGeneration = 0;
+    settingsGeneration = 0,
+    historyObserver,
+    historyTimer,
+    historyListing = 0;
   return {
     tab: "chat",
     chatUser: local.get("songya-chat-user"),
@@ -41,6 +44,14 @@ export function chatUI(request) {
     chatFollow: true,
     chatAddingUser: false,
     chatNewUser: "",
+    chatDraftUser: "",
+    chatDraftSession: "",
+    chatSearch: "",
+    chatArchived: false,
+    chatCompact: false,
+    chatExpanded: false,
+    chatManaging: false,
+    chatRename: "",
     chatSettings: {
       base_url: "",
       model: "",
@@ -80,10 +91,109 @@ export function chatUI(request) {
       if (this.chatPending) {
         this.chatUser = this.chatPending.user;
         this.chatSessionID = this.chatPending.id;
-        this.chatInput = local.get("songya-chat-draft:" + this.chatUser);
+        this.loadChatDraft();
         await this.selectChat();
         await this.flushChatPending();
       } else await this.changeChatUser();
+      this.$nextTick(() => this.initChatLayout());
+    },
+    initChatLayout() {
+      historyObserver?.disconnect();
+      historyObserver = new ResizeObserver(() => {
+        const probe = this.$refs.chatFit;
+        const compact =
+          probe.lastElementChild.offsetTop > probe.firstElementChild.offsetTop;
+        const dialog = this.$refs.chatSidebar;
+        if (compact !== this.chatCompact && dialog.open) dialog.close();
+        this.chatCompact = compact;
+        if (!compact && !dialog.open) dialog.show();
+      });
+      historyObserver.observe(this.$refs.chatWorkspace);
+    },
+    openChatSidebar() {
+      this.refreshChatSessions();
+      if (!this.$refs.chatSidebar.open) this.$refs.chatSidebar.showModal();
+      this.$refs.chatSearch.focus();
+    },
+    closeChatSidebar() {
+      if (this.chatCompact) this.$refs.chatSidebar.close();
+    },
+    toggleChatExpanded() {
+      this.chatExpanded = !this.chatExpanded;
+      this.$nextTick(() => this.$refs.chatExpand.focus());
+    },
+    chatNavigationBusy() {
+      return this.chatSending || !!this.chatPending || this.chatManaging;
+    },
+    chatDraftKey() {
+      return (
+        "songya-chat-draft:" +
+        this.chatDraftUser +
+        (this.chatDraftSession ? ":" + this.chatDraftSession : "")
+      );
+    },
+    loadChatDraft() {
+      this.chatDraftUser = this.chatUser;
+      this.chatDraftSession = this.chatSessionID;
+      this.chatInput = local.get(this.chatDraftKey());
+    },
+    async openChat(id) {
+      if (this.chatNavigationBusy()) return;
+      this.keepChatDraft();
+      this.chatSessionID = id;
+      local.set("songya-chat-selected:" + this.chatUser, id);
+      this.loadChatDraft();
+      await this.selectChat();
+      this.closeChatSidebar();
+      if (!id) this.$refs.chatInput?.focus();
+    },
+    newChat() {
+      this.chatArchived = false;
+      this.openChat("");
+    },
+    chatSessionStatus(conversation) {
+      if (["pending", "running"].includes(conversation.status))
+        return conversation.queued
+          ? `Working · ${conversation.queued} queued`
+          : "Working";
+      if (conversation.status === "paused") return "Paused";
+      if (conversation.status === "error") return "Needs attention";
+      return "";
+    },
+    chatSessionDate(conversation) {
+      return new Date(conversation.updated_at).toLocaleDateString(undefined, {
+        month: "short",
+        day: "numeric",
+      });
+    },
+    openChatRename() {
+      this.$refs.chatActions.removeAttribute("open");
+      this.chatRename = this.chatState.title;
+      this.$refs.chatRenameDialog.showModal();
+      this.$nextTick(() => {
+        this.$refs.chatRenameInput.focus();
+        this.$refs.chatRenameInput.select();
+      });
+    },
+    async updateChatSession(fields) {
+      if (!this.chatState || this.chatNavigationBusy()) return;
+      this.chatManaging = true;
+      this.chatError = "";
+      try {
+        const value = await request(
+          "/api/chat/sessions/" + this.chatSessionID,
+          { method: "PATCH", body: JSON.stringify(fields) },
+        );
+        this.applyChat(value);
+        this.chatArchived = !!value.archived;
+        this.$refs.chatRenameDialog.close();
+        this.$refs.chatActions.removeAttribute("open");
+        await this.refreshChatSessions();
+      } catch (e) {
+        this.chatError = e.message;
+      } finally {
+        this.chatManaging = false;
+      }
     },
     chatUsers() {
       return [
@@ -95,22 +205,57 @@ export function chatUI(request) {
       ].sort();
     },
     chatHistory() {
-      return this.chatSessions.filter((c) => c.user === this.chatUser);
+      const search = this.chatSearch.trim().toLocaleLowerCase();
+      return this.chatSessions.filter(
+        (c) =>
+          c.user === this.chatUser &&
+          !!c.archived === this.chatArchived &&
+          (!search ||
+            (c.title + " " + (c.preview || ""))
+              .toLocaleLowerCase()
+              .includes(search)),
+      );
     },
     async refreshChatSessions() {
+      const ticket = ++historyListing;
+      clearTimeout(historyTimer);
       try {
         const value = await request("/api/chat/sessions");
+        if (ticket !== historyListing) return;
         this.chatSessions = value.sessions;
         if (value.diagnostics?.length)
           this.chatError = value.diagnostics.join("\n");
       } catch (e) {
-        this.chatError = e.message;
+        if (ticket === historyListing) this.chatError = e.message;
+      } finally {
+        if (
+          ticket === historyListing &&
+          this.chatSessions.some((c) =>
+            ["pending", "running"].includes(c.status),
+          )
+        )
+          historyTimer = setTimeout(() => this.refreshChatSessions(), 3000);
       }
     },
+    destroy() {
+      clearTimeout(historyTimer);
+      historyObserver?.disconnect();
+      events?.close();
+    },
     async changeChatUser() {
+      this.keepChatDraft();
       local.set("songya-chat-user", this.chatUser);
-      this.chatInput = local.get("songya-chat-draft:" + this.chatUser);
-      this.chatSessionID = this.chatHistory()[0]?.id || "";
+      const selected = local.get("songya-chat-selected:" + this.chatUser);
+      this.chatSessionID = this.chatSessions.some(
+        (c) => c.id === selected && c.user === this.chatUser,
+      )
+        ? selected
+        : "";
+      this.chatArchived = !!this.chatSessions.find(
+        (c) => c.id === this.chatSessionID,
+      )?.archived;
+      this.chatSearch = "";
+      this.loadChatDraft();
       await this.selectChat();
     },
     addChatUser() {
@@ -206,9 +351,27 @@ export function chatUI(request) {
       const follow = this.chatFollow;
       this.chatState = value;
       this.chatSessionID = value.id;
+      local.set("songya-chat-selected:" + value.user, value.id);
       this.chatConnection = "";
-      if (!this.chatSessions.some((c) => c.id === value.id))
-        this.chatSessions.unshift(value);
+      const existing = this.chatSessions.find((c) => c.id === value.id);
+      const summary = {
+        id: value.id,
+        user: value.user,
+        title: value.title,
+        status: value.status,
+        updated_at: value.updated_at,
+        archived: value.archived,
+        queued: value.queue?.length || 0,
+        preview:
+          [...value.messages]
+            .reverse()
+            .find(
+              (m) =>
+                ["user", "assistant"].includes(m.role) && m.content?.trim(),
+            )?.content || "",
+      };
+      if (existing) Object.assign(existing, summary);
+      else this.chatSessions.unshift(summary);
       this.$nextTick(() => {
         if (follow) {
           this.scrollChat();
@@ -237,7 +400,7 @@ export function chatUI(request) {
       this.scrollChat();
     },
     keepChatDraft() {
-      local.set("songya-chat-draft:" + this.chatUser, this.chatInput);
+      if (this.chatDraftUser) local.set(this.chatDraftKey(), this.chatInput);
     },
     watchChat() {
       events?.close();
@@ -260,7 +423,12 @@ export function chatUI(request) {
       });
     },
     async sendChat() {
-      if (!this.chatUser || !this.chatSettings.configured) return;
+      if (
+        !this.chatUser ||
+        !this.chatSettings.configured ||
+        this.chatState?.archived
+      )
+        return;
       if (this.chatInput.trim()) {
         const message = {
           id: this.chatSessionID || this.chatPending?.id || newID(),
@@ -268,7 +436,6 @@ export function chatUI(request) {
           user: this.chatUser,
           text: this.chatInput,
         };
-        this.chatSessionID = message.id;
         this.chatPending = this.chatPending
           ? {
               ...this.chatPending,
@@ -278,6 +445,9 @@ export function chatUI(request) {
         local.set("songya-chat-pending", JSON.stringify(this.chatPending));
         this.chatInput = "";
         this.keepChatDraft();
+        this.chatSessionID = message.id;
+        this.chatDraftSession = message.id;
+        local.set("songya-chat-selected:" + this.chatUser, message.id);
         this.chatFollow = true;
         this.$refs.chatInput?.focus();
         this.$nextTick(() => this.scrollChat());

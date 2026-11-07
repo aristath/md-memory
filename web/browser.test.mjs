@@ -139,7 +139,7 @@ async function waitText(page, text) {
 }
 
 async function editRecord(page, title) {
-  if (await page.locator("dialog[open]").count())
+  if (await page.locator('dialog[x-ref="editorDialog"][open]').count())
     await page
       .getByRole("button", { name: "Close record", exact: true })
       .click();
@@ -413,7 +413,7 @@ test("phone layout, metadata editing, references and unsaved navigation retain t
 test("creates all four types through the visual form and exposes automatic source fields read-only", async () => {
   const { page, context } = await pageFor();
   for (const kind of ["memories", "entities", "topics", "stories"]) {
-    if (await page.locator("dialog[open]").count())
+    if (await page.locator('dialog[x-ref="editorDialog"][open]').count())
       await page
         .getByRole("button", { name: "Close record", exact: true })
         .click();
@@ -765,7 +765,7 @@ test("the front page is a sortable metadata table with independent column filter
   await page.getByLabel("Filter title", { exact: true }).fill("Table ");
   assert.equal(await page.locator(".record").count(), 3);
   assert.equal(await page.locator("aside").count(), 0);
-  assert.equal(await page.locator("dialog[open]").count(), 0);
+  assert.equal(await page.locator("dialog:modal").count(), 0);
   const titles = () =>
     page.locator(".title-cell .text-button").allTextContents();
   assert.deepEqual(await titles(), ["Table 1", "Table 2", "Table 10"]);
@@ -1813,8 +1813,13 @@ test("chat defaults on, streams real MCP writes, follows replies and restores us
     "browser-chat-person",
   );
   assert.equal(
-    await page.getByLabel("Conversation", { exact: true }).inputValue(),
-    state.id,
+    await page
+      .getByRole("button", {
+        name: "Open conversation: " + state.title,
+        exact: true,
+      })
+      .getAttribute("aria-current"),
+    "page",
   );
   assert.equal(provider.calls(), 3);
   await page
@@ -2038,6 +2043,206 @@ test("chat lost acknowledgements replay one accepted message and truncated strea
   assert.equal(state.messages.filter((m) => m.role === "user").length, 1);
   assert.equal(state.messages.at(-1).content, "Partial response recovered.");
   assert.equal(provider.calls(), 2);
+  assert.deepEqual(errors, []);
+});
+
+test(
+  "conversation history preserves separate drafts, rename and archive, and opens as a native drawer when it wraps",
+  { timeout: 30000 },
+  async (t) => {
+    const provider = await chatProvider(t, async (res, body) => {
+      streamChunk(res, {
+        role: "assistant",
+        content: "I remember: " + body.messages.at(-1).content,
+      });
+      streamFinish(res);
+    });
+    const { page, context } = await pageFor(undefined, undefined, "chat");
+    t.after(() => context.close());
+    await setupBrowserChat(page, provider.base, "history-person");
+    const input = page.getByLabel("Message Songya", { exact: true });
+    const current = () =>
+      page.evaluate(() => window.Alpine.$data(document.body).chatSessionID);
+    await input.fill("Summer on the island");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await page.getByText("Reply complete.", { exact: true }).waitFor();
+    const first = await current();
+    await input.fill("Draft for the island conversation");
+    await page.getByRole("button", { name: "New chat", exact: true }).click();
+    assert.equal(await input.inputValue(), "");
+    await input.fill("Winter in the city");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await page.getByText("Reply complete.", { exact: true }).waitFor();
+    const second = await current();
+    assert.notEqual(first, second);
+    await input.fill("Draft for the city conversation");
+    await page
+      .getByRole("button", {
+        name: "Open conversation: Summer on the island",
+        exact: true,
+      })
+      .click();
+    assert.equal(await input.inputValue(), "Draft for the island conversation");
+    await page.getByRole("button", { name: "New chat", exact: true }).click();
+    await input.fill("An unsent new conversation");
+    await page
+      .getByRole("button", {
+        name: "Open conversation: Winter in the city",
+        exact: true,
+      })
+      .click();
+    assert.equal(await input.inputValue(), "Draft for the city conversation");
+    await page.reload();
+    await page.getByText("Reply complete.", { exact: true }).waitFor();
+    assert.equal(await current(), second);
+    assert.equal(await input.inputValue(), "Draft for the city conversation");
+    await page
+      .getByRole("button", {
+        name: "Open conversation: Summer on the island",
+        exact: true,
+      })
+      .click();
+    await page.getByLabel("Conversation actions", { exact: true }).click();
+    await page
+      .getByRole("button", { name: "Rename conversation", exact: true })
+      .click();
+    await page
+      .getByLabel("Conversation name", { exact: true })
+      .fill("Island summers");
+    await page.getByRole("button", { name: "Save name", exact: true }).click();
+    await page
+      .getByRole("heading", { name: "Island summers", exact: true })
+      .waitFor();
+    assert.equal(await input.inputValue(), "Draft for the island conversation");
+    await page
+      .getByLabel("Search conversations", { exact: true })
+      .fill("Winter");
+    assert.equal(
+      await page
+        .getByRole("button", {
+          name: "Open conversation: Island summers",
+          exact: true,
+        })
+        .count(),
+      0,
+    );
+    await page
+      .getByRole("button", {
+        name: "Open conversation: Winter in the city",
+        exact: true,
+      })
+      .waitFor();
+    await page.getByLabel("Search conversations", { exact: true }).fill("");
+    await page.getByLabel("Conversation actions", { exact: true }).click();
+    await page
+      .getByRole("button", { name: "Archive conversation", exact: true })
+      .click();
+    await page.getByText("Archived conversation", { exact: true }).waitFor();
+    assert.equal(await input.isDisabled(), true);
+    await page.getByLabel("Conversation actions", { exact: true }).click();
+    await page
+      .getByRole("button", { name: "Restore conversation", exact: true })
+      .click();
+    await page
+      .getByText("Archived conversation", { exact: true })
+      .waitFor({ state: "hidden" });
+    assert.equal(await input.isEnabled(), true);
+    assert.equal(await input.inputValue(), "Draft for the island conversation");
+    await page
+      .locator("#chat-panel")
+      .screenshot({ path: "/tmp/songya-ui-review/sessions-desktop-light.png" });
+    await page.getByLabel("Color theme", { exact: true }).selectOption("dark");
+    await page
+      .locator("#chat-panel")
+      .screenshot({ path: "/tmp/songya-ui-review/sessions-desktop-dark.png" });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.waitForFunction(
+      () => window.Alpine.$data(document.body).chatCompact,
+    );
+    await page
+      .getByRole("button", { name: "Conversations", exact: true })
+      .click();
+    const drawer = page.getByRole("dialog", {
+      name: "Conversations",
+      exact: true,
+    });
+    assert.equal(await drawer.evaluate((el) => el.matches(":modal")), true);
+    await drawer.screenshot({
+      path: "/tmp/songya-ui-review/sessions-phone-drawer.png",
+    });
+    await drawer
+      .getByRole("button", {
+        name: "Open conversation: Winter in the city",
+        exact: true,
+      })
+      .click();
+    await drawer.waitFor({ state: "hidden" });
+    assert.equal(await input.inputValue(), "Draft for the city conversation");
+    await page
+      .locator("#chat-panel")
+      .screenshot({ path: "/tmp/songya-ui-review/sessions-phone-dark.png" });
+    await page
+      .getByRole("button", { name: "Expand chat", exact: true })
+      .click();
+    const box = await page.locator("#chat-panel").boundingBox();
+    assert.equal(box.width, 390);
+    assert.equal(box.height, 844);
+    await page
+      .getByRole("button", { name: "Conversations", exact: true })
+      .click();
+    await page.keyboard.press("Escape");
+    await drawer.waitFor({ state: "hidden" });
+    await page
+      .getByRole("button", { name: "Exit expanded chat", exact: true })
+      .waitFor();
+    await page.keyboard.press("Escape");
+    await page
+      .getByRole("button", { name: "Expand chat", exact: true })
+      .waitFor();
+    await page.getByRole("button", { name: "New chat", exact: true }).click();
+    assert.equal(await input.inputValue(), "An unsent new conversation");
+    assert.equal(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+      true,
+    );
+    const stored = await (
+      await fetch(url + "/api/chat/sessions/" + first)
+    ).json();
+    assert.equal(stored.title, "Island summers");
+    assert.equal(stored.messages.filter((m) => m.role === "user").length, 1);
+    assert.deepEqual(errors, []);
+  },
+);
+
+test("color theme follows the device by default and persists explicit choices", async (t) => {
+  const { page, context } = await pageFor(undefined, undefined, "chat");
+  t.after(() => context.close());
+  const theme = page.getByLabel("Color theme", { exact: true });
+  const background = () =>
+    page.evaluate(
+      () => getComputedStyle(document.documentElement).backgroundColor,
+    );
+  assert.equal(await theme.inputValue(), "system");
+  await page.emulateMedia({ colorScheme: "dark" });
+  assert.equal(await background(), "rgb(23, 30, 37)");
+  await theme.selectOption("light");
+  assert.equal(await background(), "rgb(255, 255, 255)");
+  await page.reload();
+  assert.equal(await theme.inputValue(), "light");
+  assert.equal(await background(), "rgb(255, 255, 255)");
+  await theme.selectOption("system");
+  assert.equal(await background(), "rgb(23, 30, 37)");
+  await page.emulateMedia({ colorScheme: "light" });
+  assert.equal(await background(), "rgb(255, 255, 255)");
+  await theme.selectOption("dark");
+  assert.equal(await background(), "rgb(23, 30, 37)");
+  await page.getByRole("tab", { name: "List", exact: true }).click();
+  assert.equal(
+    await page.locator("main").evaluate((el) => getComputedStyle(el).color),
+    "rgb(224, 232, 238)",
+  );
   assert.deepEqual(errors, []);
 });
 

@@ -49,6 +49,7 @@ type chatConversation struct {
 	ID                  string                 `json:"id"`
 	User                string                 `json:"user"`
 	Title               string                 `json:"title"`
+	Archived            bool                   `json:"archived,omitempty"`
 	Status              string                 `json:"status"`
 	Error               string                 `json:"error,omitempty"`
 	UpdatedAt           int64                  `json:"updated_at"`
@@ -221,7 +222,16 @@ func (a *chatApp) summaries() ([]map[string]any, []string, error) {
 			issues = append(issues, entry.Name()+": "+err.Error())
 			continue
 		}
-		rows = append(rows, map[string]any{"id": c.ID, "user": c.User, "title": c.Title, "status": c.Status, "updated_at": c.UpdatedAt})
+		preview := ""
+		for _, message := range c.Messages {
+			if (message.Role == "user" || message.Role == "assistant") && strings.TrimSpace(message.Content) != "" {
+				preview = strings.Join(strings.Fields(message.Content), " ")
+			}
+		}
+		if len([]rune(preview)) > 140 {
+			preview = string([]rune(preview)[:140]) + "…"
+		}
+		rows = append(rows, map[string]any{"id": c.ID, "user": c.User, "title": c.Title, "status": c.Status, "updated_at": c.UpdatedAt, "archived": c.Archived, "preview": preview, "queued": len(c.Queue)})
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i]["updated_at"].(int64) > rows[j]["updated_at"].(int64) })
 	return rows, issues, nil
@@ -332,6 +342,39 @@ func (a *chatApp) register(mux *http.ServeMux) {
 		}
 		write(w, publicChat(c))
 	})
+	mux.HandleFunc("PATCH /api/chat/sessions/{id}", func(w http.ResponseWriter, r *http.Request) {
+		var input struct {
+			Title    *string `json:"title"`
+			Archived *bool   `json:"archived"`
+		}
+		if !decode(w, r, &input) {
+			return
+		}
+		if input.Title != nil && strings.TrimSpace(*input.Title) == "" {
+			writeStatus(w, 400, map[string]any{"error": "Enter a conversation name."})
+			return
+		}
+		c, err := a.edit(r.Context(), r.PathValue("id"), func(c *chatConversation) error {
+			if c.User == "" {
+				return fs.ErrNotExist
+			}
+			if input.Archived != nil && *input.Archived && (c.Status != "done" || len(c.Queue) > 0) {
+				return fmt.Errorf("%w: finish the saved turn before archiving this conversation", songya.ErrConflict)
+			}
+			if input.Title != nil {
+				c.Title = strings.Join(strings.Fields(*input.Title), " ")
+			}
+			if input.Archived != nil {
+				c.Archived = *input.Archived
+			}
+			return nil
+		})
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		write(w, publicChat(c))
+	})
 	mux.HandleFunc("GET /api/chat/sessions/{id}/events", a.eventsHTTP)
 	mux.HandleFunc("POST /api/chat", a.sendHTTP)
 	mux.HandleFunc("POST /api/chat/sessions/{id}/retry", func(w http.ResponseWriter, r *http.Request) {
@@ -418,6 +461,9 @@ func (a *chatApp) sendHTTP(w http.ResponseWriter, r *http.Request) {
 				return fmt.Errorf("%w: request ID already belongs to another message", songya.ErrConflict)
 			}
 			return nil
+		}
+		if c.Archived {
+			return fmt.Errorf("%w: restore this conversation before sending another message", songya.ErrConflict)
 		}
 		c.User = input.User
 		turn := chatQueuedTurn{ID: input.RequestID, Text: input.Text,
