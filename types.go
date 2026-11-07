@@ -338,8 +338,16 @@ func (s *Store) validateTypeChange(ctx context.Context, root *os.Root, before, a
 		matched := ""
 		for _, def := range cfg.Kinds[kind] {
 			allowed = append(allowed, def.ID)
-			if strings.EqualFold(strings.TrimSpace(next[user]), def.ID) || strings.EqualFold(strings.TrimSpace(next[user]), def.Name) {
+			if strings.EqualFold(strings.TrimSpace(next[user]), def.ID) {
 				matched = def.ID
+			}
+		}
+		if matched == "" {
+			for _, def := range cfg.Kinds[kind] {
+				if strings.EqualFold(strings.TrimSpace(next[user]), def.Name) {
+					matched = def.ID
+					break
+				}
 			}
 		}
 		if matched == "" {

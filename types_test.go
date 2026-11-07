@@ -235,3 +235,17 @@ func TestTypeSettingsAndReassignmentRecoverTogetherAfterInterruption(t *testing.
 		t.Fatal("recovery did not commit")
 	}
 }
+
+func TestTypeIDWinsOverAnotherDisplayName(t *testing.T) {
+	s, _ := Open(t.TempDir())
+	ctx := context.Background()
+	cfg, _ := s.TypeConfiguration(ctx, "cook")
+	cfg.Kinds[Entities] = []TypeDefinition{{"food", "Dish", "A prepared dish."}, {"ingredient", "Food", "An ingredient."}}
+	if _, err := s.SaveTypeConfiguration(ctx, cfg, cfg.Version, nil, "name-overlap"); err != nil {
+		t.Fatal(err)
+	}
+	doc, err := s.Create(Entities, map[string]any{"name": "Soup", "types": map[string]string{"cook": "food"}}, "A dish.")
+	if err != nil || doc.TypeFor("cook") != "food" {
+		t.Fatal(doc, err)
+	}
+}
