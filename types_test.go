@@ -249,3 +249,50 @@ func TestTypeIDWinsOverAnotherDisplayName(t *testing.T) {
 		t.Fatal(doc, err)
 	}
 }
+
+func TestSettingsEditsPreserveUnrecognizedAndDamagedAssignments(t *testing.T) {
+	s, _ := Open(t.TempDir())
+	ctx := context.Background()
+	doc, err := s.Create(Entities, map[string]any{"name": "Clara", "types": map[string]string{"ari": "person"}}, "Intact words.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	name, _ := recordName(doc.ID)
+	raw := []byte("---\nname: Clara\ntypes:\n  ari: person\n  bob: {unparsed: keep this}\n---\nIntact words.\n")
+	if err := os.WriteFile(filepath.Join(s.Directory(), name), raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ := s.TypeConfiguration(ctx, "ari")
+	kept := []TypeDefinition{}
+	for _, def := range cfg.Kinds[Entities] {
+		if def.ID != "person" {
+			kept = append(kept, def)
+		}
+	}
+	cfg.Kinds[Entities] = kept
+	if _, err := s.SaveTypeConfiguration(ctx, cfg, cfg.Version, map[Destination]map[string]string{Entities: {"person": "organization"}}, "preserve-damage"); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := s.Read(doc.ID)
+	var fields map[string]any
+	if err := after.Frontmatter.Decode(&fields); err != nil {
+		t.Fatal(err)
+	}
+	assignments := fields["types"].(map[string]any)
+	if after.TypeFor("ari") != "organization" || !reflect.DeepEqual(assignments["bob"], map[string]any{"unparsed": "keep this"}) || after.Body != "Intact words.\n" {
+		t.Fatal(fields, after.Body)
+	}
+	// An already unrecognized assignment must not block a definition-only edit.
+	if err := os.WriteFile(filepath.Join(s.Directory(), name), []byte("---\nname: Clara\ntypes: {ari: old_unknown}\n---\nIntact words.\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ = s.TypeConfiguration(ctx, "ari")
+	cfg.Kinds[Entities][0].Name = "Renamed choice"
+	if _, err := s.SaveTypeConfiguration(ctx, cfg, cfg.Version, nil, "rename-with-unknown"); err != nil {
+		t.Fatal(err)
+	}
+	after, _ = s.Read(doc.ID)
+	if after.TypeFor("ari") != "old_unknown" {
+		t.Fatal("unrecognized metadata discarded")
+	}
+}

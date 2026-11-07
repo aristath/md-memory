@@ -209,7 +209,9 @@ export function typesUI(request) {
         Object.entries(this.typeSettings.usage?.[kind] || {})
           .filter(
             ([id, count]) =>
-              count > 0 && !this.typeDraft[kind].some((t) => t.id === id),
+              count > 0 &&
+              this.typeSettings.kinds[kind].some((t) => t.id === id) &&
+              !this.typeDraft[kind].some((t) => t.id === id),
           )
           .map(([id, count]) => ({
             kind,

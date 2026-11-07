@@ -221,10 +221,27 @@ func typeConfigurationRequest(cfg TypeConfiguration, version string, replacement
 		}
 		change.Before = before
 		changes := []Change{}
+		var previous TypeConfiguration
+		_ = json.Unmarshal(before, &previous)
 		for _, kind := range destinations {
 			allowed := map[string]bool{}
 			for _, def := range cfg.Kinds[kind] {
 				allowed[def.ID] = true
+			}
+			removed := map[string]bool{}
+			for _, def := range previous.Kinds[kind] {
+				if !allowed[def.ID] {
+					removed[def.ID] = true
+				}
+			}
+			// Unknown old assignments are preserved unless explicitly reassigned.
+			for id := range replacements[kind] {
+				if !allowed[id] {
+					removed[id] = true
+				}
+			}
+			if len(removed) == 0 {
+				continue
 			}
 			entries, err := fs.ReadDir(root.FS(), string(kind))
 			if err != nil {
@@ -241,7 +258,7 @@ func typeConfigurationRequest(cfg TypeConfiguration, version string, replacement
 				}
 				assigned := documentTypes(doc)
 				old := assigned[cfg.User]
-				if old == "" || allowed[old] {
+				if !removed[old] {
 					continue
 				}
 				replacement, explicit := replacements[kind][old]
