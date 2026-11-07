@@ -278,10 +278,15 @@
             </p>
             <template x-for="(message,index) in chatMessages()" :key="index">
               <article class="chat-message" :class="message.role">
-                <p
-                  class="chat-speaker"
-                  x-text="message.role==='user' ? chatState.user : 'Songya'"
-                ></p>
+                <p class="chat-speaker">
+                  <span
+                    x-text="message.role==='user' ? (chatState?.user||chatUser) : 'Songya'"
+                  ></span>
+                  <span
+                    x-show="message.status"
+                    x-text="' · '+message.status"
+                  ></span>
+                </p>
                 <div
                   class="chat-prose"
                   x-show="message.content"
@@ -322,6 +327,12 @@
             x-cloak
           >
             <p x-text="chatError||chatState?.error"></p>
+            <button
+              x-show="chatPending&&!chatSending"
+              @click="flushChatPending()"
+            >
+              Retry pending messages
+            </button>
           </div>
           <button
             class="chat-continue"
@@ -336,19 +347,20 @@
             >
             <textarea
               id="chat-message-input"
+              x-ref="chatInput"
               aria-label="Message Songya"
               rows="3"
               placeholder="Tell me what you remember…"
               x-model="chatInput"
               @input="keepChatDraft()"
               @keydown.enter="if(!$event.shiftKey&&!$event.isComposing){$event.preventDefault();sendChat()}"
-              :disabled="chatSending||!!chatPending||chatBusy()||!chatSettings.configured||['error','paused'].includes(chatState?.status)"
+              :disabled="!chatSettings.configured"
             ></textarea>
             <button
               class="primary"
               type="submit"
-              :disabled="chatSending||chatBusy()||!chatUser||!chatInput.trim()||!chatSettings.configured||['error','paused'].includes(chatState?.status)"
-              x-text="chatSending ? 'Sending…' : chatPending ? 'Retry send' : 'Send'"
+              :disabled="!chatUser||(!chatInput.trim()&&!chatPending)||!chatSettings.configured"
+              x-text="chatInput.trim() ? (chatBusy()||chatPending ? 'Queue message' : 'Send') : chatPending ? (chatSending ? 'Sending…' : 'Retry send') : 'Send'"
             ></button>
           </form>
         </div>

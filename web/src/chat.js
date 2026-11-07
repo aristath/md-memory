@@ -79,8 +79,10 @@ export function chatUI(request) {
       }
       if (this.chatPending) {
         this.chatUser = this.chatPending.user;
-        this.chatInput = this.chatPending.text;
-        await this.sendChat();
+        this.chatSessionID = this.chatPending.id;
+        this.chatInput = local.get("songya-chat-draft:" + this.chatUser);
+        await this.selectChat();
+        await this.flushChatPending();
       } else await this.changeChatUser();
     },
     chatUsers() {
@@ -150,9 +152,38 @@ export function chatUI(request) {
       const visible = messages.filter(
         (m) => m.role === "user" || m.role === "assistant",
       );
-      return this.chatState?.draft
-        ? [...visible, this.chatState.draft]
-        : visible;
+      const queue = this.chatState?.queue || [];
+      const known = new Set([
+        ...messages.map((m) => m.turn_id),
+        ...queue.map((m) => m.id),
+      ]);
+      return [
+        ...visible,
+        ...(this.chatState?.draft ? [this.chatState.draft] : []),
+        ...queue.map((m) => ({
+          role: "user",
+          content: m.text,
+          status: "Queued",
+        })),
+        ...(this.chatPending
+          ? [this.chatPending, ...(this.chatPending.next || [])].flatMap(
+              (m, i) =>
+                known.has(m.request_id)
+                  ? []
+                  : [
+                      {
+                        role: "user",
+                        content: m.text,
+                        status: i
+                          ? "Waiting to send"
+                          : this.chatSending
+                            ? "Sending…"
+                            : "Not sent · retry",
+                      },
+                    ],
+            )
+          : []),
+      ];
     },
     chatToolResult(id) {
       return (
@@ -166,6 +197,11 @@ export function chatUI(request) {
       return markdown.render(text || "");
     },
     applyChat(value) {
+      if (
+        this.chatState?.id === value.id &&
+        this.chatState.revision > value.revision
+      )
+        return;
       const wasBusy = this.chatBusy();
       const follow = this.chatFollow;
       this.chatState = value;
@@ -224,34 +260,50 @@ export function chatUI(request) {
       });
     },
     async sendChat() {
-      if (
-        this.chatSending ||
-        this.chatBusy() ||
-        !this.chatUser ||
-        !this.chatInput.trim()
-      )
-        return;
-      this.chatSending = true;
-      this.chatError = "";
-      this.chatFollow = true;
-      this.chatPending ||= {
-        id: this.chatSessionID || newID(),
-        request_id: newID(),
-        user: this.chatUser,
-        text: this.chatInput,
-      };
-      local.set("songya-chat-pending", JSON.stringify(this.chatPending));
-      try {
-        const value = await request("/api/chat", {
-          method: "POST",
-          body: JSON.stringify(this.chatPending),
-        });
+      if (!this.chatUser || !this.chatSettings.configured) return;
+      if (this.chatInput.trim()) {
+        const message = {
+          id: this.chatSessionID || this.chatPending?.id || newID(),
+          request_id: newID(),
+          user: this.chatUser,
+          text: this.chatInput,
+        };
+        this.chatSessionID = message.id;
+        this.chatPending = this.chatPending
+          ? {
+              ...this.chatPending,
+              next: [...(this.chatPending.next || []), message],
+            }
+          : message;
+        local.set("songya-chat-pending", JSON.stringify(this.chatPending));
         this.chatInput = "";
         this.keepChatDraft();
-        this.chatPending = null;
-        local.set("songya-chat-pending", null);
-        this.applyChat(value);
-        this.watchChat();
+        this.chatFollow = true;
+        this.$refs.chatInput?.focus();
+        this.$nextTick(() => this.scrollChat());
+      }
+      await this.flushChatPending();
+    },
+    async flushChatPending() {
+      if (this.chatSending || !this.chatPending) return;
+      this.chatSending = true;
+      this.chatError = "";
+      try {
+        while (this.chatPending) {
+          const { next, ...message } = this.chatPending;
+          const value = await request("/api/chat", {
+            method: "POST",
+            body: JSON.stringify(message),
+          });
+          const [head, ...tail] = this.chatPending.next || [];
+          this.chatPending = head ? { ...head, next: tail } : null;
+          local.set(
+            "songya-chat-pending",
+            this.chatPending ? JSON.stringify(this.chatPending) : null,
+          );
+          this.applyChat(value);
+          if (this.chatBusy()) this.watchChat();
+        }
       } catch (e) {
         this.chatError = e.message + " Retry sends the same request.";
       } finally {

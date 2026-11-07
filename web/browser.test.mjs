@@ -1861,6 +1861,135 @@ test("chat defaults on, streams real MCP writes, follows replies and restores us
   assert.deepEqual(errors, []);
 });
 
+test(
+  "chat queues rapid sends, keeps focus and drafts, and recovers a lost acknowledgement on reload",
+  { timeout: 30000 },
+  async (t) => {
+    let allowAck, allowFirst, allowSecond, started;
+    const ack = new Promise((done) => {
+      allowAck = done;
+    });
+    const first = new Promise((done) => {
+      allowFirst = done;
+    });
+    const second = new Promise((done) => {
+      allowSecond = done;
+    });
+    const ready = new Promise((done) => {
+      started = done;
+    });
+    t.after(() => {
+      allowAck();
+      allowFirst();
+      allowSecond();
+    });
+    const provider = await chatProvider(t, async (res, body, n) => {
+      streamChunk(res, { role: "assistant", content: `Queue reply ${n}` });
+      if (n === 1) {
+        started();
+        await first;
+      }
+      if (n === 2) await second;
+      streamFinish(res);
+    });
+    const { page, context } = await pageFor(undefined, undefined, "chat");
+    t.after(() => context.close());
+    await setupBrowserChat(page, provider.base, "browser-queue-person");
+    let intercepted = false;
+    await page.route("**/api/chat", async (route) => {
+      if (intercepted) return route.continue();
+      intercepted = true;
+      const response = await route.fetch();
+      assert.equal(response.status(), 202);
+      await ack;
+      await route.abort("failed");
+    });
+    const input = page.getByLabel("Message Songya", { exact: true });
+    await input.fill("First message");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await ready;
+    assert.equal(await input.isEnabled(), true);
+    assert.equal(
+      await input.evaluate((el) => document.activeElement === el),
+      true,
+    );
+    assert.equal(await input.inputValue(), "");
+    await input.fill("Second message");
+    await input.press("Enter");
+    assert.equal(await input.inputValue(), "");
+    assert.equal(
+      await input.evaluate((el) => document.activeElement === el),
+      true,
+    );
+    await input.fill("Third message");
+    await page
+      .getByRole("button", { name: "Queue message", exact: true })
+      .click();
+    assert.equal(
+      await input.evaluate((el) => document.activeElement === el),
+      true,
+    );
+    await input.fill("An unsent fourth draft");
+    assert.equal(
+      await page.evaluate(
+        () =>
+          JSON.parse(localStorage.getItem("songya-chat-pending")).next.length,
+      ),
+      2,
+    );
+    allowAck();
+    await page
+      .getByRole("alert")
+      .getByText(/Retry sends the same request/)
+      .waitFor();
+    assert.equal(
+      await page
+        .getByRole("button", { name: "Retry pending messages", exact: true })
+        .isVisible(),
+      true,
+    );
+    assert.equal(await input.inputValue(), "An unsent fourth draft");
+    await page.reload();
+    await page.waitForFunction(
+      () => window.Alpine?.$data(document.body).chatState?.queue?.length === 2,
+    );
+    assert.equal(await input.inputValue(), "An unsent fourth draft");
+    assert.equal(provider.calls(), 1);
+    assert.equal(
+      await page
+        .getByRole("log")
+        .getByText("· Queued", { exact: true })
+        .count(),
+      2,
+    );
+    allowFirst();
+    await page
+      .getByRole("log")
+      .getByText("Queue reply 2", { exact: true })
+      .waitFor();
+    assert.equal(await input.isEnabled(), true);
+    allowSecond();
+    await page.getByText("Reply complete.", { exact: true }).waitFor();
+    const state = await page.evaluate(
+      () => window.Alpine.$data(document.body).chatState,
+    );
+    assert.deepEqual(
+      state.messages.filter((m) => m.role === "user").map((m) => m.content),
+      ["First message", "Second message", "Third message"],
+    );
+    assert.deepEqual(
+      state.messages
+        .filter((m) => m.role === "assistant")
+        .map((m) => m.content),
+      ["Queue reply 1", "Queue reply 2", "Queue reply 3"],
+    );
+    assert.equal(state.queue?.length || 0, 0);
+    assert.equal(provider.calls(), 3);
+    assert.equal(await input.inputValue(), "An unsent fourth draft");
+    assert.deepEqual(errors, []);
+  },
+);
+
 test("chat lost acknowledgements replay one accepted message and truncated streams retain a retry", async (t) => {
   const provider = await chatProvider(t, async (res, body, n) => {
     streamChunk(res, { role: "assistant", content: "Partial response" });
@@ -1885,7 +2014,11 @@ test("chat lost acknowledgements replay one accepted message and truncated strea
   await input.fill("Keep my accepted message.");
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await page.getByRole("button", { name: "Retry send", exact: true }).waitFor();
-  assert.equal(await input.inputValue(), "Keep my accepted message.");
+  assert.equal(await input.inputValue(), "");
+  await page
+    .getByRole("log")
+    .getByText("Keep my accepted message.", { exact: true })
+    .waitFor();
   await page.getByRole("button", { name: "Retry send", exact: true }).click();
   await page
     .getByRole("button", { name: "Continue saved turn", exact: true })

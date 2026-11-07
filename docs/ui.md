@@ -100,9 +100,20 @@ receipts if a memory was saved before its tool result could be recorded.
 
 **Pause** retains the conversation, partial reply and completed memory operations;
 it does not undo writes. **Continue saved turn** resumes paused or failed work.
+The message input stays usable during replies and sends. Sending clears it and
+immediately returns focus so the next draft can be written. Messages submitted
+during a reply are saved in a first-in, first-out conversation queue, shown as
+**Queued**, and answered one at a time after the current reply finishes. Each
+queued turn retains the prompt, temperature and retrieval policy captured when
+accepted. Paused or failed turns hold the queue until continued. Queued messages
+survive browser disconnects and server restarts; they are not included in the
+model's current turn before their own turn starts.
 An incomplete model stream never executes a partial tool call. Lost message
 acknowledgements are retried with the same identity. Local unsent drafts are
-retained where browser storage is available. Replies scroll automatically while
+retained where browser storage is available. Messages awaiting acknowledgement
+also remain in the browser, including further sends made while the request is
+pending. **Retry pending messages** resends these without submitting the draft.
+An acknowledgement never clears a newer draft. Replies scroll automatically while
 following the latest text; scrolling up pauses following, and **Jump to latest**
 restores it. Memory operations refresh the graph and library after the turn ends.
 Damaged conversation files are retained and reported independently, so other

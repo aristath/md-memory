@@ -287,6 +287,7 @@ func (a *chatApp) run(ctx context.Context, id string) error {
 			}
 			if len(draft.ToolCalls) == 0 && !malformedToolReply(draft) {
 				current.Status = "done"
+				current.advance()
 			}
 			return nil
 		})

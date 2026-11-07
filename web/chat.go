@@ -34,6 +34,14 @@ type chatMessage struct {
 	Name       string         `json:"name,omitempty"`
 	TurnID     string         `json:"turn_id,omitempty"`
 }
+type chatQueuedTurn struct {
+	ID                  string                `json:"id"`
+	Text                string                `json:"text"`
+	Prompt              string                `json:"prompt,omitempty"`
+	Temperature         *float64              `json:"temperature,omitempty"`
+	RecallConfiguration *songya.Configuration `json:"recall_configuration,omitempty"`
+	RecallConfigIssue   string                `json:"recall_config_issue,omitempty"`
+}
 type chatConversation struct {
 	Recall              *songya.RecallResponse `json:"recall,omitempty"`
 	RecallConfiguration *songya.Configuration  `json:"recall_configuration,omitempty"`
@@ -51,7 +59,24 @@ type chatConversation struct {
 	Temperature         *float64               `json:"temperature,omitempty"`
 	Messages            []chatMessage          `json:"messages"`
 	Draft               *chatMessage           `json:"draft,omitempty"`
+	Queue               []chatQueuedTurn       `json:"queue,omitempty"`
 }
+
+// Promote only after the previous reply is complete. Future messages must not
+// enter the model's history or original testimony for the current turn.
+func (c *chatConversation) advance() {
+	if len(c.Queue) == 0 || (c.Status != "" && c.Status != "done") {
+		return
+	}
+	turn := c.Queue[0]
+	c.Queue = c.Queue[1:]
+	c.TurnID, c.Prompt, c.Temperature = turn.ID, turn.Prompt, turn.Temperature
+	c.RecallConfiguration, c.RecallConfigIssue = turn.RecallConfiguration, turn.RecallConfigIssue
+	c.Status, c.Error = "pending", ""
+	c.Draft, c.Recall = nil, nil
+	c.Messages = append(c.Messages, chatMessage{Role: "user", Content: turn.Text, TurnID: turn.ID})
+}
+
 type chatApp struct {
 	store  *songya.Store
 	ctx    context.Context
@@ -232,39 +257,42 @@ func (a *chatApp) start(id string) {
 			return
 		}
 		defer lease.Close()
-		c, err := a.conversation(id)
-		if err != nil || (c.Status != "pending" && c.Status != "running") {
-			return
-		}
-		_, err = a.edit(ctx, id, func(c *chatConversation) error {
-			if c.Status == "pending" || c.Status == "running" {
-				c.Status = "running"
-				c.Error = ""
+		for {
+			c, err := a.conversation(id)
+			if err != nil || (c.Status != "pending" && c.Status != "running") {
+				return
 			}
-			return nil
-		})
-		if err == nil {
-			err = a.run(ctx, id)
-		}
-		if err != nil {
-			// Application shutdown leaves accepted work pending for startup recovery.
-			saveCtx, stop := context.WithTimeout(context.Background(), 3*time.Second)
-			defer stop()
-			_, _ = a.edit(saveCtx, id, func(c *chatConversation) error {
-				if c.Status == "paused" {
-					return nil
-				}
-				if ctx.Err() != nil && c.Status == "pending" {
-					return nil
-				}
-				c.Status = "error"
-				c.Error = err.Error()
-				if a.ctx.Err() != nil {
-					c.Status = "pending"
+			_, err = a.edit(ctx, id, func(c *chatConversation) error {
+				if c.Status == "pending" || c.Status == "running" {
+					c.Status = "running"
 					c.Error = ""
 				}
 				return nil
 			})
+			if err == nil {
+				err = a.run(ctx, id)
+			}
+			if err != nil {
+				// Application shutdown leaves accepted work pending for startup recovery.
+				saveCtx, stop := context.WithTimeout(context.Background(), 3*time.Second)
+				defer stop()
+				_, _ = a.edit(saveCtx, id, func(c *chatConversation) error {
+					if c.Status == "paused" {
+						return nil
+					}
+					if ctx.Err() != nil && c.Status == "pending" {
+						return nil
+					}
+					c.Status = "error"
+					c.Error = err.Error()
+					if a.ctx.Err() != nil {
+						c.Status = "pending"
+						c.Error = ""
+					}
+					return nil
+				})
+				return
+			}
 		}
 	}()
 }
@@ -274,6 +302,13 @@ func publicChat(c chatConversation) chatConversation {
 	c.Requests = nil
 	c.RecallConfiguration = nil
 	c.RecallConfigIssue = ""
+	c.Queue = append([]chatQueuedTurn(nil), c.Queue...)
+	for i := range c.Queue {
+		c.Queue[i].Prompt = ""
+		c.Queue[i].Temperature = nil
+		c.Queue[i].RecallConfiguration = nil
+		c.Queue[i].RecallConfigIssue = ""
+	}
 	return c
 }
 
@@ -384,24 +419,12 @@ func (a *chatApp) sendHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			return nil
 		}
-		if c.Status == "running" || c.Status == "pending" {
-			return fmt.Errorf("%w: wait for this conversation to finish", songya.ErrConflict)
-		}
-		if c.Status == "error" || c.Status == "paused" {
-			return fmt.Errorf("%w: continue the saved turn before adding another message", songya.ErrConflict)
-		}
 		c.User = input.User
-		c.TurnID = input.RequestID
-		c.Prompt = string(prompt) + "\n\nCurrent turn received at " + time.Now().Format(time.RFC3339) + "."
-		c.Temperature = &settings.Temperature
-		c.Status = "pending"
-		c.Error = ""
-		c.Draft = nil
-		c.Recall = nil
-		c.RecallConfiguration = &configuration
-		c.RecallConfigIssue = ""
+		turn := chatQueuedTurn{ID: input.RequestID, Text: input.Text,
+			Prompt:      string(prompt) + "\n\nCurrent turn received at " + time.Now().Format(time.RFC3339) + ".",
+			Temperature: &settings.Temperature, RecallConfiguration: &configuration}
 		if configurationIssue != nil {
-			c.RecallConfigIssue = configurationIssue.Error()
+			turn.RecallConfigIssue = configurationIssue.Error()
 		}
 		if c.Title == "" {
 			c.Title = input.Text
@@ -410,7 +433,8 @@ func (a *chatApp) sendHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		c.Requests[input.RequestID] = fingerprint
-		c.Messages = append(c.Messages, chatMessage{Role: "user", Content: input.Text, TurnID: input.RequestID})
+		c.Queue = append(c.Queue, turn)
+		c.advance()
 		return nil
 	})
 	if err != nil {
