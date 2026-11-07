@@ -176,6 +176,9 @@
       >
         List
       </button>
+      <button class="type-settings-button" @click="openTypeSettings()">
+        Type settings
+      </button>
       <button class="recall-settings-button" @click="openRecallSettings()">
         Retrieval settings
       </button>
@@ -592,6 +595,17 @@
             </select></label
           >
           <label
+            >Types for<select
+              aria-label="Types for"
+              x-model="classificationUser"
+              @change="changeClassificationUser()"
+            >
+              <option value="">Choose a user</option>
+              <template x-for="user in classificationUsers()" :key="user"
+                ><option :value="user" x-text="user"></option
+              ></template></select
+          ></label>
+          <label
             >Type<select
               aria-label="Metadata type filter"
               x-model="filters.type"
@@ -678,7 +692,7 @@
                     x-text="record.description||'—'"
                   ></td>
                   <td x-text="record.kind"></td>
-                  <td x-text="record.type||'—'"></td>
+                  <td x-text="typeLabel(record.type,record.kind)||'—'"></td>
                   <td
                     class="aliases-cell"
                     x-text="(record.aliases||[]).join(', ')||'—'"
@@ -817,12 +831,55 @@
               <option value="stories">Story</option>
             </select></label
           >
+          <div class="classification-fields">
+            <label
+              >Classifying for<select
+                aria-label="Classification user"
+                x-model="classificationUser"
+                @change="changeClassificationUser()"
+              >
+                <option value="">Choose a user</option>
+                <template x-for="user in classificationUsers()" :key="user"
+                  ><option :value="user" x-text="user"></option
+                ></template></select
+            ></label>
+            <label
+              >Type<select
+                aria-label="Record classification"
+                :value="recordType()"
+                @change="changeRecordType($event.target.value)"
+                :disabled="!classificationUser||classificationBusy"
+              >
+                <option value="">No type</option>
+                <template
+                  x-for="type in typeChoices(selected?.kind)"
+                  :key="type.id"
+                  ><option
+                    :value="type.id"
+                    :selected="recordType()===type.id"
+                    x-text="type.name"
+                  ></option
+                ></template></select
+            ></label>
+            <button
+              type="button"
+              @click="openTypeSettings(classificationUser)"
+              :disabled="!classificationUser"
+            >
+              Manage types
+            </button>
+          </div>
+          <p
+            class="muted"
+            x-show="recordTypeDefinition()"
+            x-text="recordTypeDefinition()"
+          ></p>
           <p class="muted">
             Lists and nested fields use YAML values. Creation and update times
             are automatic.
           </p>
           <template x-for="(field,index) in fields" :key="index"
-            ><div class="metadata-field">
+            ><div class="metadata-field" x-show="field.key!=='types'">
               <input
                 list="metadata-keys"
                 aria-label="Metadata name"
@@ -1061,6 +1118,149 @@
           ></template>
         </details>
       </div>
+    </dialog>
+    <dialog
+      class="type-settings-dialog"
+      x-ref="typeSettingsDialog"
+      aria-labelledby="type-settings-heading"
+      @click.self="$el.close()"
+    >
+      <form @submit.prevent="saveTypeSettings()" class="type-settings-content">
+        <div class="chat-heading">
+          <h2 id="type-settings-heading">Type settings</h2>
+          <button
+            type="button"
+            aria-label="Close type settings"
+            @click="$refs.typeSettingsDialog.close()"
+          >
+            Close
+          </button>
+        </div>
+        <p>
+          Each user has their own choices and definitions. Changes here affect
+          only that user's classifications.
+        </p>
+        <fieldset :disabled="typeSettingsBusy" class="type-user-picker">
+          <label
+            >User<input
+              list="type-settings-users"
+              aria-label="Type settings user"
+              x-model="typeSettingsUser" /></label
+          ><datalist id="type-settings-users">
+            <template x-for="user in classificationUsers()" :key="user"
+              ><option :value="user"></option
+            ></template></datalist
+          ><button type="button" @click="loadTypeSettings()">Load user</button>
+        </fieldset>
+        <div role="alert" class="error" x-show="typeSettingsError">
+          <p x-text="typeSettingsError"></p>
+          <button
+            type="button"
+            @click="loadTypeSettings(true)"
+            :disabled="typeSettingsBusy"
+          >
+            Reload saved types
+          </button>
+        </div>
+        <p
+          role="status"
+          class="success"
+          x-show="typeSettingsNotice"
+          x-text="typeSettingsNotice"
+        ></p>
+        <fieldset :disabled="typeSettingsBusy" x-show="typeDraft">
+          <div
+            class="type-kind-tabs"
+            role="tablist"
+            aria-label="Types by record kind"
+          >
+            <template x-for="kind in typeKinds" :key="kind"
+              ><button
+                type="button"
+                role="tab"
+                :aria-selected="typeSettingsKind===kind"
+                @click="typeSettingsKind=kind"
+                x-text="kind"
+              ></button
+            ></template>
+          </div>
+          <p class="muted">
+            Names can change. Definitions tell the model what each type means.
+            Use a short, clear sentence.
+          </p>
+          <template
+            x-for="(type,index) in typeDraft?.[typeSettingsKind]||[]"
+            :key="index"
+            ><div class="type-definition">
+              <label
+                >Name<input
+                  :aria-label="'Type name '+type.id"
+                  x-model="type.name"
+                  @input="typeNameChanged(type)"
+                  required /></label
+              ><label
+                >Definition<textarea
+                  :aria-label="'Type definition '+type.id"
+                  x-model="type.description"
+                  @input="keepTypeDraft()"
+                  rows="2"
+                  required
+                ></textarea></label
+              ><button
+                type="button"
+                @click="removeType(type.id)"
+                :aria-label="'Remove type '+type.name"
+              >
+                Remove
+              </button>
+            </div></template
+          >
+          <p class="muted" x-show="!typeDraft?.[typeSettingsKind]?.length">
+            No types configured for this record kind. Records can be saved
+            without a type.
+          </p>
+          <button type="button" @click="addType()">Add type</button>
+          <template
+            x-for="removed in removedUsedTypes()"
+            :key="removed.kind+removed.id"
+            ><div class="type-reassignment">
+              <label
+                ><span
+                  x-text="removed.name+' is used by '+removed.count+' '+removed.kind+'. Choose what happens to these assignments.'"
+                ></span
+                ><select
+                  :aria-label="'Replace removed type '+removed.name"
+                  :value="typeReplacements[removed.kind]?.[removed.id]??'__choose__'"
+                  @change="setTypeReplacement(removed.kind,removed.id,$event.target.value)"
+                  required
+                >
+                  <option value="__choose__" disabled>
+                    Choose a replacement
+                  </option>
+                  <option value="">Clear this user's assignments</option>
+                  <template
+                    x-for="replacement in typeDraft?.[removed.kind]||[]"
+                    :key="replacement.id"
+                    ><option
+                      :value="replacement.id"
+                      x-text="replacement.name"
+                    ></option
+                  ></template></select
+              ></label></div
+          ></template>
+          <div class="chat-settings-actions">
+            <button type="button" @click="$refs.typeSettingsDialog.close()">
+              Close</button
+            ><button
+              type="submit"
+              class="primary"
+              :disabled="!typeSettings||typeSettingsBusy"
+              x-text="typePending?'Retry saved request':'Save types'"
+            ></button>
+          </div>
+        </fieldset>
+        <p x-show="typeSettingsBusy" role="status">Saving or loading types…</p>
+      </form>
     </dialog>
     <dialog
       class="chat-rename-dialog"

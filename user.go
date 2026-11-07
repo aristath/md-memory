@@ -46,6 +46,7 @@ func userCatalog(catalog Catalog, user string) Catalog {
 	records := []Record{}
 	for _, record := range catalog.Records {
 		if !userOwned(record.Kind) || record.User == user {
+			record.Type = record.Types[user]
 			records = append(records, record)
 		}
 	}

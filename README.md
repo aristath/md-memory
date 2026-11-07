@@ -31,7 +31,14 @@ topics remain shared.
 The front page is a full-width record table. Search content or filter by title,
 description, record type, metadata type, aliases and owner. Click a column header
 to sort in either direction. **Record type** identifies a memory, entity, topic or
-story; **Type** shows the open metadata value, such as person or plant taxon.
+story; **Type** shows the selected user's configured classification.
+**Type settings** provides independent choices and clear definitions for each
+user and record kind. Defaults include 12 entity types; memories, topics and
+stories start without subtypes. **Types for** selects whose classifications to
+show, independently of the owner filter. The editor uses a dropdown, and chat
+receives the same definitions and allowed IDs. Shared identities can have
+different classifications for different users. Removing an in-use choice requires
+an explicit replacement or clearing its assignments.
 
 Click a title to inspect the record in a read-only modal, or **Edit** to open the
 editor modal. **Visual** edits formatted Markdown; **Source** edits the complete

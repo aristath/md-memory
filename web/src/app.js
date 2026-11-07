@@ -3,6 +3,7 @@ import { codeEditor, richEditor } from "./editors.js";
 import { memoryGraph } from "./graph.js";
 import { chatUI } from "./chat.js";
 import { recallUI } from "./recall.js";
+import { typesUI } from "./types.js";
 
 async function request(path, options = {}) {
   const response = await fetch(path, {
@@ -33,6 +34,7 @@ Alpine.data("songya", () => {
   return {
     ...chatUI(request),
     ...recallUI(request),
+    ...typesUI(request),
     theme: document.documentElement.dataset.theme || "system",
     setTheme() {
       document.documentElement.dataset.theme = this.theme;
@@ -86,7 +88,8 @@ Alpine.data("songya", () => {
       this.$watch("recallDraft", () => this.keepRecallDraft());
       this.refreshGraph();
       await this.refresh();
-      this.initChat();
+      await this.initChat();
+      await this.initTypes();
       window.addEventListener("beforeunload", (e) => {
         if (
           this.dirty ||
@@ -209,6 +212,7 @@ Alpine.data("songya", () => {
               q: this.q,
               kind: this.kind,
               user: this.owner,
+              classification_user: this.classificationUser,
             }),
         );
         if (ticket !== listing) return;
@@ -338,6 +342,10 @@ Alpine.data("songya", () => {
           };
         }
         this.inspecting = inspect;
+        if (!this.classificationUser)
+          this.classificationUser =
+            this.chatUser || this.classificationUsers()[0] || "";
+        if (this.classificationUser) await this.loadClassificationPolicy();
         this.install(saved);
         if (force) {
           drafts.delete(id);
@@ -394,6 +402,10 @@ Alpine.data("songya", () => {
             attempt: null,
           });
         }
+        if (!this.classificationUser)
+          this.classificationUser =
+            this.chatUser || this.classificationUsers()[0] || "";
+        if (this.classificationUser) await this.loadClassificationPolicy();
         this.showDialog();
         this.showMetadata = true;
         this.failure = "";
@@ -479,6 +491,41 @@ Alpine.data("songya", () => {
       metadataStamp = JSON.stringify(this.fields);
       this.dirty = this.source !== base || !!attempt;
       this.links = result.links || this.links;
+    },
+    async changeRecordType(value) {
+      if (
+        this.busy ||
+        this.loading ||
+        !this.selected ||
+        !this.classificationUser
+      )
+        return;
+      this.loading = true;
+      this.failure = "";
+      try {
+        await this.flush();
+        const result = await request("/api/draft", {
+          method: "POST",
+          body: JSON.stringify({
+            source: this.source,
+            id: this.selected.id,
+            kind: this.selected.kind,
+            classification_user: this.classificationUser,
+            classification_type: value,
+          }),
+        });
+        this.source = result.source;
+        this.fields = result.draft.fields;
+        body = result.draft.body;
+        metadataStamp = JSON.stringify(this.fields);
+        this.dirty = this.source !== base || !!attempt;
+        editGeneration++;
+        this.remember();
+      } catch (e) {
+        this.failure = e.message;
+      } finally {
+        this.loading = false;
+      }
     },
     async switchMode(mode) {
       if (mode === this.mode || this.busy || this.loading) return;
@@ -583,6 +630,7 @@ Alpine.data("songya", () => {
           kind: this.selected.kind,
           version: this.selected.version,
           source: current,
+          classification_user: this.classificationUser,
         };
         const submitted = attempt;
         const generation = editGeneration;

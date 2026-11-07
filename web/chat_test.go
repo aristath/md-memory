@@ -93,7 +93,7 @@ func TestChatStreamsThroughRealMCPAndSurvivesBrowserDisconnect(t *testing.T) {
 			t.Error(err)
 			return
 		}
-		if !body.Stream || body.Model != "memory-model" || len(body.Tools) != 14 {
+		if !body.Stream || body.Model != "memory-model" || len(body.Tools) != 15 {
 			t.Error("streaming request lost model or MCP definitions")
 		}
 		if !strings.Contains(body.Messages[0].Content, `user "ari"`) || !strings.Contains(body.Messages[0].Content, "Songya stores connected Markdown records") {

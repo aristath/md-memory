@@ -34,6 +34,7 @@ func Handler(store *songya.Store) *Application {
 	chat := newChatApp(store)
 	chat.register(mux)
 	chat.registerRecall(mux)
+	chat.registerTypes(mux)
 	files, _ := fs.Sub(assets, "assets")
 	page := template.Must(template.ParseFS(assets, "assets/index.html"))
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
@@ -75,7 +76,17 @@ func Handler(store *songya.Store) *Application {
 			fail(w, err)
 			return
 		}
+		if user := r.URL.Query().Get("classification_user"); user != "" && user != "all" {
+			for i := range catalog.Records {
+				catalog.Records[i].Type = catalog.Records[i].Types[user]
+			}
+		}
 		records := catalog.Select(songya.Query{Text: r.URL.Query().Get("q"), Kind: songya.Destination(r.URL.Query().Get("kind")), User: r.URL.Query().Get("user")})
+		if user := r.URL.Query().Get("classification_user"); user != "" && user != "all" {
+			for i := range records {
+				records[i].Type = records[i].Types[user]
+			}
+		}
 		summaries := []map[string]any{}
 		owners := map[string]bool{}
 		types := map[string]bool{}
@@ -88,7 +99,7 @@ func Handler(store *songya.Store) *Application {
 			}
 		}
 		for _, record := range records {
-			summaries = append(summaries, map[string]any{"id": record.ID, "source": record.Source, "title": record.Title, "description": record.Description, "type": record.Type, "aliases": record.Aliases, "kind": record.Kind, "user": record.User, "version": record.Revision, "pending": record.Pending || record.Unconfirmed})
+			summaries = append(summaries, map[string]any{"id": record.ID, "source": record.Source, "title": record.Title, "description": record.Description, "type": record.Type, "types": record.Types, "aliases": record.Aliases, "kind": record.Kind, "user": record.User, "version": record.Revision, "pending": record.Pending || record.Unconfirmed})
 		}
 		write(w, map[string]any{"records": summaries, "owners": owners, "types": types, "diagnostics": catalog.Diagnostics})
 	})
@@ -123,19 +134,27 @@ func Handler(store *songya.Store) *Application {
 	})
 	mux.HandleFunc("POST /api/draft", func(w http.ResponseWriter, r *http.Request) {
 		var input struct {
-			Source string             `json:"source"`
-			ID     string             `json:"id"`
-			Kind   songya.Destination `json:"kind"`
-			Action string             `json:"action"`
-			Type   string             `json:"type"`
-			Target string             `json:"target"`
-			Body   *string            `json:"body"`
-			Fields *[]Field           `json:"fields"`
+			Source             string             `json:"source"`
+			ClassificationUser string             `json:"classification_user"`
+			ClassificationType *string            `json:"classification_type"`
+			ID                 string             `json:"id"`
+			Kind               songya.Destination `json:"kind"`
+			Action             string             `json:"action"`
+			Type               string             `json:"type"`
+			Target             string             `json:"target"`
+			Body               *string            `json:"body"`
+			Fields             *[]Field           `json:"fields"`
 		}
 		if !decode(w, r, &input) {
 			return
 		}
 		doc := songya.Parse([]byte(input.Source))
+		if input.ClassificationType != nil {
+			if err := doc.SetType(input.ClassificationUser, *input.ClassificationType); err != nil {
+				writeStatus(w, 422, map[string]any{"error": err.Error()})
+				return
+			}
+		}
 		if input.Body != nil {
 			doc.Body = *input.Body
 		}
@@ -192,7 +211,7 @@ func Handler(store *songya.Store) *Application {
 		}
 
 		source := input.Source
-		if input.Body != nil || input.Fields != nil || input.Action != "" {
+		if input.Body != nil || input.Fields != nil || input.Action != "" || input.ClassificationType != nil {
 			data, err := doc.Marshal()
 			if err != nil {
 				fail(w, err)
@@ -223,11 +242,12 @@ func Handler(store *songya.Store) *Application {
 		var input struct {
 			Key, ID, Version, Source string
 			Kind                     songya.Destination
+			ClassificationUser       string `json:"classification_user"`
 		}
 		if !decode(w, r, &input) {
 			return
 		}
-		receipt, err := store.SaveSource(r.Context(), input.Key, input.ID, input.Kind, input.Version, input.Source)
+		receipt, err := store.SaveSource(songya.WithTypeUser(r.Context(), input.ClassificationUser), input.Key, input.ID, input.Kind, input.Version, input.Source)
 		if err != nil {
 			if receipt.Status == "not_accepted" {
 				status := 422
@@ -278,14 +298,15 @@ func Handler(store *songya.Store) *Application {
 }
 
 type Field struct {
-	Time      *songya.EpisodeTime `json:"time,omitempty"`
-	Protected string              `json:"protected,omitempty"`
-	Index     int                 `json:"index"`
-	Text      string              `json:"text"`
-	Type      string              `json:"type"`
-	Key       string              `json:"key"`
-	Value     string              `json:"value"`
-	System    bool                `json:"system"`
+	Time        *songya.EpisodeTime `json:"time,omitempty"`
+	Protected   string              `json:"protected,omitempty"`
+	Index       int                 `json:"index"`
+	Text        string              `json:"text"`
+	Type        string              `json:"type"`
+	Assignments map[string]string   `json:"assignments,omitempty"`
+	Key         string              `json:"key"`
+	Value       string              `json:"value"`
+	System      bool                `json:"system"`
 }
 type Draft struct {
 	Body     string   `json:"body"`
@@ -334,6 +355,9 @@ func describe(source string) Draft {
 			protected = strings.Join(lines[key.Line:end], "")
 		}
 		f := Field{Index: i / 2, Text: value.Value, Type: typ, Key: name, Value: string(data), System: system, Protected: protected}
+		if name == "types" {
+			f.Assignments = doc.Types()
+		}
 		if name == "time" && value.Kind == yaml.MappingNode {
 			var event songya.EpisodeTime
 			usable := value.Decode(&event) == nil

@@ -33,6 +33,7 @@ func main() {
 	flags.SetOutput(os.Stderr)
 	storePath := flags.String("store", "", "authoritative memory store directory (required)")
 	configPath := flags.String("config", "", "configuration file (default: STORE/config.json)")
+	user := flags.String("user", "", "optional selected user for model-facing type schemas")
 	roots := rootsFlag{}
 	flags.Var(roots, "import-root", "optional named import root; repeat for more roots")
 	_ = flags.Parse(os.Args[1:])
@@ -55,7 +56,7 @@ func main() {
 	store.UseConfiguration(path)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	server := mcpserver.New(ctx, store, roots)
+	server := mcpserver.NewForUser(ctx, store, roots, *user)
 	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil && ctx.Err() == nil {
 		log.Fatal(err)
 	}

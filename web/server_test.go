@@ -84,12 +84,12 @@ func TestTableProjectsMetadataAndRevisionFromTheCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	record, err := store.Create(songya.Entities, map[string]any{"name": "Cedar", "description": "Stale metadata", "type": "plant taxon", "aliases": []string{"Cedrus", "Atlas cedar"}}, "A tree")
+	record, err := store.Create(songya.Entities, map[string]any{"name": "Cedar", "description": "Stale metadata", "types": map[string]string{"ari": "plant"}, "aliases": []string{"Cedrus", "Atlas cedar"}}, "A tree")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for pass := 0; pass < 2; pass++ { // Fresh scan and cached projection.
-		code, result := call(t, testApplication(t, store), "GET", "/api/records", nil)
+		code, result := call(t, testApplication(t, store), "GET", "/api/records?classification_user=ari", nil)
 		if code != 200 {
 			t.Fatal(code, result)
 		}
@@ -98,7 +98,7 @@ func TestTableProjectsMetadataAndRevisionFromTheCatalog(t *testing.T) {
 			t.Fatal(result)
 		}
 		row := rows[0].(map[string]any)
-		if row["title"] != "Cedar" || row["description"] != "A tree" || row["type"] != "plant taxon" || row["version"] != record.Revision || len(row["aliases"].([]any)) != 2 || result["types"].(map[string]any)["plant taxon"] != true {
+		if row["title"] != "Cedar" || row["description"] != "A tree" || row["type"] != "plant" || row["version"] != record.Revision || len(row["aliases"].([]any)) != 2 || result["types"].(map[string]any)["plant"] != true {
 			t.Fatal("table lost metadata or revision", result)
 		}
 	}

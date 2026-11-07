@@ -2,6 +2,7 @@ package songya
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -48,11 +49,15 @@ func (s *Store) Update(id, revision string, fields map[string]any, body string) 
 	if err := validateTimeChange(previousTime, metadataField(&doc.Frontmatter, "time")); err != nil {
 		return doc, err
 	}
-	data, err := doc.Marshal()
-	if err != nil {
-		return doc, err
-	}
+	var data []byte
 	err = s.locked(true, func(root *os.Root) (err error) {
+		if err := s.validateTypeChange(context.Background(), root, Parse(doc.OriginalSource()), doc, kindOf(id), nil); err != nil {
+			return err
+		}
+		data, err = doc.Marshal()
+		if err != nil {
+			return err
+		}
 		defer func() {
 			if doc.Pending || err == nil {
 				s.note(name, err)

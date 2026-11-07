@@ -234,3 +234,23 @@ included.
 A file containing invalid UTF-8 bytes cannot be safely round-tripped through a
 text editor. Opening it reports an encoding problem and leaves its bytes intact;
 other records remain usable. Repair that file's encoding before editing it here.
+
+## Type settings
+
+The header's **Type settings** opens a per-user editor. Each record kind has its
+own list. Edit names and short definitions, add choices, or remove a choice.
+Removing an in-use choice requires selecting a replacement or explicitly
+clearing that user's assignments. Stable IDs do not change when names change.
+New users receive independent defaults; their changes do not change anyone
+else's setup.
+
+The library's **Types for** selector controls classification independently of
+the owner filter. The record editor has the same user selector and a type
+dropdown. A shared entity can have different classifications for different users.
+The chat uses its selected speaker's current definitions in the prompt and tool
+schemas. The model cannot invent a type or edit settings.
+
+Settings drafts are retained per user in browser storage. A lost save response
+can be retried using the same durable request key. Conflicting settings changes
+retain the draft and offer an explicit reload. Forms use intrinsic wrapping,
+including on narrow screens, without viewport breakpoints.

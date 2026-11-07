@@ -1,6 +1,7 @@
 package songya
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -252,12 +253,17 @@ func (s *Store) Create(destination Destination, fields map[string]any, body stri
 	if err := validateTimeChange(nil, metadataField(&d.Frontmatter, "time")); err != nil {
 		return d, err
 	}
-	data, err := d.Marshal()
-	if err != nil {
-		return d, err
-	}
+	var data []byte
 	err = s.locked(true, func(root *os.Root) error {
-		err := ensureDirectory(root, string(destination))
+		if err := s.validateTypeChange(context.Background(), root, &Document{}, d, destination, nil); err != nil {
+			return err
+		}
+		var err error
+		data, err = d.Marshal()
+		if err != nil {
+			return err
+		}
+		err = ensureDirectory(root, string(destination))
 		s.note(string(destination), err)
 		if err != nil {
 			return err

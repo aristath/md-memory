@@ -20,7 +20,7 @@ import (
 	"time"
 )
 
-const indexFormat = 8
+const indexFormat = 9
 
 // Diagnostic identifies a recoverable problem without hiding healthy records.
 type Diagnostic struct {
@@ -30,24 +30,25 @@ type Diagnostic struct {
 
 // Record is the derived search/graph view. Source Markdown is authoritative.
 type Record struct {
-	User        string      `json:"user,omitempty"`
-	ID          string      `json:"id"`
-	Source      string      `json:"source"`
-	Kind        Destination `json:"kind"`
-	Revision    string      `json:"-"`
-	Pending     bool        `json:"pending,omitempty"`
-	Unconfirmed bool        `json:"unconfirmed,omitempty"`
-	Title       string      `json:"title"`
-	Name        string      `json:"name,omitempty"`
-	Aliases     []string    `json:"aliases,omitempty"`
-	Description string      `json:"description,omitempty"`
-	Type        string      `json:"type,omitempty"`
-	Relations   []Relation  `json:"relations,omitempty"`
-	Redirects   []string    `json:"redirects,omitempty"`
-	Time        EpisodeTime `json:"time"`
-	Body        string      `json:"body"`
-	Context     string      `json:"context,omitempty"`
-	Diagnostics []string    `json:"diagnostics,omitempty"`
+	User        string            `json:"user,omitempty"`
+	ID          string            `json:"id"`
+	Source      string            `json:"source"`
+	Kind        Destination       `json:"kind"`
+	Revision    string            `json:"-"`
+	Pending     bool              `json:"pending,omitempty"`
+	Unconfirmed bool              `json:"unconfirmed,omitempty"`
+	Title       string            `json:"title"`
+	Name        string            `json:"name,omitempty"`
+	Aliases     []string          `json:"aliases,omitempty"`
+	Description string            `json:"description,omitempty"`
+	Type        string            `json:"type,omitempty"`
+	Types       map[string]string `json:"types,omitempty"`
+	Relations   []Relation        `json:"relations,omitempty"`
+	Redirects   []string          `json:"redirects,omitempty"`
+	Time        EpisodeTime       `json:"time"`
+	Body        string            `json:"body"`
+	Context     string            `json:"context,omitempty"`
+	Diagnostics []string          `json:"diagnostics,omitempty"`
 }
 type Catalog struct {
 	Records     []Record     `json:"records"`
@@ -98,7 +99,8 @@ func recordFromDocument(source string, d *Document, kind Destination) Record {
 	if kind == Entities || kind == Topics {
 		r.Description = d.Body
 	}
-	r.Type = strings.Join(nodeStrings("type", d), " ")
+	r.Types = documentTypes(d)
+	r.Type = r.Types[r.User]
 	r.Redirects = nodeStrings("redirects", d)
 	r.Time = episodeTime(metadataField(&d.Frontmatter, "time"))
 	if r.Title == "" {
@@ -279,6 +281,7 @@ type Query struct {
 	Limit          int         `json:"limit,omitempty"`
 }
 type Match struct {
+	Type             string      `json:"type,omitempty"`
 	User             string      `json:"user,omitempty"`
 	ID               string      `json:"id,omitempty"`
 	Source           string      `json:"source"`
@@ -410,7 +413,7 @@ func rankMatches(c Catalog, q Query) []Match {
 		for _, warning := range r.Diagnostics[:min(4, len(r.Diagnostics))] {
 			warnings = append(warnings, clip(warning, 512))
 		}
-		matches = append(matches, Match{User: clip(r.User, 160), ID: r.ID, Source: r.Source, Kind: r.Kind, Revision: r.Revision, Pending: r.Pending, Unconfirmed: r.Unconfirmed, Title: clip(r.Title, 160), Aliases: aliases, Excerpt: clip(excerpt, 512), Redirects: redirects, Score: float64(score), Reasons: reasons, Diagnostics: warnings, DetailsTruncated: detailsTruncated || len(r.User) > 160})
+		matches = append(matches, Match{Type: r.Type, User: clip(r.User, 160), ID: r.ID, Source: r.Source, Kind: r.Kind, Revision: r.Revision, Pending: r.Pending, Unconfirmed: r.Unconfirmed, Title: clip(r.Title, 160), Aliases: aliases, Excerpt: clip(excerpt, 512), Redirects: redirects, Score: float64(score), Reasons: reasons, Diagnostics: warnings, DetailsTruncated: detailsTruncated || len(r.User) > 160})
 	}
 	sort.Slice(matches, func(i, j int) bool {
 		if matches[i].Score != matches[j].Score {
@@ -481,6 +484,9 @@ func (c Catalog) ForUsers(owners []string) Catalog {
 	selected := Catalog{Diagnostics: c.Diagnostics}
 	for _, r := range c.Records {
 		if !userOwned(r.Kind) || allowed[r.User] || allowed["all"] {
+			if len(owners) == 1 {
+				r.Type = r.Types[strings.TrimSpace(owners[0])]
+			}
 			selected.Records = append(selected.Records, r)
 		}
 	}

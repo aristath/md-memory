@@ -27,6 +27,7 @@ Memories and stories require an owning `user`; Clara supplies the current user a
 | Tool | Main arguments |
 | --- | --- |
 | `save_memory` | `text`, optional `title`, `time`, `user`, `metadata`, `relations` |
+| `type_configuration` | `user`; optional app flag `schemas`; reads allowed IDs and definitions |
 | `save_entity` | `create:true` and `name` for creation; `id` for updates; optional `type`, `aliases`, `description`, `metadata`, `relations` |
 | `save_topic` | `create:true` and `name` for creation; `id` for updates; optional `aliases`, `description`, `metadata`, `relations` |
 | `save_story` | `title`, optional `text`, `user`, `metadata`, ordered `relations` |
@@ -153,3 +154,23 @@ Without original-text metadata, an ordinary model save does not invent an origin
 account. Model tools cannot replace `original_accounts` through metadata.
 Retries keep the source captured by the accepted write and still reject different
 record changes under the same request key.
+
+## User-specific type choices
+
+Call `type_configuration` with `user` before assigning types, unless the app
+already supplied the current choices. Its reply contains the allowed IDs,
+definitions, and short instructions for all four record kinds. The tool is
+read-only: a model cannot change these settings. Only use configured IDs. Omit
+`type` when none fits; an empty string clears this user's assignment.
+
+The four save tools accept `type` and `type_user`. The latter selects whose
+classification changes, independently of the `user` record owner. Clients should
+supply the selected person rather than ask the model to guess. Trusted client
+metadata `songya/user` takes precedence over model arguments. Another user's
+assignments are preserved, including on updates that omit owner.
+
+Clients can request `type_configuration({user, schemas:true})` to receive
+`write_schemas`, keyed by save tool name. Use these authoritative schemas in
+model-facing definitions; they include allowed enums and definitions. The CLI's
+`--user` option also scopes discovery. Engine validation always uses current
+settings, even when a client's previously discovered schema is stale.

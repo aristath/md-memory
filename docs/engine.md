@@ -540,3 +540,41 @@ even after the external source is gone. Retries use the preserved source and the
 same record IDs. Changing an accepted partition requires reviewed organization,
 not importing a second active copy under the same path. Source roots remain
 separate from the active store; source files are never rewritten.
+
+## Per-user types
+
+Record kinds (`entities`, `memories`, `topics`, `stories`) are fixed. Each user
+configures a separate list of optional types for each kind. New users receive
+12 entity types: person, group, organization, place, animal, plant, brand, object,
+food, software, creative_work, and event. The other three lists start empty.
+A person can include a nonhuman person. Each definition has a stable ID, an
+editable display name, and a plain-language description.
+
+Assignments live in frontmatter:
+
+```yaml
+types:
+  life: plant
+  cook: ingredient
+```
+
+This classifies the same shared identity differently for each user. It does not
+change the `user` owner of a memory or story. There is no global `type` field.
+Use `Document.SetType(user, id)` to edit one assignment while preserving the
+other users' metadata. In tool inputs, omitted type keeps the assignment and an
+empty type clears only the selected user's assignment.
+
+`Store.TypeConfiguration(ctx, user)` creates that user's independent defaults
+once and returns definitions, usage counts, diagnostics and an optimistic
+version. Settings are JSON files under `.types`, named using the user's SHA-256.
+`SaveTypeConfiguration` requires that version and a stable request key. Removing
+an in-use ID also requires a replacement ID or an explicitly empty replacement.
+The configuration and affected assignments share the durable batch journal;
+interruption recovery completes the accepted operation. A completed retry cannot
+reapply old assignments over later work. Renaming a display name leaves the ID
+and assignments intact.
+
+All engine writes validate changed assignments, including source/import and
+batch writes. `WithTypeUser` restricts an operation to one user's assignments.
+Unchanged damaged metadata does not block unrelated body edits. Damaged settings
+are retained and reported; another user's settings remain usable.

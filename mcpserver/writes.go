@@ -82,6 +82,8 @@ func savedWrite(ctx context.Context, store *songya.Store, receipt songya.Receipt
 		records[saved.ID] = doc.Record(kindFor(saved.ID))
 	}
 	if record, ok := records[id]; ok {
+		value["type"] = record.Types[songya.TypeUser(ctx)]
+		value["type_user"] = songya.TypeUser(ctx)
 		if record.Kind == songya.Entities || record.Kind == songya.Topics {
 			value["name"], value["description"], value["aliases"] = record.Title, clipText(record.Body, 2048), record.Aliases
 			value["description_truncated"] = len(record.Body) > 2048

@@ -24,6 +24,9 @@ import (
 
 const Guide = `Songya stores connected Markdown records. A record is one saved entry. A field is a named part such as title. An ID is the unique label a tool returns for a record. Copy IDs exactly; never invent them. Examples are instructions, not facts to save.
 
+TYPES
+Types belong to the selected user. Read type_configuration for that user before assigning a type unless the app already supplied the choices. Use only configured IDs and their definitions. Omit type if none fits. type_user selects whose classification changes; it does not change the record owner. Empty type clears only that user's assignment. Never invent types, change type settings, write a global metadata.type, or change another user's classifications. Shared identities can have different types for different users.
+
 WHAT TO SAVE WHERE
 - Memory: one event WITH its details, or a standalone fact or preference. All people, food, conversation, feelings, and quotes from one dinner belong together. A different dinner is a different memory. An unrelated home address or usual drink preference can be a standalone fact; do not attach it to the dinner. Include all supplied details. Say whose feelings or opinions they are. Do not invent missing details or shorten away important words. One detailed event can take several paragraphs; there is no fixed word limit.
 - Entity: a person, place, animal, organization, or named thing. name names it; aliases are other names of that SAME thing; description is a short identification, usually one or two sentences. Example arguments for save_entity:
@@ -59,7 +62,7 @@ If the header is damaged or its end is unclear, read view="body" separately. Do 
 SAVES
 Call one tool at a time, with JSON arguments. Do not write pretend calls or XML tags in reply text.
 New memory: omit id; always send a short title and text. Send the selected user unless the client supplies user. New stories also need a title. Example: call save_memory with this JSON:
-{"title":"Alex and Sam's favorite soup","text":"Alex and Sam enjoy the soup at Cedar Café.","relations":[{"type":"related_to","target":"Alex"},{"type":"related_to","target":"Sam"},{"type":"related_to","target":{"kind":"entities","name":"Cedar Café","type":"place"}}]}
+{"title":"Alex and Sam's favorite soup","text":"Alex and Sam enjoy the soup at Cedar Café.","relations":[{"type":"related_to","target":"Alex"},{"type":"related_to","target":"Sam"},{"type":"related_to","target":{"kind":"entities","name":"Cedar Café"}}]}
 Change a memory/story: send id and the fields to change. text replaces ALL body words. For a correction, change only wrong claims and copy all other wording, details, names, and quotes exactly. append adds words about the SAME account after the old words; it must not add a different dated event or a conflicting claim.
 Change entity/topic words: send id and description, NOT text. For dates only, send id and time; leave text out.
 Omit means leave a field out: its old value stays. An empty text or description clears the words. metadata means extra named fields; it changes only supplied keys. IDs and save times are automatic.
@@ -271,6 +274,20 @@ func tool[T any](server *mcp.Server, name, description string, input any, readOn
 		}
 		if text, ok := request.Params.Meta["songya/original-text"].(string); ok {
 			ctx = songya.WithOriginalText(ctx, text)
+		}
+		var classification struct {
+			User  string `json:"type_user"`
+			Owner string `json:"user"`
+		}
+		_ = json.Unmarshal(request.Params.Arguments, &classification)
+		if classification.User == "" && classification.Owner != "all" {
+			classification.User = classification.Owner
+		}
+		if classification.User != "" && songya.TypeUser(ctx) == "" {
+			ctx = songya.WithTypeUser(ctx, classification.User)
+		}
+		if user, ok := request.Params.Meta["songya/user"].(string); ok {
+			ctx = songya.WithTypeUser(ctx, user)
 		}
 		output, err := handler(ctx, value)
 		if ctx.Err() != nil {
@@ -522,8 +539,23 @@ func kindFor(id string) songya.Destination {
 }
 
 func New(lifetime context.Context, store *songya.Store, roots map[string]string) *mcp.Server {
+	return NewForUser(lifetime, store, roots, "")
+}
+func NewForUser(lifetime context.Context, store *songya.Store, roots map[string]string, user string) *mcp.Server {
+	cfg := songya.TypeConfiguration{User: user, Kinds: map[songya.Destination][]songya.TypeDefinition{}}
+	instructions := Guide
+	if user != "" {
+		var err error
+		cfg, err = store.TypeConfiguration(lifetime, user)
+		if err != nil {
+			instructions += "\nType settings could not be read. Omit classifications and report the problem: " + err.Error()
+		} else {
+			instructions += "\n" + songya.TypeInstructions(cfg)
+		}
+	}
+	writeSchemas := WriteSchemas(cfg)
 	app := &App{Store: store, ImportRoots: roots}
-	server := mcp.NewServer(&mcp.Implementation{Name: "songya", Version: "0.1.0"}, &mcp.ServerOptions{Instructions: Guide})
+	server := mcp.NewServer(&mcp.Implementation{Name: "songya", Version: "0.1.0"}, &mcp.ServerOptions{Instructions: instructions})
 	// The SDK keeps request contexts independent of Run's context. Propagate our
 	// process lifetime explicitly so shutdown cancels unaccepted lock waiters.
 	server.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
@@ -535,8 +567,25 @@ func New(lifetime context.Context, store *songya.Store, roots map[string]string)
 			if err := lifetime.Err(); err != nil {
 				return nil, err
 			}
+			if user != "" {
+				ctx = songya.WithTypeUser(ctx, user)
+			}
 			return next(ctx, method, request)
 		}
+	})
+	tool(server, "type_configuration", "Read the selected user's type choices and definitions before assigning types. Settings changes are made by the person in Songya, not by the model.", schema(map[string]any{"user": str("Selected user whose type choices to read"), "schemas": map[string]any{"type": "boolean", "description": "App integration flag. Omit when reading the choices normally"}}, "user"), true, func(ctx context.Context, input struct {
+		User    string `json:"user"`
+		Schemas bool   `json:"schemas"`
+	}) (any, error) {
+		cfg, err := store.TypeConfiguration(ctx, input.User)
+		if err != nil {
+			return cfg, err
+		}
+		value := map[string]any{"user": cfg.User, "kinds": cfg.Kinds, "version": cfg.Version, "diagnostics": cfg.Diagnostics, "instructions": songya.TypeInstructions(cfg)}
+		if input.Schemas {
+			value["write_schemas"] = WriteSchemas(cfg)
+		}
+		return value, nil
 	})
 	tool(server, "prepare_memory", "Find existing memories, entities and topics related to text.", schema(map[string]any{"text": str("The memory or subject to search"), "user": str("Selected user to search. Supply that user. Use all only when the person explicitly asks to search everyone. Omitted user searches everyone; do not omit it for a selected-user search. Shared entities/topics are still included."), "limit": count()}, "text"), true, func(ctx context.Context, input struct {
 		Text  string `json:"text"`
@@ -546,7 +595,7 @@ func New(lifetime context.Context, store *songya.Store, roots map[string]string)
 		prepared, err := store.Prepare(ctx, input.Text, input.User, limit(input.Limit, 8, 8))
 		return map[string]any{"query": prepared.Query, "user": prepared.User, "matches": prepared.Matches, "ambiguities": prepared.Ambiguities, "possible_duplicates": prepared.PossibleDuplicates, "diagnostics": prepared.Diagnostics, "truncated": prepared.Truncated, "next": prepared.Next}, err
 	})
-	tool(server, "save_memory", memoryDescription, memorySchema(), false, func(ctx context.Context, input songya.MemoryInput) (any, error) {
+	tool(server, "save_memory", memoryDescription, writeSchemas["save_memory"], false, func(ctx context.Context, input songya.MemoryInput) (any, error) {
 		if input.ID == "" && (input.Text == nil || strings.TrimSpace(*input.Text) == "") && strings.TrimSpace(input.Append) == "" {
 			return map[string]any{"status": "not_accepted"}, fmt.Errorf("provide the new memory's content in text; to modify an existing memory, supply id and the fields to change")
 		}
@@ -559,14 +608,14 @@ func New(lifetime context.Context, store *songya.Store, roots map[string]string)
 		kind        songya.Destination
 		description string
 	}{{"save_entity", songya.Entities, "Save a person, place, or thing. Send id to change an existing entity. Send description to change its words; text does not work here. Put events in linked memories. For a new record, send create:true and name, without id. For an update, send its id; a name alone never updates a record."}, {"save_topic", songya.Topics, "Save a subject. Send id to change an existing topic. Send description to change its words; text does not work here. For a new record, send create:true and name, without id. For an update, send its id; a name alone never updates a record."}} {
-		inputSchema := namedSchema(item.kind == songya.Entities)
+		inputSchema := writeSchemas[item.name]
 		tool(server, item.name, item.description, inputSchema, false, func(ctx context.Context, input songya.NamedInput) (any, error) {
 			input.Key = requestKey(ctx)
 			receipt, err := store.SaveNamed(ctx, item.kind, input)
 			return savedWrite(ctx, store, receipt, "record", err)
 		})
 	}
-	tool(server, "save_story", "Save a story. Send id to change one. text replaces all story words. Put related_to links to its memories in reading order.", schema(map[string]any{"id": str("Existing story ID; omit to create"), "user": str("Story owner"), "title": str("Story title"), "text": str("Narrative text"), "append": str("Add narrative text"), "metadata": object(), "relations": relationsSchema()}), false, func(ctx context.Context, input songya.StoryInput) (any, error) {
+	tool(server, "save_story", "Save a story. Send id to change one. text replaces all story words. Put related_to links to its memories in reading order.", writeSchemas["save_story"], false, func(ctx context.Context, input songya.StoryInput) (any, error) {
 		input.Key = requestKey(ctx)
 		receipt, err := store.SaveStory(ctx, input)
 		return savedWrite(ctx, store, receipt, "story", err)

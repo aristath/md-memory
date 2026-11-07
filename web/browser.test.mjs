@@ -748,8 +748,24 @@ test("a rejected save can be corrected and saved without retaining the invalid r
 });
 
 test("the front page is a sortable metadata table with independent column filters and read-only inspection", async () => {
+  const policy = await (await fetch(url + "/api/types/ari")).json();
+  policy.kinds.memories.push({
+    id: "experience",
+    name: "Experience",
+    description: "An experience account.",
+  });
+  const configured = await fetch(url + "/api/types/ari", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      key: crypto.randomUUID(),
+      version: policy.version,
+      kinds: policy.kinds,
+    }),
+  });
+  assert.equal(configured.status, 200);
   for (const [title, description, type, alias, kind] of [
-    ["Table 2", "Cedar tree", "plant taxon", "Atlas", "entities"],
+    ["Table 2", "Cedar tree", "plant", "Atlas", "entities"],
     ["Table 10", "Botanist", "person", "Zoe", "entities"],
     ["Table 1", "A walk outdoors", "experience", "Cedar walk", "memories"],
   ])
@@ -757,7 +773,7 @@ test("the front page is a sortable metadata table with independent column filter
       source(
         title,
         kind === "memories" ? "# Inspectable prose" : description,
-        `${kind === "memories" ? `description: ${description}\n` : ""}type: ${type}\naliases: [${alias}]\n`,
+        `${kind === "memories" ? `description: ${description}\n` : ""}types: {ari: ${type}}\naliases: [${alias}]\n`,
       ),
       kind,
     );
@@ -807,7 +823,7 @@ test("the front page is a sortable metadata table with independent column filter
   await page.getByLabel("Filter aliases", { exact: true }).fill("");
   await page
     .getByLabel("Metadata type filter", { exact: true })
-    .selectOption("plant taxon");
+    .selectOption("plant");
   assert.deepEqual(await titles(), ["Table 2"]);
   await page.getByRole("button", { name: "Table 2", exact: true }).click();
   const modal = page.getByRole("dialog");
@@ -818,7 +834,7 @@ test("the front page is a sortable metadata table with independent column filter
   );
   assert.match(
     await modal.locator(".inspection-metadata").innerText(),
-    /plant taxon/,
+    /plant/,
   );
   await page.getByRole("tab", { name: "Source", exact: true }).click();
   assert.equal(
@@ -1627,7 +1643,7 @@ async function chatProvider(t, completion) {
       const body = JSON.parse(text);
       assert.equal(body.stream, true);
       assert.equal(body.model, "browser-model");
-      assert.equal(body.tools.length, 14);
+      assert.equal(body.tools.length, 15);
       await completion(res, body, ++calls);
     } catch (e) {
       errors.push(e.message);
@@ -2427,4 +2443,143 @@ test("retrieval settings recover lost acknowledgements and retain conflicting dr
     "2",
   );
   assert.deepEqual(errors, []);
+});
+
+test("type settings preserve per-user choices, stable IDs and saved drafts", async () => {
+  const { page, context } = await pageFor({ width: 390, height: 844 });
+  try {
+    await page
+      .getByRole("button", { name: "Type settings", exact: true })
+      .click();
+    const dialog = page.locator('dialog[x-ref="typeSettingsDialog"]');
+    await dialog.getByLabel("Type settings user").fill("cook");
+    await dialog
+      .getByRole("button", { name: "Load user", exact: true })
+      .click();
+    await dialog.getByLabel("Type name person", { exact: true }).waitFor();
+    await dialog.getByRole("button", { name: "Add type", exact: true }).click();
+    const added = dialog.locator(".type-definition").last();
+    await added.locator("input").fill("Ingredient");
+    await added.locator("textarea").fill("An ingredient used for cooking.");
+    await page.reload();
+    await page
+      .getByRole("button", { name: "Type settings", exact: true })
+      .click();
+    await dialog.getByLabel("Type settings user").fill("cook");
+    await dialog
+      .getByRole("button", { name: "Load user", exact: true })
+      .click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector('[aria-label="Type name ingredient"]')?.value ===
+        "Ingredient",
+    );
+    let savedOnce = false;
+    const keys = [];
+    await context.route("**/api/types/cook", async (route) => {
+      if (route.request().method() !== "PUT") return route.continue();
+      keys.push(route.request().postDataJSON().key);
+      const response = await route.fetch();
+      if (!savedOnce) {
+        savedOnce = true;
+        await route.abort("failed");
+      } else await route.fulfill({ response });
+    });
+    await dialog
+      .getByRole("button", { name: "Save types", exact: true })
+      .click();
+    await dialog
+      .getByRole("button", { name: "Retry saved request", exact: true })
+      .waitFor();
+    await dialog
+      .getByRole("button", { name: "Retry saved request", exact: true })
+      .click();
+    await dialog.getByText("Types saved for cook.", { exact: true }).waitFor();
+    assert.equal(keys.length, 2);
+    assert.equal(keys[0], keys[1]);
+    await dialog
+      .getByLabel("Type name ingredient", { exact: true })
+      .fill("Cooking ingredient");
+    await dialog
+      .getByRole("button", { name: "Save types", exact: true })
+      .click();
+    await dialog.getByText("Types saved for cook.", { exact: true }).waitFor();
+    const cook = await (await fetch(url + "/api/types/cook")).json();
+    assert.equal(
+      cook.kinds.entities.find((t) => t.id === "ingredient").name,
+      "Cooking ingredient",
+    );
+    const life = await (await fetch(url + "/api/types/life")).json();
+    assert.equal(life.kinds.entities.length, 12);
+    assert.deepEqual(life.kinds.memories, []);
+    const record = await save(
+      "---\nname: Bulgur type test\ntypes: {cook: ingredient, life: food}\n---\nA shared food description.",
+      "entities",
+    );
+    await dialog
+      .getByRole("button", { name: "Close type settings", exact: true })
+      .click();
+    await page.reload();
+    await page
+      .getByRole("button", { name: "Type settings", exact: true })
+      .click();
+    await dialog.getByLabel("Type settings user").fill("cook");
+    await dialog
+      .getByRole("button", { name: "Load user", exact: true })
+      .click();
+    await dialog
+      .getByRole("button", {
+        name: "Remove type Cooking ingredient",
+        exact: true,
+      })
+      .click();
+    await dialog
+      .getByLabel("Replace removed type Cooking ingredient", { exact: true })
+      .selectOption("food");
+    await dialog
+      .getByRole("button", { name: "Save types", exact: true })
+      .click();
+    await dialog.getByText("Types saved for cook.", { exact: true }).waitFor();
+    const after = await (await fetch(url + "/api/records/" + record.id)).json();
+    assert.match(after.source, /cook: food/);
+    assert.match(after.source, /life: food/);
+    assert.match(after.source, /A shared food description\./);
+    assert.equal(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+      true,
+    );
+    assert.equal(
+      await dialog.evaluate(
+        (el) => el.getBoundingClientRect().right <= innerWidth,
+      ),
+      true,
+    );
+    await page.screenshot({ path: "/tmp/songya-types-phone.png" });
+    await dialog
+      .getByRole("button", { name: "Close type settings", exact: true })
+      .click();
+    await page.getByRole("tab", { name: "List", exact: true }).click();
+    await page.getByLabel("Types for", { exact: true }).selectOption("cook");
+    await editRecord(page, "Bulgur type test");
+    const editor = page.locator('dialog[x-ref="editorDialog"]');
+    await editor.getByRole("button", { name: "Metadata", exact: true }).click();
+    await editor
+      .getByLabel("Record classification", { exact: true })
+      .selectOption("plant");
+    await editor.getByRole("button", { name: "Save", exact: true }).click();
+    await page.waitForFunction(
+      () => window.Alpine.$data(document.body).dirty === false,
+    );
+    const edited = await (
+      await fetch(url + "/api/records/" + record.id)
+    ).json();
+    assert.match(edited.source, /cook: plant/);
+    assert.match(edited.source, /life: food/);
+    assert.match(edited.source, /A shared food description\./);
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
 });

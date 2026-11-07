@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/aristath/songya"
 	"github.com/aristath/songya/mcpserver"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	openai "github.com/openai/openai-go/v3"
@@ -47,6 +49,9 @@ func pendingChatTool(c chatConversation) (int, *chatToolCall) {
 }
 
 func defaultChatOwner(tool *mcp.Tool, args map[string]any, user string) {
+	if strings.HasPrefix(tool.Name, "save_") {
+		args["type_user"] = user
+	}
 	if _, supplied := args["user"]; supplied {
 		return
 	}
@@ -77,15 +82,15 @@ func (a *chatApp) run(ctx context.Context, id string) error {
 	}
 	defer session.Close()
 	tools := map[string]*mcp.Tool{}
-	definitions := []openai.ChatCompletionToolUnionParam{}
+	toolNames := []string{}
 	for tool, err := range session.Tools(ctx, nil) {
 		if err != nil {
 			return err
 		}
 		tools[tool.Name] = tool
-		data, _ := json.Marshal(map[string]any{"type": "function", "function": map[string]any{"name": tool.Name, "description": tool.Description, "parameters": tool.InputSchema}})
-		definitions = append(definitions, param.Override[openai.ChatCompletionToolUnionParam](json.RawMessage(data)))
+		toolNames = append(toolNames, tool.Name)
 	}
+	sort.Strings(toolNames)
 	for requests := 0; requests < 100; {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -120,7 +125,7 @@ func (a *chatApp) run(ctx context.Context, id string) error {
 			} else {
 				defaultChatOwner(tool, args, c.User)
 				key := fmt.Sprintf("chat:%s:%d:%s", id, index, call.ID)
-				result, err = session.CallTool(ctx, &mcp.CallToolParams{Name: call.Function.Name, Arguments: args, Meta: mcp.Meta{"songya/request-key": key, "songya/original-text": originalTurnText(c)}})
+				result, err = session.CallTool(ctx, &mcp.CallToolParams{Name: call.Function.Name, Arguments: args, Meta: mcp.Meta{"songya/request-key": key, "songya/original-text": originalTurnText(c), "songya/user": c.User}})
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
@@ -165,7 +170,23 @@ func (a *chatApp) run(ctx context.Context, id string) error {
 		if s.BaseURL == "" || s.Model == "" {
 			return fmt.Errorf("Configure the API base URL and model in Chat settings, then retry the saved turn.")
 		}
-		system := c.Prompt + "\n\n# Connected Songya MCP guide\n" + session.InitializeResult().Instructions + fmt.Sprintf("\n\nThe person currently talking is user %q. This identifies ownership, not an entity.\n", c.User)
+		cfg, typeIssue := a.store.TypeConfiguration(ctx, c.User)
+		typeGuide := songya.TypeInstructions(cfg)
+		if typeIssue != nil {
+			typeGuide = "Type settings could not be read. Omit type and report the issue: " + typeIssue.Error()
+		}
+		schemas := mcpserver.WriteSchemas(cfg)
+		definitions := []openai.ChatCompletionToolUnionParam{}
+		for _, name := range toolNames {
+			tool := tools[name]
+			schema := tool.InputSchema
+			if scoped, ok := schemas[tool.Name]; ok {
+				schema = scoped
+			}
+			data, _ := json.Marshal(map[string]any{"type": "function", "function": map[string]any{"name": tool.Name, "description": tool.Description, "parameters": schema}})
+			definitions = append(definitions, param.Override[openai.ChatCompletionToolUnionParam](json.RawMessage(data)))
+		}
+		system := c.Prompt + "\n\n" + typeGuide + "\n\n# Connected Songya MCP guide\n" + session.InitializeResult().Instructions + fmt.Sprintf("\n\nThe person currently talking is user %q. This identifies ownership, not an entity.\n", c.User)
 		messages := []openai.ChatCompletionMessageParamUnion{openai.SystemMessage(system)}
 		if evidence := recallContext(c); evidence != "" {
 			messages = append(messages, openai.UserMessage(evidence))

@@ -32,11 +32,12 @@ type Change struct {
 	AddRelations      []Relation     `json:"add_relations,omitempty"`
 }
 type BatchRequest struct {
-	prepare func(*os.Root) ([]Change, error)
-	User    string   `json:"user,omitempty"`
-	Key     string   `json:"key"`
-	Account string   `json:"original_text,omitempty"`
-	Changes []Change `json:"changes"`
+	prepare           func(*os.Root) ([]Change, error)
+	typeConfiguration *typeConfigurationChange
+	User              string   `json:"user,omitempty"`
+	Key               string   `json:"key"`
+	Account           string   `json:"original_text,omitempty"`
+	Changes           []Change `json:"changes"`
 }
 
 type originalTextKey struct{}
@@ -161,7 +162,7 @@ func loadJournal(root *os.Root, directory string) (batchJournal, error) {
 		}
 		seen := map[string]bool{}
 		for _, record := range journal.Entries {
-			source, err := recordName(record.ID)
+			source, err := batchTarget(record.ID)
 			if err != nil || record.Source != source || seen[record.ID] || record.Revision != dataRevision(record.After) || record.Base != "" && record.Base != dataRevision(record.Before) {
 				return journal, fmt.Errorf("invalid record in batch journal %s; retained", directory)
 			}
@@ -429,6 +430,9 @@ func prepareBatch(ctx context.Context, root *os.Root, request BatchRequest, revi
 		if err := requireUser(doc, kindOf(change.ID)); err != nil {
 			return journal, fmt.Errorf("%s: %w", change.ID, err)
 		}
+		if err := (&Store{path: root.Name()}).validateTypeChange(ctx, root, Parse(before), doc, kindOf(change.ID), request.typeConfiguration); err != nil {
+			return journal, fmt.Errorf("%s: %w", change.ID, err)
+		}
 		if err := validateTimeChange(metadataField(&Parse(before).Frontmatter, "time"), metadataField(&doc.Frontmatter, "time")); err != nil {
 			return journal, fmt.Errorf("%s: %w", change.ID, err)
 		}
@@ -440,6 +444,13 @@ func prepareBatch(ctx context.Context, root *os.Root, request BatchRequest, revi
 			data = before
 		}
 		journal.Entries = append(journal.Entries, batchEntry{ID: change.ID, Source: name, Base: base, Revision: dataRevision(data), Before: before, After: data})
+	}
+	if config := request.typeConfiguration; config != nil {
+		base := ""
+		if len(config.Before) > 0 {
+			base = dataRevision(config.Before)
+		}
+		journal.Entries = append(journal.Entries, batchEntry{ID: typeConfigurationID(config.User), Source: typeConfigurationPath(config.User), Base: base, Revision: dataRevision(config.After), Before: config.Before, After: config.After})
 	}
 	if len(journal.Entries) == 0 {
 		return journal, errors.New("batch contains no changes")
@@ -487,8 +498,18 @@ func (s *Store) ApplyBatch(ctx context.Context, request BatchRequest) (Receipt, 
 	if err != nil {
 		return Receipt{}, err
 	}
-	receipt := Receipt{Key: request.Key, Status: "not_accepted"}
+	var receipt Receipt
 	err = s.lockedContext(ctx, func(root *os.Root) error {
+		var issue error
+		receipt, issue = s.applyBatchLocked(ctx, root, request, digest)
+		return issue
+	})
+	return receipt, err
+}
+
+func (s *Store) applyBatchLocked(ctx context.Context, root *os.Root, request BatchRequest, digest string) (Receipt, error) {
+	receipt := Receipt{Key: request.Key, Status: "not_accepted"}
+	err := func() error {
 		if err := ensureDirectory(root, ".batches"); err != nil {
 			return err
 		}
@@ -544,7 +565,7 @@ func (s *Store) ApplyBatch(ctx context.Context, request BatchRequest) (Receipt, 
 		status, err := s.resumeBatch(root, journal)
 		receipt = receiptFor(journal, status, err)
 		return err
-	})
+	}()
 	return receipt, err
 }
 

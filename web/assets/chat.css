@@ -390,3 +390,76 @@ body.chat-expanded {
 .ProseMirror-menu-active {
   background: var(--selected);
 }
+
+.workspace-tabs .type-settings-button {
+  margin-left: auto;
+  font-size: 0.85rem;
+}
+.workspace-tabs .recall-settings-button {
+  margin-left: 0;
+}
+.workspace-tabs {
+  gap: clamp(0.5rem, 2%, 1.5rem);
+  flex-wrap: wrap;
+}
+.type-settings-dialog {
+  width: min(65rem, calc(100% - 1rem));
+}
+.type-settings-content {
+  padding: clamp(0.75rem, 3%, 1.5rem);
+}
+.type-settings-content fieldset {
+  border: 0;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+}
+.type-user-picker,
+.classification-fields {
+  display: flex;
+  gap: 0.75rem;
+  align-items: end;
+  flex-wrap: wrap;
+  margin: 1rem 0 !important;
+}
+.type-user-picker label,
+.classification-fields label {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+.type-kind-tabs {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  margin: 1rem 0;
+}
+.type-kind-tabs button[aria-selected="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--selected);
+}
+.type-definition {
+  display: flex;
+  align-items: start;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  padding: 1rem 0;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 0.5rem;
+}
+.type-definition label:first-child {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+.type-definition label:nth-child(2) {
+  flex: 3 1 20rem;
+  min-width: 0;
+}
+.type-definition > button {
+  margin-top: 1.5rem;
+}
+.type-reassignment {
+  margin: 1rem 0;
+  padding: 1rem;
+  background: var(--warning-bg);
+}

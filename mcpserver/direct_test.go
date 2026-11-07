@@ -40,7 +40,7 @@ func TestDirectGuideCapture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(listed.Tools) != 14 {
+	if len(listed.Tools) != 15 {
 		t.Fatal("missing dedicated tools", len(listed.Tools))
 	}
 	for _, tool := range listed.Tools {
@@ -99,7 +99,7 @@ func TestDedicatedWritesOwnershipAndOrganization(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	session := connect(t, ctx, binary(t), t.TempDir(), "")
-	john := keyed(t, ctx, session, "save_entity", "john", map[string]any{"create": true, "name": "John", "type": "person", "aliases": []string{"Johnny"}, "description": "An old friend."})
+	john := keyed(t, ctx, session, "save_entity", "john", map[string]any{"create": true, "name": "John", "type_user": "ari", "type": "person", "aliases": []string{"Johnny"}, "description": "An old friend."})
 	topic := keyed(t, ctx, session, "save_topic", "topic", map[string]any{"create": true, "name": "Gardening", "description": "Plants and gardens."})
 	a := keyed(t, ctx, session, "save_memory", "ari", map[string]any{"text": "Coffee with John.", "user": "ari", "relations": []any{map[string]any{"type": "related_to", "target": map[string]any{"kind": "entities", "id": john["id"], "name": "Johnny", "type": "person", "description": "John grows roses."}}, map[string]any{"type": "related_to", "target": map[string]any{"kind": "topics", "name": "Gardening"}}}})
 	b := keyed(t, ctx, session, "save_memory", "bob", map[string]any{"text": "Bob met John.", "user": "bob", "relations": []any{map[string]any{"type": "related_to", "target": "John"}}})
